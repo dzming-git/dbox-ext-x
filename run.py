@@ -16,6 +16,10 @@
       {"type":"progress","percent":0-100,"message":""}
       {"type":"log","level":"info|warn|error","message":""}
       {"type":"await_input","input":{prompt,options:[{value,label}],multi,min,max,allow_text,text_hint}}
+      {"type":"await_input","input":{"type":"preview","url","text","title","author","media":[...]}}
+            —— 预览模式（默认）：input.type="preview"，携带推文文字、作者与媒体预览
+               （图片 url / 视频 url+cover+mp4），等待用户在界面上确认下载或取消。
+               确认答复格式：{"action":"download","items":[0,1,...]}；取消为 {"action":"cancel"}。
       {"type":"result","files":[{"path":...,"type":"video|image"}]}
   - 分阶段交互：上报 await_input 后，长轮询 GET /api/scripts/jobs/<id>/input 等待管理员选择。
 
@@ -660,9 +664,16 @@ def extract_from_api(tweet_id, cookie_header, opener):
             m3u8 = [v['url'] for v in variants
                     if v.get('content_type') == 'application/x-mpegURL']
             if m3u8:
+                # 补充预览数据：cover 为视频封面（poster），mp4 为可直接播放的直链
+                #（浏览器原生播放用，下载仍走 m3u8 高清分片合并）
+                mp4s = [v for v in variants
+                        if v.get('content_type') == 'video/mp4' and v.get('url')]
+                best_mp4 = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
                 media.append({'type': 'video',
                               'url': pick_m3u8(m3u8),
-                              'label': '视频/动图'})
+                              'label': '视频/动图',
+                              'cover': ent.get('media_url_https') or ent.get('media_url') or '',
+                              'mp4': (best_mp4.get('url') or '') if best_mp4 else ''})
         elif mtype == 'document':
             # X 文档附件：记录下载地址与媒体 id，供下载阶段抓取实际文档
             media.append({'type': 'document',
@@ -1247,11 +1258,14 @@ def download_document(media, cookie_header, working_dir, idx, proxy_cfg, guest_t
 
 
 def simulate_media():
-    """演示用：合成 3 个媒体（2 图 + 1 视频），用于体现“二次选择”交互。"""
+    """演示用：合成 3 个媒体（2 图 + 1 视频），用于体现“预览确认”与“二次选择”交互。"""
     return [
         {'type': 'image', 'url': 'https://pbs.twimg.com/demo/1.jpg', 'label': '图片 1（演示）'},
         {'type': 'image', 'url': 'https://pbs.twimg.com/demo/2.jpg', 'label': '图片 2（演示）'},
-        {'type': 'video', 'url': 'https://video.twimg.com/demo/playlist.m3u8', 'label': '视频（演示）'},
+        {'type': 'video', 'url': 'https://video.twimg.com/demo/playlist.m3u8',
+         'cover': 'https://pbs.twimg.com/demo/cover.jpg',
+         'mp4': 'https://video.twimg.com/demo/video.mp4',
+         'label': '视频（演示）'},
     ]
 
 
@@ -1332,17 +1346,33 @@ def main():
 
     log(f'解析到 {len(media)} 个媒体：' + '，'.join(x['label'] for x in media))
 
-    selected = media
-    # 多个资源 -> 二次触发用户选择（仅非全自动模式才交互，否则自动全选）
+    # 预览模式（默认开启）：解析后先把资源预览发给前端（图片直接显示、视频封面点击播放），
+    # 等待用户确认后再下载整个帖子；用户也可选择仅下载部分项，或直接取消。
+    # auto 仅影响「预览关闭」时是否询问逐项选择，与预览模式互不冲突。
+    preview_mode = bool(params.get('preview', True))
     auto_mode = bool(params.get('auto', True))
-    if len(media) > 1 and not auto_mode:
-        options = [{'value': str(i), 'label': x['label']} for i, x in enumerate(media)]
-        progress(20, '等待用户选择要下载的媒体…')
+
+    if preview_mode:
+        progress(20, '等待用户确认下载…')
         emit({
             'type': 'await_input',
             'input': {
-                'prompt': f'该推文包含 {len(media)} 个媒体，请选择要下载的项（可多选）：',
-                'options': options,
+                'type': 'preview',
+                'url': url,
+                'text': post_content or '',
+                'title': post_title,
+                'author': tweet_author,
+                'media': [
+                    {
+                        'type': m.get('type', ''),
+                        'url': m.get('url', ''),
+                        'label': m.get('label', ''),
+                        'cover': m.get('cover') or '',
+                        'mp4': m.get('mp4') or '',
+                    }
+                    for m in media
+                ],
+                'prompt': f'该推文包含 {len(media)} 个媒体，确认后将下载整个帖子：',
                 'multi': True,
                 'min': 1,
                 'max': len(media),
@@ -1351,24 +1381,57 @@ def main():
             },
         })
         resp = fetch_input(notify_ctx)
-        if resp is None:
-            log('未收到选择，默认下载全部', level='warn')
-            indices = list(range(len(media)))
+        if not isinstance(resp, dict):
+            log('未收到确认，已取消下载', level='warn')
+            sys.exit(0)
+        action = resp.get('action', 'download')
+        if action == 'cancel':
+            log('用户取消下载')
+            sys.exit(0)
+        items = resp.get('items')
+        if isinstance(items, list) and items:
+            indices = [int(i) for i in items if str(i).isdigit()]
+            selected = [media[i] for i in indices if 0 <= i < len(media)] or media
         else:
-            try:
-                vals = resp if isinstance(resp, list) else [resp]
-                indices = [int(v) for v in vals if str(v).isdigit()]
-            except Exception:
-                indices = list(range(len(media)))
-            if not indices:
-                indices = list(range(len(media)))
-        selected = [media[i] for i in indices]
-        log('用户选择：' + '，'.join(x['label'] for x in selected))
-    elif len(media) > 1:
-        selected = media
-        log(f'全自动模式：自动下载全部 {len(media)} 个媒体')
+            selected = media  # 默认下载整个帖子的全部媒体
+        log('已确认下载 ' + '，'.join(x['label'] for x in selected))
     else:
-        log('仅 1 个媒体，直接下载')
+        selected = media
+        # 多个资源 -> 二次触发用户选择（仅非全自动模式才交互，否则自动全选）
+        if len(media) > 1 and not auto_mode:
+            options = [{'value': str(i), 'label': x['label']} for i, x in enumerate(media)]
+            progress(20, '等待用户选择要下载的媒体…')
+            emit({
+                'type': 'await_input',
+                'input': {
+                    'prompt': f'该推文包含 {len(media)} 个媒体，请选择要下载的项（可多选）：',
+                    'options': options,
+                    'multi': True,
+                    'min': 1,
+                    'max': len(media),
+                    'allow_text': False,
+                    'text_hint': '',
+                },
+            })
+            resp = fetch_input(notify_ctx)
+            if resp is None:
+                log('未收到选择，默认下载全部', level='warn')
+                indices = list(range(len(media)))
+            else:
+                try:
+                    vals = resp if isinstance(resp, list) else [resp]
+                    indices = [int(v) for v in vals if str(v).isdigit()]
+                except Exception:
+                    indices = list(range(len(media)))
+                if not indices:
+                    indices = list(range(len(media)))
+            selected = [media[i] for i in indices]
+            log('用户选择：' + '，'.join(x['label'] for x in selected))
+        elif len(media) > 1:
+            selected = media
+            log(f'全自动模式：自动下载全部 {len(media)} 个媒体')
+        else:
+            log('仅 1 个媒体，直接下载')
 
     progress(40, f'开始下载 {len(selected)} 个媒体')
 

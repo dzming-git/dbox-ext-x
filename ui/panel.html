@@ -6,39 +6,108 @@
 <title>X 下载</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #f7f8fa; color: #1f2329; height: 100%; }
-  .wrap { display: flex; flex-direction: column; height: 100vh; }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border-bottom: 1px solid #e3e6eb; background: #fff; align-items: center; }
-  .bar input[type=text] { flex: 1; min-width: 200px; border: 1px solid #d0d4dc; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
-  .bar select { border: 1px solid #d0d4dc; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
-  .bar button { background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-size: 13px; cursor: pointer; height: 34px; }
-  .opts { display: flex; gap: 14px; padding: 8px 12px; font-size: 12px; color: #555; background: #fff; border-bottom: 1px solid #e3e6eb; flex-wrap: wrap; }
-  .status { flex: 1; overflow-y: auto; padding: 12px; }
-  .progress { height: 8px; background: #e3e6eb; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  html, body { height: 100%; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #f7f8fa; color: #1f2329; }
+  .wrap { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #e3e6eb; background: #fff; flex-shrink: 0; }
+  .toolbar .title { font-weight: 600; font-size: 14px; }
+  .toolbar button { background: none; border: 1px solid #d0d4dc; color: #888; border-radius: 6px; font-size: 12px; padding: 3px 10px; cursor: pointer; }
+  .toolbar button:hover { color: #4f8cff; border-color: #4f8cff; }
+
+  /* ---- 表单区 ---- */
+  .form { padding: 10px 12px; border-bottom: 1px solid #e3e6eb; background: #fff; flex-shrink: 0; }
+  .form input[type=text] { width: 100%; border: 1px solid #d0d4dc; border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-bottom: 8px; }
+  .form select { width: 100%; border: 1px solid #d0d4dc; border-radius: 8px; padding: 7px 10px; font-size: 13px; margin-bottom: 8px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #555; margin-bottom: 8px; }
+  .opts label { display: inline-flex; align-items: center; gap: 4px; }
+  .form .run-row { display: flex; gap: 8px; align-items: center; }
+  .form button { background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 9px 16px; font-size: 13px; font-weight: 600; cursor: pointer; flex: 1; }
+  .form button:hover { filter: brightness(1.06); }
+  .hint { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.5; }
+
+  /* ---- 预览区 ---- */
+  .preview { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .preview .tweet { background: #fff; border: 1px solid #e3e6eb; border-radius: 10px; padding: 10px 12px; }
+  .preview .author { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .preview .author a { color: #1d9bf0; text-decoration: none; }
+  .preview .ttext { font-size: 12.5px; color: #333; white-space: pre-wrap; word-break: break-word; line-height: 1.5; max-height: 96px; overflow: hidden; position: relative; }
+  .preview .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .media { background: #fff; border: 1px solid #e3e6eb; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .media .thumb { position: relative; width: 100%; aspect-ratio: 16 / 10; background: #eef0f4; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .media .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .media .thumb .placeholder { font-size: 12px; color: #999; text-align: center; padding: 8px; }
+  .media .play { position: absolute; inset: 0; margin: auto; width: 42px; height: 42px; border-radius: 50%; border: none; background: rgba(0,0,0,.45); color: #fff; font-size: 17px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding-left: 3px; }
+  .media .play:hover { background: rgba(29,155,240,.85); }
+  .media video { width: 100%; aspect-ratio: 16 / 10; background: #000; display: block; }
+  .media .note { position: absolute; inset: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 10px; }
+  .media .meta { padding: 7px 10px; font-size: 12px; color: #555; display: flex; align-items: center; gap: 6px; }
+  .media .meta input { accent-color: #1d9bf0; }
+  .media .tag { margin-left: auto; font-size: 11px; color: #1a7f37; background: #e8f5e9; border-radius: 4px; padding: 0 5px; }
+  .preview .actions { display: flex; gap: 8px; padding-bottom: 8px; }
+  .preview .actions button { flex: 1; border-radius: 8px; padding: 10px 0; font-size: 13px; font-weight: 600; cursor: pointer; border: none; }
+  .preview .actions .primary { background: #1d9bf0; color: #fff; }
+  .preview .actions .primary:hover { filter: brightness(1.06); }
+  .preview .actions .cancel { background: #fff; color: #666; border: 1px solid #d0d4dc; }
+  .preview .actions .cancel:hover { color: #d33; border-color: #f3a6a6; }
+
+  /* ---- 状态区 ---- */
+  .status { flex: 1; overflow-y: auto; padding: 12px; min-height: 0; }
+  .progress { height: 8px; background: #e3e6eb; border-radius: 4px; overflow: hidden; margin: 4px 0 10px; }
   .progress > div { height: 100%; background: #1d9bf0; width: 0; transition: width .3s; }
-  .log { font-size: 12px; color: #666; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; background: #fff; border: 1px solid #e3e6eb; border-radius: 8px; padding: 8px; max-height: 200px; overflow-y: auto; }
+  .status-msg { font-size: 13px; color: #333; margin-bottom: 10px; }
+  .log { font-size: 12px; color: #666; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; background: #fff; border: 1px solid #e3e6eb; border-radius: 8px; padding: 8px; max-height: 220px; overflow-y: auto; }
+  .log .err { color: #f56c6c; }
   .hint { font-size: 12px; color: #888; padding: 6px 0; }
   .err { color: #f56c6c; }
+
+  /* 选择型交互（预览关闭时的备选路径） */
   .pick { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
   .pick label { display: block; padding: 4px 0; font-size: 13px; }
   .pick button { margin-top: 8px; background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+
+  /* 全屏模式：更宽的网格 */
+  body.fullscreen .preview .grid { grid-template-columns: repeat(4, 1fr); }
+  body.fullscreen .preview .ttext { max-height: 140px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="bar">
+  <div class="toolbar">
+    <span class="title">🐦 X 下载预览</span>
+    <div>
+      <button id="fullscreenBtn" title="全屏显示：在独立页面打开，独享整个界面">全屏</button>
+    </div>
+  </div>
+
+  <div class="form" id="form">
     <input id="url" type="text" placeholder="粘贴 X / Twitter 推文链接…" />
-    <select id="library"><option value="">目标库（加载中…）</option></select>
-    <button id="run">开始下载</button>
+    <select id="library"><option value="">目标资源库（加载中…）</option></select>
+    <div class="opts">
+      <label><input type="checkbox" id="preview" checked /> 先预览确认</label>
+      <label><input type="checkbox" id="hidden" checked /> 隐藏资源（仅帖子流可见）</label>
+      <label><input type="checkbox" id="simulate" /> 演示模式（不联网）</label>
+    </div>
+    <div class="run-row">
+      <button id="run">解析预览</button>
+    </div>
+    <div class="hint">粘贴推文链接 → 解析并预览图片/视频 → 确认后下载整个帖子。</div>
   </div>
-  <div class="opts">
-    <label><input type="checkbox" id="auto" checked /> 全自动（自动选择所有媒体）</label>
-    <label><input type="checkbox" id="hidden" checked /> 隐藏资源（仅帖子流可见）</label>
-    <label><input type="checkbox" id="simulate" /> 演示模式（不联网）</label>
+
+  <div class="preview" id="preview" hidden>
+    <div class="tweet">
+      <div class="author" id="pv-author"></div>
+      <div class="ttext" id="pv-text"></div>
+    </div>
+    <div class="grid" id="pv-grid"></div>
+    <div class="actions">
+      <button id="pv-download" class="primary">⬇ 下载整个帖子</button>
+      <button id="pv-cancel" class="cancel">取消</button>
+    </div>
   </div>
-  <div class="status" id="status">
-    <div class="hint">粘贴推文链接，选择目标资源库，点击「开始下载」。</div>
+
+  <div class="status" id="status" hidden>
     <div class="progress" id="prog" style="display:none"><div id="prog-bar"></div></div>
+    <div class="status-msg" id="status-msg"></div>
     <div class="log" id="log" style="display:none"></div>
     <div id="pick"></div>
   </div>
@@ -47,20 +116,42 @@
   let TOKEN = '';
   const API = '/api/ext/x_downloader';
   window.addEventListener('message', (e) => {
-    if (e.data && e.data.type === 'DBOX_TOKEN') { TOKEN = e.data.token; }
+    if (!e.data) return;
+    if (e.data.type === 'DBOX_TOKEN' && e.data.token) { TOKEN = e.data.token; }
+    if (e.data.type === 'DBOX_MODE') {
+      document.body.classList.toggle('fullscreen', !!e.data.fullscreen);
+      const btn = document.getElementById('fullscreenBtn');
+      if (btn) btn.style.display = e.data.fullscreen ? 'none' : '';
+    }
   });
   window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x_downloader' }, '*');
 
   const $ = (id) => document.getElementById(id);
-  const statusEl = $('status'), logEl = $('log'), progEl = $('prog'), progBar = $('prog-bar'), pickEl = $('pick');
+  const statusEl = $('status'), logEl = $('log'), progEl = $('prog'), progBar = $('prog-bar');
+  const formEl = $('form'), previewEl = $('preview'), gridEl = $('pv-grid');
   let jobId = null, poller = null;
+  const seenLogs = new Set();
 
-  // 加载视频库列表供选择
+  const fullscreenBtn = $('fullscreenBtn');
+  if (fullscreenBtn) {
+    fullscreenBtn.addEventListener('click', () => {
+      window.parent.postMessage({ type: 'DBOX_NAVIGATE', path: '/x-downloader' }, '*');
+    });
+  }
+
+  // 预览开关控制按钮文案
+  $('preview').addEventListener('change', () => {
+    $('run').textContent = $('preview').checked ? '解析预览' : '开始下载';
+  });
+
+  const AUTH = () => ({ 'Authorization': 'Bearer ' + TOKEN });
+
+  // 加载资源库列表供选择
   async function loadLibraries() {
     try {
-      const r = await fetch('/api/libraries?type=video', { headers: { 'Authorization': TOKEN } });
+      const r = await fetch('/api/my-libraries', { headers: AUTH() });
       const d = await r.json();
-      const libs = (d.libraries || []);
+      const libs = (d.data || d.libraries || []);
       const sel = $('library');
       sel.innerHTML = libs.map(l => `<option value="${l.id}">${l.name}</option>`).join('') || '<option value="">（无可用库）</option>';
     } catch (e) {
@@ -68,10 +159,25 @@
     }
   }
 
-  function pushLog(msg) {
+  function showStatus() { formEl.style.display = 'none'; previewEl.hidden = true; statusEl.hidden = false; }
+  function showPreview() { formEl.style.display = 'none'; previewEl.hidden = false; statusEl.hidden = true; }
+  function showForm() { formEl.style.display = ''; previewEl.hidden = true; statusEl.hidden = true; }
+
+  function pushLog(msg, isErr) {
     logEl.style.display = 'block';
-    logEl.textContent += msg + '\n';
+    if (seenLogs.has(msg)) return;
+    seenLogs.add(msg);
+    const line = document.createElement('div');
+    line.className = isErr ? 'err' : '';
+    line.textContent = msg;
+    logEl.appendChild(line);
     logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setProgress(pct, msg) {
+    progEl.style.display = 'block';
+    progBar.style.width = (pct || 0) + '%';
+    if (msg) $('status-msg').textContent = msg;
   }
 
   function startPolling() {
@@ -79,35 +185,123 @@
     poller = setInterval(async () => {
       if (!jobId) return;
       try {
-        const r = await fetch(`${API}/status?job_id=${encodeURIComponent(jobId)}`, { headers: { 'Authorization': TOKEN } });
+        const r = await fetch(`${API}/status?job_id=${encodeURIComponent(jobId)}`, { headers: AUTH() });
         const s = await r.json();
         if (!s.success) return;
-        progEl.style.display = 'block';
-        progBar.style.width = (s.percent || 0) + '%';
-        (s.logs || []).forEach((l) => { if (logEl.dataset.last !== l) { pushLog(l); } });
-        logEl.dataset.last = (s.logs || []).slice(-1)[0];
-        if (s.pending_input) renderPick(s.pending_input);
+        setProgress(s.percent, s.message || '');
+        (s.logs || []).forEach((l) => pushLog(l));
+        if (s.pending_input) {
+          if (s.pending_input.type === 'preview') renderPreview(s.pending_input);
+          else renderPick(s.pending_input);
+        }
         if (s.done) {
           clearInterval(poller); poller = null;
           pushLog(s.error ? ('失败: ' + s.error) : '任务完成。');
+          const btn = document.createElement('button');
+          btn.textContent = '← 再来一个';
+          btn.style.cssText = 'margin-top:10px;background:#1d9bf0;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;';
+          btn.onclick = () => { showForm(); seenLogs.clear(); $('log').textContent = ''; $('status-msg').textContent = ''; progEl.style.display = 'none'; jobId = null; };
+          statusEl.appendChild(btn);
         }
       } catch (e) {}
     }, 800);
   }
 
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  // ---- 预览渲染：图片直显、视频封面点击播放 ----
+  function renderPreview(input) {
+    if (previewEl.dataset.for === jobId) return;
+    previewEl.dataset.for = jobId;
+
+    const author = input.author || {};
+    let authorHtml = '';
+    if (author.screen_name) {
+      const name = author.name || author.screen_name;
+      authorHtml = `<a href="https://x.com/${esc(author.screen_name)}" target="_blank" rel="noopener">${esc(name)}</a> @${esc(author.screen_name)}`;
+    } else if (author.name) {
+      authorHtml = esc(author.name);
+    }
+    $('pv-author').innerHTML = authorHtml;
+    $('pv-text').textContent = (input.text || '').trim() || '（该推文无文字内容）';
+
+    const media = input.media || [];
+    gridEl.innerHTML = media.map((m, i) => {
+      const kindTag = m.type === 'video' ? '<span class="tag">视频</span>'
+                    : m.type === 'document' ? '<span class="tag">文档</span>'
+                    : '<span class="tag">图片</span>';
+      let thumb;
+      if (m.type === 'video') {
+        const cover = m.cover || '';
+        const playable = m.mp4 || (m.url || '').endsWith('.mp4');
+        thumb = `<div class="thumb">
+          ${cover
+            ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\\'placeholder\\'>封面加载失败</div>'" />`
+            : '<div class="placeholder">视频</div>'}
+          <button class="play" data-i="${i}">▶</button>
+          <div class="note" hidden>该视频需下载后播放</div>
+        </div>`;
+        if (!playable) {
+          thumb = thumb.replace('<button class="play"', '<button class="play" data-noplay="1"');
+        }
+      } else if (m.type === 'document') {
+        thumb = '<div class="thumb"><div class="placeholder">📄 文档附件</div></div>';
+      } else {
+        thumb = `<div class="thumb">
+          <img src="${esc(m.url)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\\'placeholder\\'>图片加载失败</div>'" />
+        </div>`;
+      }
+      const label = m.label || (m.type === 'video' ? '视频' : m.type === 'document' ? '文档' : '图片');
+      return `<div class="media" data-i="${i}">${thumb}
+        <label class="meta"><input type="checkbox" data-i="${i}" checked /> ${esc(label)}${kindTag}</label>
+      </div>`;
+    }).join('');
+
+    // 视频点击播放
+    gridEl.querySelectorAll('.media .play').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.i);
+        const m = media[i];
+        const wrap = btn.parentElement;
+        if (btn.dataset.noplay) {
+          wrap.querySelector('.note').hidden = false;
+          btn.hidden = true;
+          return;
+        }
+        const src = m.mp4 || m.url;
+        wrap.innerHTML = `<video src="${esc(src)}" controls autoplay playsinline></video>`;
+      });
+    });
+
+    showPreview();
+  }
+
+  // ---- 备选：预览关闭时的逐项选择 ----
   function renderPick(input) {
     if ($('pick').dataset.for === jobId + JSON.stringify(input)) return;
     $('pick').dataset.for = jobId + JSON.stringify(input);
-    const opts = (input.options || []).map((o, i) =>
-      `<label><input type="${input.multi ? 'checkbox' : 'radio'}" name="pick" value="${o.value}"> ${o.label}</label>`).join('');
-    pickEl.innerHTML = `<div class="pick"><div>${input.prompt || '请选择'}</div>${opts}
+    const opts = (input.options || []).map((o) =>
+      `<label><input type="${input.multi ? 'checkbox' : 'radio'}" name="pick" value="${esc(o.value)}"> ${esc(o.label)}</label>`).join('');
+    $('pick').innerHTML = `<div class="pick"><div>${esc(input.prompt || '请选择')}</div>${opts}
       <button id="pick-ok">确认</button></div>`;
     $('pick-ok').onclick = async () => {
       const vals = Array.from(document.querySelectorAll('input[name=pick]:checked')).map(x => x.value);
       if (!vals.length) { alert('请至少选择一项'); return; }
-      await fetch(`${API}/input`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': TOKEN }, body: JSON.stringify({ job_id: jobId, value: vals }) });
-      pickEl.innerHTML = '';
+      await postInput({ action: 'download', items: vals });
+      $('pick').innerHTML = '';
     };
+  }
+
+  async function postInput(value) {
+    await fetch(`${API}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...AUTH() },
+      body: JSON.stringify({ job_id: jobId, value }),
+    });
   }
 
   $('run').onclick = async () => {
@@ -116,28 +310,47 @@
     if (!url) { alert('请填写推文链接'); return; }
     if (!library_id) { alert('请选择目标资源库'); return; }
     if (!TOKEN) { alert('尚未获取到 token'); return; }
-    jobId = null; logEl.style.display = 'block'; logEl.textContent = ''; pickEl.innerHTML = '';
-    pushLog('提交任务…');
+    jobId = null; seenLogs.clear();
+    $('log').textContent = ''; $('pick').innerHTML = ''; $('status-msg').textContent = ''; progEl.style.display = 'none';
+    previewEl.dataset.for = '';
+    showStatus();
+    setProgress(0, '提交任务…');
     try {
       const r = await fetch(`${API}/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': TOKEN },
+        headers: { 'Content-Type': 'application/json', ...AUTH() },
         body: JSON.stringify({
           library_id,
           params: {
             url,
-            auto: $('auto').checked,
+            preview: $('preview').checked,
+            auto: true,           // 预览关闭时全自动直接下载全部
             hidden: $('hidden').checked,
             simulate: $('simulate').checked,
           }
         })
       });
       const d = await r.json();
-      if (!d.success) { pushLog('提交失败: ' + (d.message || '')); return; }
+      if (!d.success) { pushLog('提交失败: ' + (d.message || ''), true); return; }
       jobId = d.job_id;
-      pushLog('任务已创建: ' + jobId);
       startPolling();
-    } catch (e) { pushLog('提交异常: ' + e.message); }
+    } catch (e) { pushLog('提交异常: ' + e.message, true); }
+  };
+
+  // 预览区：下载整个帖子
+  $('pv-download').onclick = async () => {
+    const items = Array.from(gridEl.querySelectorAll('input[data-i]:checked')).map(x => Number(x.dataset.i));
+    if (!items.length) { alert('请至少勾选一个媒体'); return; }
+    showStatus();
+    setProgress(0, '开始下载…');
+    await postInput({ action: 'download', items });
+  };
+
+  // 预览区：取消
+  $('pv-cancel').onclick = async () => {
+    showStatus();
+    setProgress(0, '已取消');
+    await postInput({ action: 'cancel' });
   };
 
   loadLibraries();

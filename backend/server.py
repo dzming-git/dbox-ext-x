@@ -151,9 +151,13 @@ def create_blueprint(host):
                         jobs[job_id]['error'] = obj.get('message')
                         _append_log(job_id, 'ERROR: ' + obj.get('message', ''))
                     elif t == 'await_input':
-                        # 暂停读取，等待前端通过 /input 回写选择（与 run.py 的长轮询对齐）
-                        jobs[job_id]['pending_input'] = obj.get('input')
-                        input_events[job_id].wait(timeout=30)
+                        # 暂停读取，等待前端通过 /input 回写选择（与 run.py 的长轮询对齐）。
+                        # 预览模式（input.type="preview"）等待用户浏览确认，不受 30s 超时限制；
+                        # 其余选择型交互沿用原有 30s 超时。
+                        inp = obj.get('input') or {}
+                        jobs[job_id]['pending_input'] = inp
+                        wait = None if inp.get('type') == 'preview' else 30
+                        input_events[job_id].wait(timeout=wait)
                         jobs[job_id]['pending_input'] = None
                     elif t == 'result':
                         # 降级路径：run.py 直接带 files（未走 /notify）
