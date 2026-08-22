@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>X 下载</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #f7f8fa; color: #1f2329; height: 100%; }
+  .wrap { display: flex; flex-direction: column; height: 100vh; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border-bottom: 1px solid #e3e6eb; background: #fff; align-items: center; }
+  .bar input[type=text] { flex: 1; min-width: 200px; border: 1px solid #d0d4dc; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .bar select { border: 1px solid #d0d4dc; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+  .bar button { background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-size: 13px; cursor: pointer; height: 34px; }
+  .opts { display: flex; gap: 14px; padding: 8px 12px; font-size: 12px; color: #555; background: #fff; border-bottom: 1px solid #e3e6eb; flex-wrap: wrap; }
+  .status { flex: 1; overflow-y: auto; padding: 12px; }
+  .progress { height: 8px; background: #e3e6eb; border-radius: 4px; overflow: hidden; margin: 8px 0; }
+  .progress > div { height: 100%; background: #1d9bf0; width: 0; transition: width .3s; }
+  .log { font-size: 12px; color: #666; white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace; background: #fff; border: 1px solid #e3e6eb; border-radius: 8px; padding: 8px; max-height: 200px; overflow-y: auto; }
+  .hint { font-size: 12px; color: #888; padding: 6px 0; }
+  .err { color: #f56c6c; }
+  .pick { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  .pick label { display: block; padding: 4px 0; font-size: 13px; }
+  .pick button { margin-top: 8px; background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <input id="url" type="text" placeholder="粘贴 X / Twitter 推文链接…" />
+    <select id="library"><option value="">目标库（加载中…）</option></select>
+    <button id="run">开始下载</button>
+  </div>
+  <div class="opts">
+    <label><input type="checkbox" id="auto" checked /> 全自动（自动选择所有媒体）</label>
+    <label><input type="checkbox" id="hidden" checked /> 隐藏资源（仅帖子流可见）</label>
+    <label><input type="checkbox" id="simulate" /> 演示模式（不联网）</label>
+  </div>
+  <div class="status" id="status">
+    <div class="hint">粘贴推文链接，选择目标资源库，点击「开始下载」。</div>
+    <div class="progress" id="prog" style="display:none"><div id="prog-bar"></div></div>
+    <div class="log" id="log" style="display:none"></div>
+    <div id="pick"></div>
+  </div>
+</div>
+<script>
+  let TOKEN = '';
+  const API = '/api/ext/x_downloader';
+  window.addEventListener('message', (e) => {
+    if (e.data && e.data.type === 'DBOX_TOKEN') { TOKEN = e.data.token; }
+  });
+  window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x_downloader' }, '*');
+
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status'), logEl = $('log'), progEl = $('prog'), progBar = $('prog-bar'), pickEl = $('pick');
+  let jobId = null, poller = null;
+
+  // 加载视频库列表供选择
+  async function loadLibraries() {
+    try {
+      const r = await fetch('/api/libraries?type=video', { headers: { 'Authorization': TOKEN } });
+      const d = await r.json();
+      const libs = (d.libraries || []);
+      const sel = $('library');
+      sel.innerHTML = libs.map(l => `<option value="${l.id}">${l.name}</option>`).join('') || '<option value="">（无可用库）</option>';
+    } catch (e) {
+      $('library').innerHTML = '<option value="">（加载库失败）</option>';
+    }
+  }
+
+  function pushLog(msg) {
+    logEl.style.display = 'block';
+    logEl.textContent += msg + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function startPolling() {
+    if (poller) clearInterval(poller);
+    poller = setInterval(async () => {
+      if (!jobId) return;
+      try {
+        const r = await fetch(`${API}/status?job_id=${encodeURIComponent(jobId)}`, { headers: { 'Authorization': TOKEN } });
+        const s = await r.json();
+        if (!s.success) return;
+        progEl.style.display = 'block';
+        progBar.style.width = (s.percent || 0) + '%';
+        (s.logs || []).forEach((l) => { if (logEl.dataset.last !== l) { pushLog(l); } });
+        logEl.dataset.last = (s.logs || []).slice(-1)[0];
+        if (s.pending_input) renderPick(s.pending_input);
+        if (s.done) {
+          clearInterval(poller); poller = null;
+          pushLog(s.error ? ('失败: ' + s.error) : '任务完成。');
+        }
+      } catch (e) {}
+    }, 800);
+  }
+
+  function renderPick(input) {
+    if ($('pick').dataset.for === jobId + JSON.stringify(input)) return;
+    $('pick').dataset.for = jobId + JSON.stringify(input);
+    const opts = (input.options || []).map((o, i) =>
+      `<label><input type="${input.multi ? 'checkbox' : 'radio'}" name="pick" value="${o.value}"> ${o.label}</label>`).join('');
+    pickEl.innerHTML = `<div class="pick"><div>${input.prompt || '请选择'}</div>${opts}
+      <button id="pick-ok">确认</button></div>`;
+    $('pick-ok').onclick = async () => {
+      const vals = Array.from(document.querySelectorAll('input[name=pick]:checked')).map(x => x.value);
+      if (!vals.length) { alert('请至少选择一项'); return; }
+      await fetch(`${API}/input`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': TOKEN }, body: JSON.stringify({ job_id: jobId, value: vals }) });
+      pickEl.innerHTML = '';
+    };
+  }
+
+  $('run').onclick = async () => {
+    const url = $('url').value.trim();
+    const library_id = $('library').value;
+    if (!url) { alert('请填写推文链接'); return; }
+    if (!library_id) { alert('请选择目标资源库'); return; }
+    if (!TOKEN) { alert('尚未获取到 token'); return; }
+    jobId = null; logEl.style.display = 'block'; logEl.textContent = ''; pickEl.innerHTML = '';
+    pushLog('提交任务…');
+    try {
+      const r = await fetch(`${API}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': TOKEN },
+        body: JSON.stringify({
+          library_id,
+          params: {
+            url,
+            auto: $('auto').checked,
+            hidden: $('hidden').checked,
+            simulate: $('simulate').checked,
+          }
+        })
+      });
+      const d = await r.json();
+      if (!d.success) { pushLog('提交失败: ' + (d.message || '')); return; }
+      jobId = d.job_id;
+      pushLog('任务已创建: ' + jobId);
+      startPolling();
+    } catch (e) { pushLog('提交异常: ' + e.message); }
+  };
+
+  loadLibraries();
+</script>
+</body>
+</html>

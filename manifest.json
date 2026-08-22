@@ -1,0 +1,75 @@
+{
+  "id": "x_downloader",
+  "name": "X（推特）媒体下载器",
+  "description": "纯爬虫实现，不依赖 yt-dlp。从 X/Twitter 推文解析图片原图与视频 m3u8，图片直连下载，视频分片下载后由系统 ffmpeg 合并为 mp4；若包含多个媒体，二次触发用户选择要下载哪些。需安装 ffmpeg（用于合并视频）。Cookie 由系统按域名自动匹配，无需手动选择。",
+  "timeout": 600,
+  "enabled": true,
+  "backend": {
+    "url_prefix": "/api/ext/x_downloader"
+  },
+  "required_cookies": ["x.com"],
+  "ui": {
+    "mount": "panel",
+    "title": "X 下载预览",
+    "icon": "🐦",
+    "entry": "panel.html",
+    "needs_credential": true,
+    "sandbox": "allow-scripts allow-same-origin allow-forms allow-popups"
+  },
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "label": "推文链接",
+      "required": true,
+      "description": "要下载的 X/Twitter 推文 URL，不要带默认示例链接，粘贴真实链接即可"
+    },
+    {
+      "name": "auto",
+      "type": "bool",
+      "label": "全自动运行（默认开启）",
+      "default": true,
+      "description": "开启后脚本自动完成所有选择，无需人工干预；关闭后遇到需要确认的步骤（如多图选择）会暂停并上报事件，等待处理后再继续。"
+    },
+    {
+      "name": "proxy",
+      "type": "string",
+      "label": "代理地址（可选，默认自动）",
+      "required": false,
+      "default": "auto",
+      "description": "访问 X 的代理。留空或填 auto/system 时自动读取 Windows 系统代理（与浏览器一致，无需手填端口）；也可手动指定：socks5://host:port、socks5h://host:port（由代理解析域名）、socks4://host:port、http://host:port。无前缀时按 HTTP 处理。注意 urllib 不支持 SOCKS，SOCKS 需 pip install pysocks。"
+    },
+    {
+      "name": "library_id",
+      "type": "library_select",
+      "label": "目标资源库",
+      "media_type": "video",
+      "required": true,
+      "user_defaultable": true,
+      "description": "下载的视频将移动并入库到该资源库；图片也会暂存到该资源库目录"
+    },
+    {
+      "name": "hidden",
+      "type": "bool",
+      "label": "隐藏资源（默认勾选）",
+      "default": true,
+      "user_defaultable": true,
+      "description": "勾选后，下载的视频/图片只出现在帖子流中，不进入视频库/图集库列表（默认隐藏，避免污染资源库）。取消勾选则资源正常进入对应资源库。"
+    },
+    {
+      "name": "title",
+      "type": "string",
+      "label": "帖子标题（可选）",
+      "required": false,
+      "default": "",
+      "description": "可选。由你决定是否填写：留空则帖子不设置标题（显示为「未命名帖子」）；填写后作为帖子标题。"
+    },
+    {
+      "name": "simulate",
+      "type": "bool",
+      "label": "演示模式（不联网）",
+      "default": false,
+      "description": "仅用于演示“二次选择”交互流程，不会真实下载，会生成占位文件"
+    }
+  ]
+}
