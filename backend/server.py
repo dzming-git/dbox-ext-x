@@ -50,9 +50,22 @@ def create_blueprint(host):
         job = jobs.get(job_id)
         if not job:
             return
+        # 同一条帖子（同一 group）下的资源索引收集，用于入库后统一生成帖子
+        post_groups = {}
+
+        def _group_meta(f):
+            return {
+                'group': f.get('group'),
+                'title': f.get('post_title'),
+                'content': f.get('content'),
+                'source_url': f.get('source_url'),
+                'author_name': f.get('author_name'),
+                'author_url': f.get('author_url'),
+            }
+
         for f in (files or []):
             path = f.get('path')
-            if not path or not os.path.isfile(path):
+            if not path or not (os.path.isfile(path) or os.path.isdir(path)):
                 # 演示占位文件可能不存在，跳过
                 continue
             kind = f.get('type')  # video / gallery / document
@@ -64,14 +77,43 @@ def create_blueprint(host):
                 'author_name', 'author_url', 'caption', 'group'
             ) if f.get(k) is not None}
             try:
-                host.ingest(
+                res = host.ingest(
                     job['library_id'], path,
                     kind=kind, modes=tuple(modes),
                     hidden=hid, meta=meta, owner_id=job['owner_id'],
                 )
+                if isinstance(res, dict) and not res.get('success', True):
+                    _append_log(job_id, '入库失败: ' + str(res.get('message', res)))
+                    continue
                 _append_log(job_id, '已入库: ' + os.path.basename(path))
+                ri_id = res.get('resource_index_id') if isinstance(res, dict) else None
+                if ri_id and f.get('group'):
+                    g = post_groups.setdefault(f['group'], _group_meta(f))
+                    g.setdefault('resource_index_ids', []).append(ri_id)
             except Exception as e:
                 _append_log(job_id, '入库失败: ' + str(e))
+
+        # 入库完成后，按 group 聚合资源生成帖子（帖子的资源默认不进其他库，
+        # 与帖子绑定紧密；通过 library_id 限定仅在所属库可见）
+        for group, g in post_groups.items():
+            try:
+                r = host.upsert_post_by_group(
+                    group_key=group,
+                    title=g.get('title'),
+                    content=g.get('content') or '',
+                    resource_index_ids=g.get('resource_index_ids', []),
+                    user_id=job['owner_id'],
+                    author_name=g.get('author_name'),
+                    author_url=g.get('author_url'),
+                    source_url=g.get('source_url'),
+                    library_id=job['library_id'],
+                )
+                if isinstance(r, dict) and r.get('success'):
+                    _append_log(job_id, '已生成帖子(group=%s)' % group)
+                else:
+                    _append_log(job_id, '生成帖子失败: ' + str(r))
+            except Exception as e:
+                _append_log(job_id, '生成帖子失败: ' + str(e))
 
     @bp.route('/run', methods=['POST'])
     @host.login_required
@@ -79,14 +121,33 @@ def create_blueprint(host):
         data = request.get_json(force=True, silent=True) or {}
         params = data.get('params', {}) or {}
         library_id = data.get('library_id') or params.get('library_id')
+        print(f'[x_downloader] /run library_id={library_id!r} data_keys={list(data.keys())}', flush=True)
         owner_id = data.get('owner_id', getattr(g, 'user_id', None))
         token = _bearer()
         job_id = uuid.uuid4().hex
+        _append_log(job_id, f'[diag] received library_id={library_id!r}')
         wd = _job_dir(job_id)
 
         # 物化 cookie（插件按域名从保险库取，run.py 读取文件）
+        # 直接通过 host.vault._vault.get_by_domain 拿原始 cookie 列表自行构建 Netscape 文本，
+        # 绕过 _VaultProxy.get 的 token 优先级 / 过期 _cache 逻辑（实测会丢失 auth_token/ct0）。
         cookies_ctx = {}
-        cookie_str = host.vault.get('x.com')
+        cookie_str = ''
+        try:
+            _rec = host.vault._vault.get_by_domain('x.com', kind='cookie')
+            if _rec:
+                _cookies = _rec.get('cookies') or []
+                _lines = []
+                for _c in _cookies:
+                    _n = _c.get('name', '')
+                    _val = _c.get('value', '')
+                    if _n and _val:
+                        _lines.append(f"{_c.get('domain','')}\tTRUE\t/\t{_c.get('path','/')}\t"
+                                      f"{_c.get('secure','FALSE')}\t0\t{_n}\t{_val}")
+                cookie_str = '\n'.join(_lines)
+        except Exception as _e:
+            import sys as _sys
+            print(f'[cookie load err] {_e}', file=_sys.stderr, flush=True)
         # [调试] 打印从保险库实际读到的 x.com Cookie 关键字段，便于与浏览器复制的对比
         if cookie_str:
             has_auth = 'auth_token=' in cookie_str
@@ -94,6 +155,33 @@ def create_blueprint(host):
             _append_log(job_id, f'[Cookie 诊断] vault.get 长度={len(cookie_str)} '
                                 f'含auth_token={has_auth} 含ct0={has_ct0} '
                                 f'首段={cookie_str[:40]!r} 尾段={cookie_str[-40:]!r}')
+            import sys as _sys
+            print(f'[Cookie 诊断-STDERR] len={len(cookie_str)} auth={has_auth} ct0={has_ct0}', file=_sys.stderr, flush=True)
+            try:
+                from shared.credential_vault import data_dir_for
+                print(f'[VAULT-DIR] data_dir_for={data_dir_for()}', file=_sys.stderr, flush=True)
+                _tk = host.vault._vault.get_token(domain='x.com')
+                print(f'[VAULT-TOKEN] get_token(x.com)={repr(_tk)[:60]}', file=_sys.stderr, flush=True)
+            except Exception as e:
+                print(f'[VAULT-DIR] err {e}', file=_sys.stderr, flush=True)
+            # 打印 vault 里 x.com 记录的原始结构（解密后）
+            try:
+                rec0 = host.vault._vault.get_by_domain('x.com', kind='cookie')
+                if rec0:
+                    ck = rec0.get('cookies') or []
+                    raw = rec0.get('_raw')
+                    print(f'[VAULT-RAW] cookies_count={len(ck)} has_raw={bool(raw)} raw_len={len(raw) if raw else 0}', file=_sys.stderr, flush=True)
+                    if ck:
+                        names = [c.get('name') for c in ck]
+                        print(f'[VAULT-NAMES] {names}', file=_sys.stderr, flush=True)
+                        for c in ck:
+                            if c.get('name') in ('auth_token', 'ct0'):
+                                vv = c.get('value')
+                                print(f'[VAULT-VAL] {c.get("name")} vlen={len(vv) if vv else 0} pre={str(vv)[:20]!r}', file=_sys.stderr, flush=True)
+                else:
+                    print('[VAULT-RAW] rec0 is None', file=_sys.stderr, flush=True)
+            except Exception as e:
+                print(f'[VAULT-RAW] err {e}', file=_sys.stderr, flush=True)
             cookie_path = os.path.join(wd, 'x.com.cookie.txt')
             with open(cookie_path, 'w', encoding='utf-8') as f:
                 f.write(cookie_str)
