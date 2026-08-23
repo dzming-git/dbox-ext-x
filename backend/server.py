@@ -164,6 +164,9 @@ def create_blueprint(host):
                         # 其余选择型交互沿用原有 30s 超时。
                         inp = obj.get('input') or {}
                         jobs[job_id]['pending_input'] = inp
+                        # 解析阶段已完成（进入预览/选择交互），进度应标满
+                        jobs[job_id]['percent'] = 100
+                        jobs[job_id]['message'] = inp.get('title') or '解析完成'
                         wait = None if inp.get('type') == 'preview' else 30
                         input_events[job_id].wait(timeout=wait)
                         jobs[job_id]['pending_input'] = None

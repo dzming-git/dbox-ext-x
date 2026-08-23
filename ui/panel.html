@@ -223,6 +223,8 @@
         setProgress(s.percent, s.message || '');
         (s.logs || []).forEach((l) => pushLog(l));
         if (s.pending_input) {
+          // 解析已完成（预览/选择），进度应标满
+          setProgress(100, s.message || s.pending_input.title || '解析完成');
           if (s.pending_input.type === 'preview') renderPreview(s.pending_input);
           else renderPick(s.pending_input);
         }
