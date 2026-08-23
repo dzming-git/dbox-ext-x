@@ -936,11 +936,12 @@ def extract_media(url, cookie_header, proxy_cfg):
         except Exception as e:
             log(f'带 Cookie 抓取失败: {e}', level='warn')
 
-    # 3) GraphQL 接口（结构化数据，视频 m3u8 的最可靠来源）。
-    #    关键修复：即便 HTML 已解析到图片，也必须调用接口，否则会漏掉视频
-    #    （页面 HTML 多为 SPA，能抓到图片但抓不到视频 m3u8）。
-    #    无 Cookie 游客态仅在 HTML 未解析到媒体时才尝试（接口多半需要登录）。
-    if tweet_id != 'x' and (cookie_header or not media):
+    # 3) GraphQL 接口（结构化数据，视频 m3u8 的唯一可靠来源）。
+    #    关键：X 页面 HTML 是 SPA/游客态，能抓到图片 URL，但视频 m3u8 只存在于
+    #    GraphQL 接口返回里，页面 HTML 正则抓不到。因此只要有 tweet_id 就**必须**
+    #    调用 GraphQL，否则会漏掉视频（表现为「预览只有图片、少了视频」）。
+    #    游客态也尝试：extract_from_api 内部已做 guest_token 补取与失败重试。
+    if tweet_id != 'x':
         log('尝试 GraphQL 接口方式解析媒体（含视频）…')
         try:
             api_media, api_text, api_author = extract_from_api(tweet_id, cookie_header, opener)
