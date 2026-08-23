@@ -457,8 +457,8 @@ def fetch_text(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
                 time.sleep(wait)
                 continue
             break
-    finally:
-        _restore_socks()
+        finally:
+            _restore_socks()
     raise last_exc  # type: ignore[misc]
 
 
