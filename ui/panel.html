@@ -306,7 +306,10 @@
       });
     });
 
-    showPreview();
+    // 显示预览，但【不要隐藏状态/日志区】：解析/下载往往还在后台进行
+    // （如 GraphQL 阶段已先返回预览数据），隐藏会让人误以为卡死/消失。
+    previewEl.classList.add('active');
+    // 注意：故意不调用 showPreview()，以免移除 status 的 active 类。
   }
 
   // 关闭预览 → 回到空闲状态（表单保留），缓存不清除
