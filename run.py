@@ -951,6 +951,15 @@ def extract_media(url, cookie_header, proxy_cfg):
             author = author or api_author
         except Exception as e:
             log(f'GraphQL 接口解析失败: {e}', level='warn')
+
+    # 兜底提示：解析到的全是图片但无视频，且未带 Cookie 时，
+    # 几乎肯定是 X 对游客态 GraphQL 限流拿不到视频 m3u8（HTML 不会含 m3u8），
+    # 明确告诉用户在凭证库添加 x.com Cookie 即可解锁视频解析。
+    if media and not any(m.get('type') == 'video' for m in media):
+        if not cookie_header:
+            log('提示：未在凭证库中配置 x.com Cookie，游客态 GraphQL 被 X 限流无法获取视频 m3u8（这是预览缺少视频的最常见原因）。请在 dbox「凭证库」添加 x.com 的 Cookie 后再试。',
+                level='warn')
+
     return media, text, author
 
 
