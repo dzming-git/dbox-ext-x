@@ -14,6 +14,8 @@
   /* ---- 工具栏 ---- */
   .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #e3e6eb; background: #fff; flex-shrink: 0; }
   .toolbar .title { font-weight: 600; font-size: 14px; }
+  .toolbar #fullscreen { background: none; border: 1px solid #d0d4dc; color: #555; border-radius: 8px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
+  .toolbar #fullscreen:hover { color: #1d9bf0; border-color: #1d9bf0; }
 
   /* ---- 表单区（始终可见） ---- */
   .form { padding: 10px 12px; border-bottom: 1px solid #e3e6eb; background: #fff; flex-shrink: 0; }
@@ -71,6 +73,7 @@
 <div class="wrap">
   <div class="toolbar">
     <span class="title">🐦 X 下载</span>
+    <button id="fullscreen" title="全屏打开">⛶ 全屏</button>
   </div>
 
   <!-- 表单：始终可见 -->
@@ -111,12 +114,16 @@
 <script>
   let TOKEN = '';
   let librariesLoaded = false;
+  let standaloneRoute = '';
   const API = '/api/ext/x_downloader';
   window.addEventListener('message', (e) => {
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
       TOKEN = e.data.token;
       if (!librariesLoaded) loadLibraries();
+    }
+    if (e.data.type === 'DBOX_EXT_INFO' && e.data.standalone_route) {
+      standaloneRoute = e.data.standalone_route;
     }
   });
   window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x_downloader' }, '*');
@@ -131,6 +138,12 @@
   $('preview').addEventListener('change', () => {
     $('run').textContent = $('preview').checked ? '解析预览' : '开始下载';
   });
+
+  // 全屏：请求父页面跳转到独立全屏路由
+  $('fullscreen').onclick = () => {
+    const route = standaloneRoute || '/x-downloader';
+    window.parent.postMessage({ type: 'DBOX_NAVIGATE', path: route }, '*');
+  };
 
   const AUTH = () => ({ 'Authorization': 'Bearer ' + TOKEN });
 
