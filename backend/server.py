@@ -87,7 +87,13 @@ def create_blueprint(host):
         # 物化 cookie（插件按域名从保险库取，run.py 读取文件）
         cookies_ctx = {}
         cookie_str = host.vault.get('x.com')
+        # [调试] 打印从保险库实际读到的 x.com Cookie 关键字段，便于与浏览器复制的对比
         if cookie_str:
+            has_auth = 'auth_token=' in cookie_str
+            has_ct0 = 'ct0=' in cookie_str
+            _append_log(job_id, f'[Cookie 诊断] vault.get 长度={len(cookie_str)} '
+                                f'含auth_token={has_auth} 含ct0={has_ct0} '
+                                f'首段={cookie_str[:40]!r} 尾段={cookie_str[-40:]!r}')
             cookie_path = os.path.join(wd, 'x.com.cookie.txt')
             with open(cookie_path, 'w', encoding='utf-8') as f:
                 f.write(cookie_str)

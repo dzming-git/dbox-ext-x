@@ -168,6 +168,15 @@ def resolve_cookie(cookie_ctx):
             header = read_cookie_file(p)
             if header:
                 emit({'type': 'log', 'message': f'使用保险库 Cookie（{dom}）'})
+                # [调试] 打印实际读到的 cookie 关键字段，便于对比与浏览器复制的是否一致
+                emit({'type': 'log', 'level': 'warn', 'message':
+                    f'[Cookie 诊断] 长度={len(header)} 含auth_token={"auth_token=" in header} '
+                    f'含ct0={"ct0=" in header} 首段={header[:50]!r} 尾段={header[-50:]!r}'})
+                # 关键字段缺失时直接报错，避免静默 401 误导用户以为网络/代码问题
+                if 'auth_token=' not in header:
+                    error('保险库 x.com Cookie 缺少 auth_token 字段，无法登录态解析视频。'
+                          '请从浏览器复制完整 Cookie（含 auth_token= 与 ct0=）重新覆盖到凭证库。')
+                    return None
                 return header
     return None
 
@@ -1056,26 +1065,27 @@ def extract_media(url, cookie_header, proxy_cfg):
             author = author or api_author
         except _GraphQLAuthFailed as e:
             log(f'GraphQL 鉴权失败（视频无法解析）: {e}', level='error')
-            if cookie_header and not _has_auth_token(cookie_header):
-                log('原因：保险库 x.com Cookie 缺少 auth_token（仅 ct0 不足以登录态解析）。'
-                    '请补全 x.com Cookie 的 auth_token 字段；或临时移除 Cookie 改用游客态（公开推文视频仍可解析）。',
+            if cookie_header:
+                log('原因：X 拒绝了当前保险库 x.com Cookie（登录态 GraphQL 返回 401）。'
+                    '视频 m3u8 仅存在于 GraphQL 返回中，故无法解析。'
+                    '请检查凭证库中 x.com Cookie 是否完整且有效（需 auth_token + ct0 均为有效值，未过期）。',
                     level='error')
-            elif cookie_header:
-                log('原因：保险库 x.com Cookie 可能已过期（ct0/auth_token 失效）。请在凭证库刷新 x.com Cookie。',
-                    level='error')
+            else:
+                log('原因：未配置 x.com Cookie，且游客态（匿名）已不可用，无法获取视频 m3u8。'
+                    '请在凭证库添加有效的 x.com Cookie（auth_token + ct0）。', level='error')
             # 不 return，继续用 HTML 兜底（至少保留图片与文字）
         except Exception as e:
             log(f'GraphQL 接口解析失败: {e}', level='warn')
 
     # 兜底提示：解析到的全是图片但无视频时，明确告知视频缺失原因。
     if media and not any(m.get('type') == 'video' for m in media):
-        if cookie_header and not _has_auth_token(cookie_header):
-            log('提示：当前仅解析到图片、缺少视频——多半是 x.com Cookie 缺 auth_token 导致登录态 GraphQL 失败。'
-                '补全 auth_token，或移除 Cookie 改用游客态（公开推文视频可解析）即可看到视频。',
+        if cookie_header:
+            log('提示：当前仅解析到图片、缺少视频——X 的视频数据只存在于登录态 GraphQL 接口返回中，'
+                '当前 Cookie 未能通过 X 鉴权。请确认凭证库 x.com Cookie 完整有效（auth_token + ct0）。',
                 level='warn')
-        elif not cookie_header:
-            log('提示：未在凭证库中配置 x.com Cookie，游客态 GraphQL 被 X 限流无法获取视频 m3u8（这是预览缺少视频的最常见原因）。请在 dbox「凭证库」添加 x.com 的 Cookie 后再试。',
-                level='warn')
+        else:
+            log('提示：当前仅解析到图片、缺少视频——未配置 x.com Cookie，且游客态已不可用。'
+                '请在凭证库添加有效的 x.com Cookie（auth_token + ct0）后再试。', level='warn')
 
     return media, text, author
 
