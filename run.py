@@ -1480,7 +1480,7 @@ def main():
     auto_mode = bool(params.get('auto', True))
 
     if preview_mode:
-        progress(20, '等待用户确认下载…')
+        progress(20, '解析完成，展示预览…')
         emit({
             'type': 'await_input',
             'input': {

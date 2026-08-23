@@ -30,7 +30,7 @@
 
   /* ---- 预览区（表单下方，不隐藏表单） ---- */
   .preview { flex: 1; overflow-y: auto; padding: 10px 12px; display: none; flex-direction: column; gap: 10px; min-height: 0; }
-  .preview.active { display: flex; }
+  .preview.active { display: flex; flex: 3; }
   .preview .tweet { background: #fff; border: 1px solid #e3e6eb; border-radius: 10px; padding: 10px 12px; }
   .preview .author { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
   .preview .author a { color: #1d9bf0; text-decoration: none; }
@@ -54,9 +54,11 @@
   .preview .actions .cancel { background: #fff; color: #666; border: 1px solid #d0d4dc; }
   .preview .actions .cancel:hover { color: #d33; border-color: #f3a6a6; }
 
-  /* ---- 状态/日志区（下载时显示） ---- */
+  /* ---- 状态/日志区（下载时显示；预览时收为辅助区） ---- */
   .status { flex: 1; overflow-y: auto; padding: 12px; min-height: 0; display: none; }
   .status.active { display: block; }
+  /* 预览阶段：日志区缩小，让预览内容成为主视图 */
+  .preview.active ~ .status.active { flex: 0 0 auto; max-height: 120px; }
   .progress { height: 8px; background: #e3e6eb; border-radius: 4px; overflow: hidden; margin: 4px 0 10px; }
   .progress > div { height: 100%; background: #1d9bf0; width: 0; transition: width .3s; }
   .status-msg { font-size: 13px; color: #333; margin-bottom: 10px; }
@@ -91,7 +93,7 @@
   </div>
 
   <!-- 预览区：在表单下方展开，不隐藏表单 -->
-  <div class="preview" id="preview">
+  <div class="preview" id="pv-wrap">
     <div class="tweet">
       <div class="author" id="pv-author"></div>
       <div class="ttext" id="pv-text"></div>
@@ -133,7 +135,7 @@
 
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status'), logEl = $('log'), progEl = $('prog'), progBar = $('prog-bar');
-  const formEl = $('form'), previewEl = $('preview'), gridEl = $('pv-grid');
+  const formEl = $('form'), previewEl = $('pv-wrap'), gridEl = $('pv-grid');
   let jobId = null, poller = null;
   const seenLogs = new Set();
 
