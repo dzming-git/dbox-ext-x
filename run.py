@@ -522,6 +522,28 @@ def _extract_ct0(cookie_header):
     return None
 
 
+def _has_auth_token(cookie_header):
+    """判断 Cookie 是否包含完整登录会话所需的 auth_token。
+
+    X 的 GraphQL 登录态要求 Cookie 同时含 auth_token 与 ct0，缺任一都会 401。
+    缺 auth_token 时强行用登录态 GraphQL 必然 401，应直接走游客态降级。
+    """
+    if not cookie_header:
+        return False
+    if '\t' in cookie_header:
+        for line in cookie_header.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 7 and parts[5].strip() == 'auth_token' and parts[6].strip():
+                return True
+        return False
+    for part in cookie_header.split(';'):
+        part = part.strip()
+        if part.startswith('auth_token=') and part[len('auth_token='):].strip():
+            return True
+    return False
+
+
+
 def build_headers(cookie_header, with_bearer=True, guest_token=None):
     """构造请求头。
 
@@ -589,8 +611,11 @@ def pick_m3u8(urls):
     return urls[0]
 
 
-def get_guest_token(opener, cookie_header):
-    """通过 api.x.com 访客接口换取 guest_token（仅用于接口鉴权降级）。"""
+def get_guest_token(opener, cookie_header, retries=3, retry_base=1.0):
+    """通过 api.x.com 访客接口换取 guest_token（用于游客态 GraphQL 鉴权）。
+
+    代理（socks5）下 SSL 握手偶发超时，失败自动指数退避重试。
+    """
     url = 'https://api.x.com/1.1/guest/activate.json'
     headers = {
         'User-Agent': UA,
@@ -599,14 +624,28 @@ def get_guest_token(opener, cookie_header):
     }
     if cookie_header:
         headers['Cookie'] = cookie_header
-    try:
-        req = urllib.request.Request(url, data=b'', headers=headers, method='POST')
-        with opener.open(req, timeout=8) as r:
-            data = json.loads(r.read().decode('utf-8', 'replace'))
-        return data.get('guest_token')
-    except Exception as e:
-        log(f'获取 guest_token 失败（将仅用页面解析）: {e}', level='warn')
-        return None
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, data=b'', headers=headers, method='POST')
+            with opener.open(req, timeout=10) as r:
+                data = json.loads(r.read().decode('utf-8', 'replace'))
+            return data.get('guest_token')
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1:
+                wait = retry_base * (2 ** attempt)
+                log(f'获取 guest_token 失败（{type(e).__name__}），{wait:.0f}s 后重试', level='warn')
+                time.sleep(wait)
+                continue
+            break
+    log(f'获取 guest_token 失败（将仅用页面解析）: {last_exc}', level='warn')
+    return None
+
+
+class _GraphQLAuthFailed(Exception):
+    """登录态 GraphQL 鉴权失败（Cookie 无效/过期），需上层改走游客态或兜底。"""
+    pass
 
 
 def extract_from_api(tweet_id, cookie_header, opener):
@@ -615,13 +654,19 @@ def extract_from_api(tweet_id, cookie_header, opener):
     返回 (media_list, full_text, author)，author 为
     {'name': 显示名, 'screen_name': 用户名, 'url': 作者主页} 或 None。
 
-    关键：带登录 Cookie 时 GraphQL 无需 guest_token 即可访问，故跳过访客接口
-    （guest/activate 在部分代理下会握手超时，阻塞整个流程）。仅当响应中找不到
-    目标推文节点、且当前没有 guest_token 时，才退一步补取 guest_token 重试。
+    全新规则：视频只存在于 GraphQL 返回，必须先确保 GraphQL 成功，再谈兜底。
+    鉴权策略：
+      - Cookie 含完整会话（auth_token + ct0）：优先用登录态（不限流、可解析私密内容）。
+      - Cookie 缺 auth_token（仅 ct0 或游客）：登录态必 401，直接走游客态（guest_token）。
+      - 登录态 401：说明会话失效，改取 guest_token 以游客态重试，不再静默丢视频。
+      - 游客态仍 401：抛出 _GraphQLAuthFailed，由 extract_media 兜底 HTML。
     """
     qid = _get_tweet_detail_qid()
-    # 登录态无需 guest_token；游客态才需要，先取一次
-    gt = None if cookie_header else get_guest_token(opener, '')
+    # 登录态是否可用：必须同时含 auth_token 与 ct0，否则 X 视会话无效必 401
+    login_ok = bool(cookie_header) and _has_auth_token(cookie_header) and _extract_ct0(cookie_header)
+    # 初始鉴权：登录态可用则不取 guest_token；否则先取游客 guest_token
+    gt = None if login_ok else get_guest_token(opener, cookie_header)
+    tried_guest_fallback = not login_ok  # 一开始就是游客态则无需再降级
     tweet = None
     for _ in range(4):
         try:
@@ -633,11 +678,15 @@ def extract_from_api(tweet_id, cookie_header, opener):
                 continue
             return [], '', None
         except urllib.error.HTTPError as e:
-            # 401/403 可能是登录态失效，补取 guest_token 以游客态重试
-            if e.code in (401, 403) and gt is None:
-                gt = get_guest_token(opener, '')
+            if e.code in (401, 403) and not tried_guest_fallback:
+                # 登录态失效：改游客态（取 guest_token 重试），不再静默丢视频
+                gt = get_guest_token(opener, cookie_header)
                 if gt:
+                    tried_guest_fallback = True
                     continue
+                raise _GraphQLAuthFailed(f'登录态鉴权失败且无可用 guest_token: HTTP {e.code}')
+            if e.code in (401, 403) and tried_guest_fallback:
+                raise _GraphQLAuthFailed(f'GraphQL 鉴权失败（游客态亦 401）: HTTP {e.code}')
             log(f'GraphQL 接口解析失败（HTTP {e.code}）: {e}', level='warn')
             return [], '', None
         except Exception as e:
@@ -651,7 +700,7 @@ def extract_from_api(tweet_id, cookie_header, opener):
             break
         # 没找到节点：可能需要 guest_token（游客态），补取后重试
         if gt is None:
-            gt = get_guest_token(opener, '')
+            gt = get_guest_token(opener, cookie_header)
             if gt:
                 continue
             return [], '', None
@@ -993,10 +1042,10 @@ def extract_media(url, cookie_header, proxy_cfg):
             log(f'带 Cookie 抓取失败: {e}', level='warn')
 
     # 3) GraphQL 接口（结构化数据，视频 m3u8 的唯一可靠来源）。
-    #    关键：X 页面 HTML 是 SPA/游客态，能抓到图片 URL，但视频 m3u8 只存在于
-    #    GraphQL 接口返回里，页面 HTML 正则抓不到。因此只要有 tweet_id 就**必须**
-    #    调用 GraphQL，否则会漏掉视频（表现为「预览只有图片、少了视频」）。
-    #    游客态也尝试：extract_from_api 内部已做 guest_token 补取与失败重试。
+    #    全新规则：预览必须完整呈现（图片 + 视频），故 GraphQL 是主路径。
+    #    - 登录态（Cookie 含 auth_token+ct0）优先，不限流、可解析登录态内容；
+    #    - 登录态 401（Cookie 缺 auth_token 或过期）→ extract_from_api 自动降级游客态；
+    #    - 游客态仍失败 → 抛 _GraphQLAuthFailed，这里兜底 HTML（图片仍在）。
     if tweet_id != 'x':
         log('尝试 GraphQL 接口方式解析媒体（含视频）…')
         try:
@@ -1005,14 +1054,26 @@ def extract_media(url, cookie_header, proxy_cfg):
             # GraphQL 的 full_text 是权威正文，优先于 HTML 兜底
             text = api_text or text
             author = author or api_author
+        except _GraphQLAuthFailed as e:
+            log(f'GraphQL 鉴权失败（视频无法解析）: {e}', level='error')
+            if cookie_header and not _has_auth_token(cookie_header):
+                log('原因：保险库 x.com Cookie 缺少 auth_token（仅 ct0 不足以登录态解析）。'
+                    '请补全 x.com Cookie 的 auth_token 字段；或临时移除 Cookie 改用游客态（公开推文视频仍可解析）。',
+                    level='error')
+            elif cookie_header:
+                log('原因：保险库 x.com Cookie 可能已过期（ct0/auth_token 失效）。请在凭证库刷新 x.com Cookie。',
+                    level='error')
+            # 不 return，继续用 HTML 兜底（至少保留图片与文字）
         except Exception as e:
             log(f'GraphQL 接口解析失败: {e}', level='warn')
 
-    # 兜底提示：解析到的全是图片但无视频，且未带 Cookie 时，
-    # 几乎肯定是 X 对游客态 GraphQL 限流拿不到视频 m3u8（HTML 不会含 m3u8），
-    # 明确告诉用户在凭证库添加 x.com Cookie 即可解锁视频解析。
+    # 兜底提示：解析到的全是图片但无视频时，明确告知视频缺失原因。
     if media and not any(m.get('type') == 'video' for m in media):
-        if not cookie_header:
+        if cookie_header and not _has_auth_token(cookie_header):
+            log('提示：当前仅解析到图片、缺少视频——多半是 x.com Cookie 缺 auth_token 导致登录态 GraphQL 失败。'
+                '补全 auth_token，或移除 Cookie 改用游客态（公开推文视频可解析）即可看到视频。',
+                level='warn')
+        elif not cookie_header:
             log('提示：未在凭证库中配置 x.com Cookie，游客态 GraphQL 被 X 限流无法获取视频 m3u8（这是预览缺少视频的最常见原因）。请在 dbox「凭证库」添加 x.com 的 Cookie 后再试。',
                 level='warn')
 
