@@ -116,11 +116,14 @@
   let librariesLoaded = false;
   let standaloneRoute = '';
   const API = '/api/ext/x_downloader';
+  const JOB_KEY = 'xd_job';  // localStorage key for active job
   window.addEventListener('message', (e) => {
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
       TOKEN = e.data.token;
       if (!librariesLoaded) loadLibraries();
+      // token 到达后恢复可能存在的旧任务（iframe 重建场景）
+      if (!jobId) { const saved = restoreJob(); if (saved) { jobId = saved; startPolling(); } }
     }
     if (e.data.type === 'DBOX_EXT_INFO' && e.data.standalone_route) {
       standaloneRoute = e.data.standalone_route;
@@ -133,6 +136,25 @@
   const formEl = $('form'), previewEl = $('preview'), gridEl = $('pv-grid');
   let jobId = null, poller = null;
   const seenLogs = new Set();
+
+  // ---- 跨 iframe 重建恢复：从 localStorage 恢复活跃任务 ----
+  function saveJob(id) {
+    if (id) { try { localStorage.setItem(JOB_KEY, id); } catch(_) {} }
+    else { try { localStorage.removeItem(JOB_KEY); } catch(_) {} }
+  }
+  function restoreJob() {
+    try { return localStorage.getItem(JOB_KEY) || null; } catch(_) { return null; }
+  }
+  // 页面加载时检查是否有未完成任务，自动恢复轮询
+  window.addEventListener('load', () => {
+    const saved = restoreJob();
+    if (saved && TOKEN) {
+      jobId = saved;
+      startPolling();
+    }
+  });
+  // token 到达时也尝试恢复（token 可能比 load 晚）
+  const _origTokenHandler = null; // 标记需要在 message 监听里加恢复逻辑
 
   // 预览开关控制按钮文案
   $('preview').addEventListener('change', () => {
@@ -208,7 +230,7 @@
           const btn = document.createElement('button');
           btn.textContent = '← 再来一个';
           btn.style.cssText = 'margin-top:10px;background:#1d9bf0;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;';
-          btn.onclick = () => { showIdle(); seenLogs.clear(); $('log').textContent = ''; $('status-msg').textContent = ''; progEl.style.display = 'none'; jobId = null; };
+          btn.onclick = () => { showIdle(); seenLogs.clear(); $('log').textContent = ''; $('status-msg').textContent = ''; progEl.style.display = 'none'; jobId = null; saveJob(null); };
           statusEl.appendChild(btn);
         }
       } catch (e) {}
@@ -343,6 +365,7 @@
       const d = await r.json();
       if (!d.success) { pushLog('提交失败: ' + (d.message || ''), true); return; }
       jobId = d.job_id;
+      saveJob(jobId);
       startPolling();
     } catch (e) { pushLog('提交异常: ' + e.message, true); }
   };

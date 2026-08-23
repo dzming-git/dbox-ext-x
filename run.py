@@ -424,14 +424,42 @@ def notify_input(input_ctx, files):
 
 
 # ---------------- 网络请求封装 ----------------
-def fetch_text(url, opener, headers, timeout=60):
+def fetch_text(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
+    """抓取文本内容，失败自动重试（指数退避）。
+
+    - 可重试：网络异常 / 超时 / SSL EOF / 5xx / 429。
+    - 不可重试：4xx 中除 429 外的错误（如 404），直接抛出。
+    """
     _apply_socks()
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with opener.open(req, timeout=timeout) as r:
-            return r.read().decode('utf-8', 'replace')
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with opener.open(req, timeout=timeout) as r:
+                return r.read().decode('utf-8', 'replace')
+        except urllib.error.HTTPError as e:
+            last_exc = e
+            retryable = e.code in (429, 500, 502, 503, 504)
+            if retryable and attempt < max_retries - 1:
+                wait = retry_base * (2 ** attempt)
+                log(f'请求失败（{url[:90]}…）HTTP {e.code}，{wait:.0f}s 后第 {attempt + 2} 次重试',
+                    level='warn')
+                time.sleep(wait)
+                continue
+            break
+        except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError,
+                OSError) as e:
+            last_exc = e
+            if attempt < max_retries - 1:
+                wait = retry_base * (2 ** attempt)
+                log(f'请求失败（{url[:90]}…）{type(e).__name__}，{wait:.0f}s 后第 {attempt + 2} 次重试',
+                    level='warn')
+                time.sleep(wait)
+                continue
+            break
     finally:
         _restore_socks()
+    raise last_exc  # type: ignore[misc]
 
 
 def fetch_bytes(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
