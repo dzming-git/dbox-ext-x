@@ -1429,6 +1429,8 @@ def main():
     cookie_header = resolve_cookie(context.get('cookies', {}) or {})
     url = (params.get('url') or '').strip()
     simulate = bool(params.get('simulate'))
+    # 目标资源库：前端放在顶层 body.library_id（与 params 平级），也可能在 params 里
+    library_id = payload.get('library_id') or params.get('library_id') or ''
     # 隐藏开关（替换原 add_video/add_gallery）：下载的资源默认隐藏，
     # 不进视频库/图集库列表，仅在帖子流可见。取消隐藏后进入对应资源库。
     hidden = bool(params.get('hidden', True))
@@ -1632,6 +1634,7 @@ def main():
                 modes = ['video', 'post']
                 downloaded.append({'path': path, 'type': 'video',
                                    'target_modes': modes, 'group': group,
+                                   'library_id': library_id,
                                    'hidden': hidden,
                                    'content': post_content, 'post_title': post_title,
                                    'source_url': url,
@@ -1674,6 +1677,7 @@ def main():
             modes = ['gallery', 'post']
             downloaded.append({'path': img_dir, 'type': 'gallery',
                                'target_modes': modes, 'group': group,
+                               'library_id': library_id,
                                'hidden': hidden,
                                'content': post_content, 'post_title': post_title,
                                'source_url': url,
