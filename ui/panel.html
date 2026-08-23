@@ -114,10 +114,15 @@
 </div>
 <script>
   let TOKEN = '';
+  let librariesLoaded = false;
   const API = '/api/ext/x_downloader';
   window.addEventListener('message', (e) => {
     if (!e.data) return;
-    if (e.data.type === 'DBOX_TOKEN' && e.data.token) { TOKEN = e.data.token; }
+    if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
+      TOKEN = e.data.token;
+      // token 到位后再加载资源库（避免竞态导致 401）
+      if (!librariesLoaded) loadLibraries();
+    }
     if (e.data.type === 'DBOX_MODE') {
       document.body.classList.toggle('fullscreen', !!e.data.fullscreen);
       const btn = document.getElementById('fullscreenBtn');
@@ -148,6 +153,9 @@
 
   // 加载资源库列表供选择
   async function loadLibraries() {
+    if (librariesLoaded) return;
+    if (!TOKEN) return;  // token 未到位，等 DBOX_TOKEN 消息后再触发
+    librariesLoaded = true;
     try {
       const r = await fetch('/api/my-libraries', { headers: AUTH() });
       const d = await r.json();
@@ -353,7 +361,14 @@
     await postInput({ action: 'cancel' });
   };
 
-  loadLibraries();
+  // 首次加载：等 token 到位后由 DBOX_TOKEN 消息触发 loadLibraries。
+  // 若父页面未及时回传（异常情况），兜底延迟重试几次。
+  let loadRetries = 0;
+  (function ensureLibraries() {
+    if (librariesLoaded) return;
+    if (TOKEN) { loadLibraries(); return; }
+    if (loadRetries++ < 20) setTimeout(ensureLibraries, 300);
+  })();
 </script>
 </body>
 </html>
