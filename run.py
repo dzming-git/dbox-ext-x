@@ -764,7 +764,15 @@ def _graphql_tweet_detail(tweet_id, cookie_header, opener, gt, qid):
 
 
 def _discover_tweet_detail_qid(opener, cookie_header):
-    """从 X 前端 JS bundle 中自动发现当前 TweetDetail query id。"""
+    """从 X 前端 JS bundle 中自动发现当前 TweetDetail query id。
+
+    关键：X 的 queryId 只存在于**登录态**的 client-web/main.*.js bundle 里，
+    游客态首页只返回 entry-client-logged-out.js（不含 queryId）。因此：
+      - 带 Cookie 时能拿到 client-web bundle 并提取 queryId；
+      - 游客态拿不到，只能依赖写死的默认值（会过期）。
+    这里尽量放宽正则（queryId 与 operationName 之间距离不限），
+    并扫描首页 HTML 里所有 abs.twimg.com 的 <script src>。
+    """
     global _GQL_TWEET_DETAIL_QID
     try:
         html = fetch_text('https://x.com/', opener,
@@ -772,20 +780,40 @@ def _discover_tweet_detail_qid(opener, cookie_header):
     except Exception:
         html = ''
     scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    # 去重、保留顺序
+    seen = set()
+    urls = []
     for s in scripts:
         if not s.startswith('http'):
             s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s)
+            urls.append(s)
+    for s in urls:
         try:
             js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
         except Exception:
             continue
-        m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{10,})["\'][^}]{0,80}?operationName["\']?\s*[:=]\s*["\']TweetDetail["\']', js)
-        if not m:
-            m = re.search(r'operationName["\']?\s*[:=]\s*["\']TweetDetail["\'][^}]{0,80}?queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{10,})["\']', js)
-        if m:
-            _GQL_TWEET_DETAIL_QID = m.group(1)
-            log(f'已自动发现 TweetDetail query id: {m.group(1)}')
-            return m.group(1)
+        if 'TweetDetail' not in js:
+            continue
+        # 放宽正则：queryId 与 operationName 之间允许任意内容（不限 80 字符）
+        m = re.search(
+            r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']',
+            js)
+        # 优先取紧邻 TweetDetail 出现的 queryId：找 TweetDetail 附近前后各 500 字符内的 queryId
+        found = None
+        for tm in re.finditer(r'TweetDetail', js):
+            lo = max(0, tm.start() - 600)
+            hi = min(len(js), tm.end() + 600)
+            window = js[lo:hi]
+            mm = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', window)
+            if mm:
+                found = mm.group(1)
+                break
+        if found:
+            _GQL_TWEET_DETAIL_QID = found
+            log(f'已自动发现 TweetDetail query id: {found}')
+            return found
     return None
 
 
