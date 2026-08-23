@@ -92,6 +92,8 @@ def create_blueprint(host):
             with open(cookie_path, 'w', encoding='utf-8') as f:
                 f.write(cookie_str)
             cookies_ctx['x.com'] = {'path': cookie_path}
+        else:
+            _append_log(job_id, '[Cookie 诊断] vault.get 返回空（未配置或解密失败）')
 
         context = {
             'working_dir': wd,
