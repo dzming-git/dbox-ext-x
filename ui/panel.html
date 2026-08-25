@@ -93,7 +93,6 @@
 <div class="wrap">
   <div class="toolbar">
     <span class="title">🐦 X 下载</span>
-    <button id="fullscreen" title="全屏打开">⛶ 全屏</button>
   </div>
 
   <!-- 表单：始终可见 -->
@@ -191,11 +190,9 @@
     $('run').textContent = $('preview').checked ? '解析预览' : '开始下载';
   });
 
-  // 全屏：请求父页面跳转到独立全屏路由
-  $('fullscreen').onclick = () => {
-    const route = standaloneRoute || '/x-downloader';
-    window.parent.postMessage({ type: 'DBOX_NAVIGATE', path: route }, '*');
-  };
+  // 全屏入口已统一由框架层（ExtensionHost）面板 header 的「⛶ 全屏」按钮提供，
+  // panel 自身不再维护独立全屏按钮。
+
 
   const AUTH = () => ({ 'Authorization': 'Bearer ' + TOKEN });
 
