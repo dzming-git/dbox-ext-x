@@ -711,11 +711,13 @@
           : `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
              <button class="add" data-tid="${esc2(tid)}">加入收藏夹</button>`}
       </div>`;
-    // 收藏媒体缩略图点击 → lightbox 放大预览（图片全图 / 视频封面）。
+    // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
     // 复用下载预览的 lightbox（lb），临时把收藏媒体的 URL 序列填进 _lbItems。
+    // 视频项 m.url 通常是 twimg 的 mp4 直链，可真实播放；无直链时才回退封面。
     const bmLBItems = medias.filter((m) => m.url || m.cover).map((m) => {
       if (m.type === 'video') {
-        return { type: 'image', src: m.cover || m.url || '', label: '视频', _cover: true };
+        const direct = (m.url && !m.url.includes('.m3u8')) ? m.url : '';
+        return { type: 'video', src: direct, cover: m.cover || m.url || '', label: '视频', playable: !!direct };
       }
       return { type: 'image', src: m.url || '', label: '图片' };
     });
@@ -761,16 +763,31 @@
 
   async function loadXBookmarks() {
     bmXList.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
+    const all = [];
+    let cursor = null;
+    let page = 0;
+    const MAX_PAGES = 20; // 每页 50 条，最多拉 1000 条，防异常死循环
     try {
-      const r = await req(`${API}/bookmarks?count=30`);
-      const d = await r.json();
-      if (!d.success) { bmXList.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
-      const items = d.items || [];
-      if (!items.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
+      while (page < MAX_PAGES) {
+        page++;
+        const url = `${API}/bookmarks?count=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        const r = await req(url);
+        const d = await r.json();
+        if (!d.success) {
+          if (!all.length) { bmXList.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
+          break; // 中途某页失败，保留已拉到的
+        }
+        const pageItems = d.items || [];
+        pageItems.forEach((it) => all.push(it));
+        cursor = d.next_cursor || null;
+        // 本页无新增推文或没有下一页了，停止翻页
+        if (!cursor || !pageItems.length) break;
+      }
+      if (!all.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
       bmXList.innerHTML = '';
-      items.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+      all.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
     } catch (e) {
-      bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+      if (!all.length) bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
   }
 
