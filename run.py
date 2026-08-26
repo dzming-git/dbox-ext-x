@@ -800,6 +800,239 @@ _GQL_TWEET_DETAIL_FEATURES = {
 _GQL_TWEET_DETAIL_FIELDTOGGLES = {"withArticlePlainText": False}
 
 
+# ---------------------------------------------------------------------------
+# GraphQL Bookmarks（读取账号收藏夹里的推文列表；query id 会轮换，支持自动
+# 发现。注意：X 收藏页用的是 Bookmarks（operationName=Bookmarks，variables
+# 只有 count/cursor/includePromotedContent），不是 BookmarkSearchTimeline——
+# 后者是带搜索词的搜索，空 rawQuery 会报 ERROR_EMPTY_QUERY）。
+# ---------------------------------------------------------------------------
+_GQL_BOOKMARKS_QID = 'iblrFnKr6PZUR-dWpfXG6g'  # 已知兜底（会轮换，优先自动发现）
+_GQL_BOOKMARKS_OPN = 'Bookmarks'
+# 与 X 收藏页一致的 features（2026-08 实测捕获）
+_GQL_BOOKMARKS_FEATURES = {
+    "rweb_video_screen_enabled": False,
+    "rweb_cashtags_enabled": True,
+    "profile_label_improvements_pcf_label_in_post_enabled": True,
+    "responsive_web_profile_redirect_enabled": True,
+    "rweb_tipjar_consumption_enabled": False,
+    "verified_phone_label_enabled": False,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+    "premium_content_api_read_enabled": False,
+    "communities_web_enable_tweet_community_results_fetch": True,
+    "c9s_tweet_anatomy_moderator_badge_enabled": True,
+    "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
+    "responsive_web_grok_analyze_post_followups_enabled": True,
+    "rweb_cashtags_composer_attachment_enabled": True,
+    "responsive_web_jetfuel_frame": True,
+    "responsive_web_grok_share_attachment_enabled": True,
+    "responsive_web_grok_annotations_enabled": True,
+    "articles_preview_enabled": True,
+    "responsive_web_edit_tweet_api_enabled": True,
+    "rweb_conversational_replies_downvote_enabled": False,
+    "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+    "view_counts_everywhere_api_enabled": True,
+    "longform_notetweets_consumption_enabled": True,
+    "responsive_web_twitter_article_tweet_consumption_enabled": True,
+    "content_disclosure_indicator_enabled": True,
+    "content_disclosure_ai_generated_indicator_enabled": True,
+    "responsive_web_grok_show_grok_translated_post": True,
+    "responsive_web_grok_analysis_button_from_backend": True,
+    "post_ctas_fetch_enabled": False,
+    "freedom_of_speech_not_reach_fetch_enabled": True,
+    "standardized_nudges_misinfo": True,
+    "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": True,
+    "longform_notetweets_rich_text_read_enabled": True,
+    "longform_notetweets_inline_media_enabled": False,
+    "responsive_web_grok_image_annotation_enabled": True,
+    "responsive_web_grok_imagine_annotation_enabled": True,
+    "responsive_web_grok_community_note_auto_translation_is_enabled": True,
+    "responsive_web_enhance_cards_enabled": False,
+}
+
+
+def _discover_bookmarks_qid(opener, cookie_header):
+    """从 X 首页 bundle 自动发现收藏列表 query id（Bookmarks，登录态）。
+
+    注意：X 首页 bundle 里同时含 Bookmarks（列收藏）与 BookmarkSearchTimeline
+    （搜索）。列收藏优先匹配 operationName == "Bookmarks"。
+    """
+    global _GQL_BOOKMARKS_QID
+    try:
+        html = fetch_text('https://x.com/', opener,
+                          build_headers(cookie_header, with_bearer=False), timeout=20)
+    except Exception:
+        html = ''
+    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    seen = set(); urls = []
+    for s in scripts:
+        if not s.startswith('http'):
+            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s); urls.append(s)
+    # 优先精确匹配 Bookmarks（列收藏），避免误取 BookmarkSearchTimeline
+    targets = ['Bookmarks', 'BookmarkSearchTimeline']
+    for target in targets:
+        for s in urls:
+            try:
+                js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
+            except Exception:
+                continue
+            pat = r'operationName["\']?\s*[:=]\s*["\']%s["\']?' % target
+            for tm in re.finditer(pat, js):
+                win_after = js[tm.end(): tm.end() + 2000]
+                win_before = js[max(0, tm.start() - 2000): tm.start()]
+                m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_after)
+                if not m:
+                    m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_before)
+                if m:
+                    _GQL_BOOKMARKS_QID = m.group(1)
+                    log(f'已自动发现 {target} query id: {_GQL_BOOKMARKS_QID}')
+                    return _GQL_BOOKMARKS_QID
+    return None
+
+
+def _normalize_media(tweet_legacy):
+    """从推文 legacy 提取媒体列表（图片直链 / 视频封面+播放地址）。"""
+    media = []
+    ext = tweet_legacy.get('extended_entities') or {}
+    for m in (ext.get('media') or tweet_legacy.get('entities', {}).get('media') or []):
+        kind = m.get('type')
+        if kind == 'photo':
+            url = m.get('media_url_https') or m.get('media_url')
+            if url:
+                media.append({'type': 'photo', 'url': url})
+        elif kind in ('video', 'animated_gif'):
+            variants = m.get('video_info', {}).get('variants') or []
+            mp4 = next((v.get('url') for v in variants
+                        if v.get('content_type') == 'video/mp4'), None)
+            cover = m.get('media_url_https') or m.get('media_url')
+            media.append({'type': 'video', 'cover': cover, 'url': mp4})
+    return media
+
+
+def _extract_bookmark_tweets(data):
+    """从 Bookmarks 响应里提取推文列表（含作者、媒体）。
+
+    Bookmarks 的响应路径为 data.bookmark_timeline_v2.timeline。
+    兼容旧的 search_by_raw_query.bookmarks_search_timeline 结构。
+    """
+    out = []
+    try:
+        d = data.get('data', {})
+        tl = (d.get('bookmark_timeline_v2') or {}).get('timeline')
+        if tl is None:
+            tl = ((d.get('search_by_raw_query') or {})
+                  .get('bookmarks_search_timeline') or {}).get('timeline')
+    except Exception:
+        return out
+    if tl is None:
+        return out
+    instructions = tl.get('instructions', []) or []
+    for inst in instructions:
+        entries = list(inst.get('entries') or inst.get('moduleItems') or [])
+        for entry in entries:
+            # 嵌套 entries（某些 instruction 结构）
+            if entry.get('entries'):
+                entries = entries + list(entry['entries'])
+            content = entry.get('content') or {}
+            item = (content.get('itemContent') or content.get('tweetResult') or {})
+            # 兼容两种键名：tweet_results（X 新结构，下划线）/ tweetResults（旧结构）
+            tr = item.get('tweet_results')
+            if tr is None:
+                tr = item.get('tweetResults')
+            result = (tr or {}).get('result') if isinstance(tr, dict) else None
+            if result is None:
+                result = item.get('result')
+            if not isinstance(result, dict):
+                continue
+            # TweetWithVisibilityResults / Tweet 都可能出现
+            if result.get('__typename') == 'TweetWithVisibilityResults':
+                result = result.get('tweet') or result
+            if result.get('__typename') != 'Tweet':
+                continue
+            legacy = result.get('legacy') or {}
+            user = ((result.get('core') or {})
+                    .get('user_results', {})
+                    .get('result', {}) or {})
+            # 兼容多种 user 结构：
+            # - 旧结构：user.legacy（name/screen_name/profile_image_url_https）
+            # - 新结构：user.core（name/screen_name）+ user.avatar.image_url
+            # - 扁平结构：user 直接含 name/screen_name
+            user_legacy = user.get('legacy') or user
+            user_core = (user.get('core') or {})
+            u_name = (user_legacy.get('name') or user_core.get('name')
+                      or user.get('name'))
+            u_screen = (user_legacy.get('screen_name') or user_core.get('screen_name')
+                        or user.get('screen_name'))
+            u_avatar = (user_legacy.get('profile_image_url_https')
+                        or (user.get('avatar') or {}).get('image_url')
+                        or (user_core.get('avatar') or {}).get('image_url'))
+            media = _normalize_media(legacy)
+            if not media:
+                # 引用推文也可能带媒体，简单跳过引用层
+                pass
+            out.append({
+                'tweet_id': result.get('rest_id'),
+                'text': legacy.get('full_text', ''),
+                'created_at': legacy.get('created_at'),
+                'favorite_count': legacy.get('favorite_count'),
+                'retweet_count': legacy.get('retweet_count'),
+                'author': {
+                    'name': u_name,
+                    'screen_name': u_screen,
+                    'avatar': u_avatar,
+                    'verified': user_legacy.get('verified', False),
+                },
+                'media': media,
+                'url': 'https://x.com/{}/status/{}'.format(
+                    u_screen or 'unknown', result.get('rest_id')),
+            })
+    return out
+
+
+def list_bookmarks(cookie_header, count=20, cursor=None):
+    """读取 X 账号收藏夹的推文列表。
+
+    使用 X 收藏页同款 Bookmarks query（variables 为 count/cursor/
+    includePromotedContent，不需要 rawQuery）。返回 (items, next_cursor)。
+    """
+    opener = make_opener(None)
+    qid = _GQL_BOOKMARKS_QID
+    if not qid:
+        qid = _discover_bookmarks_qid(opener, cookie_header)
+    if not qid:
+        raise RuntimeError('未能发现 Bookmarks query id')
+    variables = {"count": count, "includePromotedContent": True}
+    if cursor:
+        variables["cursor"] = cursor
+    # 与 X 收藏页同源：x.com/i/api/graphql/（api.x.com 亦可）
+    url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_BOOKMARKS_OPN}'
+           f'?variables={urllib.parse.quote(json.dumps(variables))}'
+           f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES))}')
+    headers = build_headers(cookie_header, with_bearer=True)
+    raw = fetch_text(url, opener, headers, timeout=30)
+    data = json.loads(raw)
+    items = _extract_bookmark_tweets(data)
+    # 提取下一页 cursor（Bottom 类型）
+    next_cursor = None
+    try:
+        d = data.get('data', {})
+        tl = (d.get('bookmark_timeline_v2') or {}).get('timeline')
+        if tl is None:
+            tl = ((d.get('search_by_raw_query') or {})
+                  .get('bookmarks_search_timeline') or {}).get('timeline')
+        for inst in (tl or {}).get('instructions', []):
+            for entry in (inst.get('entries') or []):
+                c = entry.get('content') or {}
+                if c.get('entryType') == 'TimelineTimelineCursor' and \
+                        c.get('cursorType') == 'Bottom':
+                    next_cursor = c.get('value')
+    except Exception:
+        pass
+    return items, next_cursor
+
+
 class _GraphQLQueryNotFound(Exception):
     """GraphQL query id 不存在（404 / unknown query），需重新发现。"""
 

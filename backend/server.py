@@ -12,11 +12,17 @@ import os
 import sys
 import io
 import json
+import time
+import sqlite3
 import uuid
 import threading
 import subprocess
 
-from flask import Blueprint, request, g, jsonify
+from flask import Blueprint, request, g, jsonify, Response
+
+# run.py 仅依赖标准库（无重型副作用），可直接 import 复用其 X API 能力。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import run as xrun
 
 
 def create_blueprint(host):
@@ -45,6 +51,58 @@ def create_blueprint(host):
     def _bearer():
         auth = request.headers.get('Authorization', '')
         return auth[7:] if auth.startswith('Bearer ') else auth
+
+    def _x_cookie_header():
+        """从保险库读取 x.com 原始 cookie，拼成 HTTP Cookie 头。"""
+        try:
+            rec = host.vault._vault.get_by_domain('x.com', kind='cookie')
+        except Exception:
+            return ''
+        if not rec:
+            return ''
+        cookies = rec.get('cookies') or []
+        return '; '.join(
+            f"{c.get('name')}={c.get('value')}" for c in cookies
+            if c.get('name') and c.get('value') is not None
+        )
+
+    # ---------- 本地 X 收藏夹（SQLite，独立于 X 账号，持久化快照） ----------
+    _folder_db_path = os.path.join(host.data_dir, 'x_bookmarks.db')
+    _folder_lock = threading.Lock()
+
+    def _folder_conn():
+        conn = sqlite3.connect(_folder_db_path, timeout=10)
+        conn.execute(
+            '''CREATE TABLE IF NOT EXISTS bookmarks(
+                tweet_id TEXT PRIMARY KEY,
+                screen_name TEXT,
+                author_name TEXT,
+                avatar TEXT,
+                text TEXT,
+                created_at TEXT,
+                media TEXT,
+                url TEXT,
+                added_at TEXT
+            )''')
+        return conn
+
+    def _folder_list():
+        conn = _folder_conn()
+        try:
+            rows = conn.execute(
+                'SELECT tweet_id, screen_name, author_name, avatar, text, '
+                'created_at, media, url, added_at FROM bookmarks '
+                'ORDER BY added_at DESC').fetchall()
+        finally:
+            conn.close()
+        return [{
+            'tweet_id': r[0], 'text': r[4], 'created_at': r[5],
+            'media': json.loads(r[6]) if r[6] else [], 'url': r[7],
+            'added_at': r[8],
+            'author': {
+                'screen_name': r[1], 'name': r[2], 'avatar': r[3],
+            },
+        } for r in rows]
 
     def _ingest_files(job_id, files):
         job = jobs.get(job_id)
@@ -326,5 +384,78 @@ def create_blueprint(host):
             'error': job['error'],
             'pending_input': job.get('pending_input'),
         })
+
+    @bp.route('/bookmarks', methods=['GET'])
+    @host.login_required
+    def bookmarks():
+        """实时从 X 账号收藏夹拉取推文列表。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False,
+                            'message': '未配置 x.com 登录 Cookie'}), 400
+        try:
+            count = min(int(request.args.get('count', 30)), 100)
+            cursor = request.args.get('cursor') or None
+            items, next_cursor = xrun.list_bookmarks(cookie, count, cursor)
+        except Exception as e:
+            return jsonify({'success': False,
+                            'message': '拉取 X 收藏失败: ' + str(e)}), 502
+        return jsonify({'success': True, 'items': items,
+                        'next_cursor': next_cursor})
+
+    @bp.route('/bookmarks/folder', methods=['GET'])
+    @host.login_required
+    def folder_list():
+        """列出本地 X 收藏夹（dbox 持久化的收藏快照）。"""
+        return jsonify({'success': True, 'items': _folder_list()})
+
+    @bp.route('/bookmarks/folder', methods=['POST'])
+    @host.login_required
+    def folder_add():
+        """将一条 X 收藏加入本地收藏夹。"""
+        data = request.get_json(force=True, silent=True) or {}
+        tid = data.get('tweet_id')
+        if not tid:
+            return jsonify({'success': False, 'message': '缺少 tweet_id'}), 400
+        media = data.get('media') or []
+        # 兼容嵌套 author（来自 list_bookmarks）与扁平字段两种入参
+        author = data.get('author') or {}
+        screen_name = (data.get('screen_name')
+                       or author.get('screen_name') or '')
+        author_name = (data.get('author_name')
+                       or author.get('name') or screen_name)
+        avatar = (data.get('avatar')
+                  or author.get('avatar') or '')
+        url = (data.get('url')
+               or (f'https://x.com/{screen_name}/status/{tid}'
+                   if screen_name else ''))
+        added = time.strftime('%Y-%m-%d %H:%M:%S')
+        with _folder_lock:
+            conn = _folder_conn()
+            try:
+                conn.execute(
+                    'INSERT OR REPLACE INTO bookmarks'
+                    '(tweet_id, screen_name, author_name, avatar, text, '
+                    'created_at, media, url, added_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                    (tid, screen_name, author_name, avatar, data.get('text'),
+                     data.get('created_at'), json.dumps(media, ensure_ascii=False),
+                     url, added))
+                conn.commit()
+            finally:
+                conn.close()
+        return jsonify({'success': True, 'items': _folder_list()})
+
+    @bp.route('/bookmarks/folder/<tweet_id>', methods=['DELETE'])
+    @host.login_required
+    def folder_del(tweet_id):
+        """从本地收藏夹删除一条收藏。"""
+        with _folder_lock:
+            conn = _folder_conn()
+            try:
+                conn.execute('DELETE FROM bookmarks WHERE tweet_id=?', (tweet_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        return jsonify({'success': True, 'items': _folder_list()})
 
     return bp
