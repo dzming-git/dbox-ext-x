@@ -13,10 +13,15 @@ import sys
 import io
 import json
 import time
+import hashlib
+import mimetypes
 import sqlite3
 import uuid
 import threading
 import subprocess
+import urllib.request
+import urllib.error
+from collections import OrderedDict
 
 from flask import Blueprint, request, g, jsonify, Response
 
@@ -66,9 +71,105 @@ def create_blueprint(host):
             if c.get('name') and c.get('value') is not None
         )
 
+    # ---------- 媒体预览缓存（LRU 磁盘缓存，对标 ehentai 下载器） ----------
+    # 用户点开的图片/视频预览直接代理下载并落盘缓存，回看命中本地字节，
+    # 不再重复访问 twimg；也便于后续"缓存即下载"。
+    _CACHE_DIR = os.path.join(host.data_dir, 'media_cache')
+    _CACHE_LRU_DIR = os.path.join(_CACHE_DIR, 'lru')        # 字节：<md5(url)><ext>
+    _CACHE_INDEX_FILE = os.path.join(_CACHE_DIR, 'lru_index.json')
+    _CACHE_MAX_BYTES = 512 * 1024 * 1024                    # 512MB 上限
+    os.makedirs(_CACHE_LRU_DIR, exist_ok=True)
+
+    _LRU_LOCK = threading.Lock()
+    _lru_meta = OrderedDict()   # key -> {"ext": str, "size": int, "type": str}
+    _lru_total = 0
+
+    def _cache_key(url):
+        return hashlib.md5(url.encode('utf-8')).hexdigest()
+
+    def _cache_load_index():
+        nonlocal _lru_meta, _lru_total
+        _lru_meta = OrderedDict()
+        _lru_total = 0
+        try:
+            with open(_CACHE_INDEX_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+            items = saved.get('items', {})
+            for k in saved.get('keys', []):
+                if k in items:
+                    _lru_meta[k] = items[k]
+                    _lru_total += items[k].get('size', 0)
+        except Exception:
+            # 索引缺失/损坏：按 mtime 重建
+            try:
+                for fn in os.listdir(_CACHE_LRU_DIR):
+                    base, ext = os.path.splitext(fn)
+                    if not base:
+                        continue
+                    sz = os.path.getsize(os.path.join(_CACHE_LRU_DIR, fn))
+                    _lru_meta[base] = {'ext': ext, 'size': sz, 'type': 'image'}
+                    _lru_total += sz
+            except Exception:
+                pass
+
+    def _cache_save_index():
+        try:
+            with open(_CACHE_INDEX_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'keys': list(_lru_meta.keys()),
+                           'items': _lru_meta}, f)
+        except Exception:
+            pass
+
+    def _cache_evict():
+        nonlocal _lru_total
+        while _lru_total > _CACHE_MAX_BYTES and len(_lru_meta) > 1:
+            old_key, old_val = _lru_meta.popitem(last=False)
+            _lru_total -= old_val.get('size', 0)
+            try:
+                os.remove(os.path.join(_CACHE_LRU_DIR, old_key + old_val.get('ext', '')))
+            except Exception:
+                pass
+        _cache_save_index()
+
+    def _cache_get(url):
+        """命中返回 (path, ext)；并刷新访问顺序。未命中返回 None。"""
+        nonlocal _lru_total
+        key = _cache_key(url)
+        with _LRU_LOCK:
+            if key not in _lru_meta:
+                return None
+            val = _lru_meta.pop(key)
+            _lru_meta[key] = val
+            path = os.path.join(_CACHE_LRU_DIR, key + val.get('ext', ''))
+            if not os.path.exists(path):
+                _lru_total -= val.get('size', 0)
+                _cache_save_index()
+                return None
+            return path, val.get('ext', '')
+
+    def _cache_put(url, data, ext):
+        """写入缓存字节，返回磁盘路径；按需淘汰最久未用。"""
+        nonlocal _lru_total
+        key = _cache_key(url)
+        path = os.path.join(_CACHE_LRU_DIR, key + ext)
+        with _LRU_LOCK:
+            if key in _lru_meta:
+                _lru_total -= _lru_meta[key].get('size', 0)
+                del _lru_meta[key]
+            with open(path, 'wb') as f:
+                f.write(data)
+            sz = len(data)
+            _lru_meta[key] = {'ext': ext, 'size': sz}
+            _lru_total += sz
+            _cache_evict()
+            return path
+
     # ---------- 本地 X 收藏夹（SQLite，独立于 X 账号，持久化快照） ----------
     _folder_db_path = os.path.join(host.data_dir, 'x_bookmarks.db')
     _folder_lock = threading.Lock()
+
+    # 启动时恢复媒体缓存索引（访问顺序 + 总量），避免重启后重复下载已缓存资源
+    _cache_load_index()
 
     def _folder_conn():
         conn = sqlite3.connect(_folder_db_path, timeout=10)
@@ -457,5 +558,74 @@ def create_blueprint(host):
             finally:
                 conn.close()
         return jsonify({'success': True, 'items': _folder_list()})
+
+    @bp.route('/media', methods=['GET'])
+    def media():  # 不要求 login_required：浏览器 <img>/<video> 原生加载不能带 Authorization 头
+        """代理下载 X 媒体（twimg 图片 / mp4 视频），并写入本地 LRU 缓存。
+
+        query: u=原始URL, type=image|video（缺省自动判断）
+        命中缓存 → 返回本地字节（支持 Range，视频可拖动进度条）。
+        未命中 → 带 X cookie 请求上游 twimg，写缓存后返回。
+        这样用户"点开的图片/视频"即落到本地缓存，回看不再访问 twimg。
+        """
+        from flask import send_file
+        url = (request.args.get('u') or '').strip()
+        if not url or not url.startswith('http'):
+            return jsonify({'success': False, 'message': '缺少合法的 u 参数'}), 400
+        # 只允许 twimg 域名，防任意 URL 代理（SSRF）
+        from urllib.parse import urlparse
+        hostname = urlparse(url).hostname or ''
+        if not (hostname.endswith('twimg.com') or hostname in ('x.com', 'twitter.com')):
+            return jsonify({'success': False, 'message': '仅允许代理 twimg 媒体'}), 403
+
+        mtype = (request.args.get('type') or '').lower()
+        # 命中缓存：直接用本地文件响应（send_file 自动支持 Range）
+        hit = _cache_get(url)
+        if hit is not None:
+            path, ext = hit
+            if os.path.isfile(path):
+                ct = mimetypes.guess_type(path)[0] or (
+                    'video/mp4' if ext == '.mp4' else 'image/jpeg')
+                resp = send_file(path, mimetype=ct, conditional=True,
+                                 max_age=86400)
+                resp.headers['Cache-Control'] = 'private, max-age=86400'
+                return resp
+
+        # 未命中：带 X cookie 请求上游，写缓存后返回
+        cookie = _x_cookie_header()
+        try:
+            headers = xrun.build_headers(cookie, with_bearer=True)
+            opener = xrun.make_opener(None)
+            data = xrun.fetch_bytes(url, opener, headers, timeout=90)
+        except Exception as e:
+            return jsonify({'success': False, 'message': '代理失败: ' + str(e)}), 502
+
+        # 判断扩展名
+        path_ext = os.path.splitext(urlparse(url).path)[1].lower()
+        if mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
+            ext = path_ext if path_ext else '.mp4'
+        elif mtype == 'image' or path_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
+            ext = path_ext if path_ext else '.jpg'
+        else:
+            # 按 magic bytes 探测
+            if data[:4] in (b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1'):
+                ext = '.jpg'
+            elif data[:8] == b'\x89PNG\r\n\x1a\n':
+                ext = '.png'
+            elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+                ext = '.webp'
+            elif data[4:12] == b'ftyp':
+                ext = '.mp4'
+            else:
+                ext = '.jpg'
+
+        # 数据已在内存，直接返回字节（并已写入缓存）；命中缓存走上方 send_file 支持 Range
+        _cache_put(url, data, ext)
+        ct = mimetypes.guess_type(url)[0] or (
+            'video/mp4' if ext == '.mp4' else 'image/jpeg')
+        resp = Response(data, mimetype=ct)
+        resp.headers['Cache-Control'] = 'private, max-age=86400'
+        resp.headers['Content-Disposition'] = 'inline'
+        return resp
 
     return bp
