@@ -87,6 +87,34 @@
   .pick { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
   .pick label { display: block; padding: 4px 0; font-size: 13px; }
   .pick button { margin-top: 8px; background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+
+  /* 标签切换 */
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+  .tab { flex: 1; background: #f3f5f7; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; color: #536471; }
+  .tab.active { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+
+  /* X 收藏 */
+  .bm-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+  .bm-toolbar button { flex: 1; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; border: 1px solid #e3e6eb; }
+  .bm-toolbar .primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+  .bm-toolbar .secondary { background: #fff; color: #536471; }
+  .bm-list { display: flex; flex-direction: column; gap: 10px; }
+  .bm-empty { color: #8899a6; font-size: 13px; text-align: center; padding: 24px 0; }
+  .bm-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px; }
+  .bm-card .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .bm-card .avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+  .bm-card .name { font-weight: 600; font-size: 14px; color: #0f1419; }
+  .bm-card .handle { color: #536471; font-size: 12px; }
+  .bm-card .time { color: #8899a6; font-size: 12px; margin-left: auto; }
+  .bm-card .text { font-size: 14px; line-height: 1.5; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 8px; }
+  .bm-card .media { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px; margin-bottom: 8px; }
+  .bm-card .media img, .bm-card .media video { width: 100%; height: 90px; object-fit: cover; border-radius: 8px; background: #f3f5f7; }
+  .bm-card .actions { display: flex; gap: 8px; }
+  .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; }
+  .bm-card .actions .add { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+  .bm-card .actions .open { color: #1d9bf0; }
+  .bm-card .loading, .bm-card .err { font-size: 13px; color: #8899a6; padding: 8px 0; }
+  .bm-card .err { color: #e0245e; }
 </style>
 </head>
 <body>
@@ -95,6 +123,14 @@
     <span class="title">🐦 X 下载</span>
   </div>
 
+  <!-- 标签切换 -->
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-view="download">下载推文</button>
+    <button class="tab" data-view="bookmarks">我的 X 收藏</button>
+  </div>
+
+  <!-- 下载表单视图 -->
+  <div class="view" id="view-download">
   <!-- 表单：始终可见 -->
   <div class="form" id="form">
     <input id="url" type="text" placeholder="粘贴 X / Twitter 推文链接…" />
@@ -107,6 +143,17 @@
       <button id="run">解析预览</button>
     </div>
     <div class="hint">粘贴推文链接 → 解析并预览图片/视频 → 确认后下载整个帖子。</div>
+  </div>
+  </div><!-- /view-download -->
+
+  <!-- X 收藏视图 -->
+  <div class="view" id="view-bookmarks" style="display:none">
+    <div class="bm-toolbar">
+      <button id="bm-sync" class="primary">🔄 从 X 同步收藏</button>
+      <button id="bm-show-folder" class="secondary">📁 我已收藏 (dbox)</button>
+    </div>
+    <div id="bm-x-list" class="bm-list"><div class="bm-empty">点击「从 X 同步收藏」加载你在 X 上收藏的推文。</div></div>
+    <div id="bm-folder-list" class="bm-list" style="display:none"><div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div></div>
   </div>
 
   <!-- 预览区：在表单下方展开，不隐藏表单 -->
@@ -522,6 +569,151 @@
     if (TOKEN) { loadLibraries(); return; }
     if (loadRetries++ < 20) setTimeout(ensureLibraries, 300);
   })();
+
+  /* ---- 标签切换 ---- */
+  const tabsEl = $('tabs');
+  const viewDownload = $('view-download');
+  const viewBookmarks = $('view-bookmarks');
+  tabsEl.querySelectorAll('.tab').forEach((t) => {
+    t.addEventListener('click', () => {
+      tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.remove('active'));
+      t.classList.add('active');
+      const v = t.dataset.view;
+      viewDownload.style.display = v === 'download' ? '' : 'none';
+      viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
+    });
+  });
+
+  /* ---- X 收藏 ---- */
+  const bmXList = $('bm-x-list');
+  const bmFolderList = $('bm-folder-list');
+  let bmShowingFolder = false;
+
+  function esc2(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function fmtTime(ts) {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      if (isNaN(d)) return String(ts);
+      return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    } catch { return String(ts); }
+  }
+
+  function renderBmCard(item, inFolder) {
+    const a = item.author || {};
+    const mediaHtml = (item.media || []).slice(0, 4).map((m) => {
+      if (m.type === 'video') {
+        const src = m.cover || m.url || '';
+        return src ? `<video src="" poster="${esc2(src)}" muted></video>` : '';
+      }
+      return m.url ? `<img src="${esc2(m.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" />` : '';
+    }).join('');
+    const tid = item.tweet_id || '';
+    const card = document.createElement('div');
+    card.className = 'bm-card';
+    card.innerHTML = `
+      <div class="head">
+        ${a.avatar ? `<img class="avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
+        <div>
+          <div class="name">${esc2(a.name || a.screen_name || '未知用户')}</div>
+          <div class="handle">@${esc2(a.screen_name || 'unknown')}</div>
+        </div>
+        <div class="time">${esc2(fmtTime(item.created_at))}</div>
+      </div>
+      <div class="text">${esc2(item.text || '')}</div>
+      ${mediaHtml ? `<div class="media">${mediaHtml}</div>` : ''}
+      <div class="actions">
+        ${inFolder
+          ? `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
+             <button class="del" data-tid="${esc2(tid)}">移出收藏夹</button>`
+          : `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
+             <button class="add" data-tid="${esc2(tid)}">加入收藏夹</button>`}
+      </div>`;
+    card.querySelectorAll('.open').forEach((b) => b.addEventListener('click', () => {
+      const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
+    }));
+    if (inFolder) {
+      card.querySelectorAll('.del').forEach((b) => b.addEventListener('click', async () => {
+        const tid = b.dataset.tid;
+        b.disabled = true; b.textContent = '移除中…';
+        try {
+          const r = await fetch(`${API}/bookmarks/folder/${encodeURIComponent(tid)}`, { method: 'DELETE', headers: AUTH() });
+          const d = await r.json();
+          if (d.success) renderFolder(d.items);
+        } catch (e) { b.disabled = false; b.textContent = '移出收藏夹'; alert('移除失败: ' + e.message); }
+      }));
+    } else {
+      card.querySelectorAll('.add').forEach((b) => b.addEventListener('click', async () => {
+        const tid = b.dataset.tid;
+        b.disabled = true; b.textContent = '已加入 ✓';
+        try {
+          const r = await fetch(`${API}/bookmarks/folder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...AUTH() },
+            body: JSON.stringify(item),
+          });
+          const d = await r.json();
+          if (!d.success) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入失败: ' + (d.message || '')); }
+        } catch (e) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入异常: ' + e.message); }
+      }));
+    }
+    return card;
+  }
+
+  async function loadXBookmarks() {
+    bmXList.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
+    try {
+      const r = await fetch(`${API}/bookmarks?count=30`, { headers: AUTH() });
+      const d = await r.json();
+      if (!d.success) { bmXList.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
+      const items = d.items || [];
+      if (!items.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
+      bmXList.innerHTML = '';
+      items.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+    } catch (e) {
+      bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  async function loadFolder() {
+    bmFolderList.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await fetch(`${API}/bookmarks/folder`, { headers: AUTH() });
+      const d = await r.json();
+      if (!d.success) { bmFolderList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      renderFolder(d.items || []);
+    } catch (e) {
+      bmFolderList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  function renderFolder(items) {
+    if (!items.length) {
+      bmFolderList.innerHTML = '<div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div>';
+      return;
+    }
+    bmFolderList.innerHTML = '';
+    items.forEach((it) => bmFolderList.appendChild(renderBmCard(it, true)));
+  }
+
+  $('bm-sync').addEventListener('click', () => {
+    bmShowingFolder = false;
+    bmXList.style.display = '';
+    bmFolderList.style.display = 'none';
+    loadXBookmarks();
+  });
+
+  $('bm-show-folder').addEventListener('click', () => {
+    bmShowingFolder = true;
+    bmXList.style.display = 'none';
+    bmFolderList.style.display = '';
+    loadFolder();
+  });
 </script>
 </body>
 </html>
