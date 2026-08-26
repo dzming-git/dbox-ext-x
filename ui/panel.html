@@ -680,15 +680,21 @@
     } catch { return String(ts); }
   }
 
+  // 把 twimg 媒体 URL 转成本地代理缓存接口：点开即缓存，回看命中本地字节。
+  function mediaUrl(url, type) {
+    if (!url || !/twimg\.com|pbs\.twimg/.test(url)) return url || '';
+    return `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}`;
+  }
+
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
     const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
-        const src = m.cover || m.url || '';
-        return src ? `<div class="bm-media" data-idx="${idx}"><video src="" poster="${esc2(src)}" muted></video><span class="bm-play">▶</span></div>` : '';
+        const poster = mediaUrl(m.cover || m.url || '', 'image');
+        return poster ? `<div class="bm-media" data-idx="${idx}"><video src="" poster="${esc2(poster)}" muted></video><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}"><img src="${esc2(m.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
@@ -716,10 +722,11 @@
     // 视频项 m.url 通常是 twimg 的 mp4 直链，可真实播放；无直链时才回退封面。
     const bmLBItems = medias.filter((m) => m.url || m.cover).map((m) => {
       if (m.type === 'video') {
-        const direct = (m.url && !m.url.includes('.m3u8')) ? m.url : '';
-        return { type: 'video', src: direct, cover: m.cover || m.url || '', label: '视频', playable: !!direct };
+        // mp4 直链走本地代理缓存接口（点开即缓存）；m3u8 无法直接代理，回退封面
+        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
+        return { type: 'video', src: direct, cover: mediaUrl(m.cover || m.url || '', 'image'), label: '视频', playable: !!direct };
       }
-      return { type: 'image', src: m.url || '', label: '图片' };
+      return { type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' };
     });
     card.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', () => {
