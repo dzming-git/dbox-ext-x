@@ -1014,22 +1014,25 @@ def list_bookmarks(cookie_header, count=20, cursor=None):
     raw = fetch_text(url, opener, headers, timeout=30)
     data = json.loads(raw)
     items = _extract_bookmark_tweets(data)
-    # 提取下一页 cursor（Bottom 类型）
+    # 提取下一页 cursor（Bottom 类型）。若本页无任何推文，视为已到底，
+    # 不返回下一页 cursor（X 第二页 stopOnEmptyResponse 时空响应会一直返回
+    # 相同的 Bottom cursor，直接透传会造成死循环）。
     next_cursor = None
-    try:
-        d = data.get('data', {})
-        tl = (d.get('bookmark_timeline_v2') or {}).get('timeline')
-        if tl is None:
-            tl = ((d.get('search_by_raw_query') or {})
-                  .get('bookmarks_search_timeline') or {}).get('timeline')
-        for inst in (tl or {}).get('instructions', []):
-            for entry in (inst.get('entries') or []):
-                c = entry.get('content') or {}
-                if c.get('entryType') == 'TimelineTimelineCursor' and \
-                        c.get('cursorType') == 'Bottom':
-                    next_cursor = c.get('value')
-    except Exception:
-        pass
+    if items:
+        try:
+            d = data.get('data', {})
+            tl = (d.get('bookmark_timeline_v2') or {}).get('timeline')
+            if tl is None:
+                tl = ((d.get('search_by_raw_query') or {})
+                      .get('bookmarks_search_timeline') or {}).get('timeline')
+            for inst in (tl or {}).get('instructions', []):
+                for entry in (inst.get('entries') or []):
+                    c = entry.get('content') or {}
+                    if c.get('entryType') == 'TimelineTimelineCursor' and \
+                            c.get('cursorType') == 'Bottom':
+                        next_cursor = c.get('value')
+        except Exception:
+            pass
     return items, next_cursor
 
 
