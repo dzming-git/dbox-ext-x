@@ -243,6 +243,78 @@
 
   const AUTH = () => ({ 'Authorization': 'Bearer ' + TOKEN });
 
+  // 读取当前最可能有效的 token（主站 axios 刷新后会写回 localStorage，iframe 同源可共享）。
+  function latestToken() {
+    try {
+      return localStorage.getItem('token')
+        || localStorage.getItem('access_token')
+        || sessionStorage.getItem('token')
+        || TOKEN;
+    } catch (_) { return TOKEN; }
+  }
+
+  // 向父窗口重新索要最新 token（父窗口会实时读 localStorage/store）。
+  function requestTokenFromParent() {
+    return new Promise((resolve) => {
+      let resolved = false;
+      const done = (e) => {
+        if (e.data && e.data.type === 'DBOX_TOKEN' && e.data.token) {
+          resolved = true;
+          window.removeEventListener('message', done);
+          resolve(e.data.token);
+        }
+      };
+      window.addEventListener('message', done);
+      window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x_downloader' }, '*');
+      setTimeout(() => { window.removeEventListener('message', done); if (!resolved) resolve(null); }, 1500);
+    });
+  }
+
+  // 用 refresh_token 主动刷新 access_token（不依赖主站是否触发刷新）。
+  async function refreshToken() {
+    try {
+      const refreshToken = localStorage.getItem('refresh_token');
+      if (!refreshToken) return null;
+      const resp = await fetch('/api/v2/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const data = await resp.json();
+      if (data && data.success && data.data && data.data.access_token) {
+        const nt = data.data.access_token;
+        localStorage.setItem('token', nt);
+        localStorage.setItem('access_token', nt);
+        if (data.data.refresh_token) localStorage.setItem('refresh_token', data.data.refresh_token);
+        return nt;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 获取新鲜 token：优先父窗口注入，其次 refresh_token 主动刷新，最后读 localStorage。
+  async function requestToken() {
+    const fromParent = await requestTokenFromParent();
+    if (fromParent && fromParent !== latestToken()) return fromParent;
+    const refreshed = await refreshToken();
+    if (refreshed) return refreshed;
+    return latestToken();
+  }
+
+  // 带鉴权 + 401 自动重试的请求：token 过期时重新获取并重试一次。
+  async function req(path, opts = {}) {
+    const _do = (token) => fetch(path, { ...opts, headers: { ...(opts.headers || {}), 'Authorization': 'Bearer ' + token } });
+    let r = await _do(TOKEN);
+    if (r.status === 401) {
+      const fresh = await requestToken();
+      if (fresh && fresh !== TOKEN) {
+        TOKEN = fresh;
+        r = await _do(fresh);
+      }
+    }
+    return r;
+  }
+
   // 加载资源库列表
   async function loadLibraries() {
     if (librariesLoaded) return;
@@ -642,7 +714,7 @@
         const tid = b.dataset.tid;
         b.disabled = true; b.textContent = '移除中…';
         try {
-          const r = await fetch(`${API}/bookmarks/folder/${encodeURIComponent(tid)}`, { method: 'DELETE', headers: AUTH() });
+          const r = await req(`${API}/bookmarks/folder/${encodeURIComponent(tid)}`, { method: 'DELETE' });
           const d = await r.json();
           if (d.success) renderFolder(d.items);
         } catch (e) { b.disabled = false; b.textContent = '移出收藏夹'; alert('移除失败: ' + e.message); }
@@ -652,9 +724,9 @@
         const tid = b.dataset.tid;
         b.disabled = true; b.textContent = '已加入 ✓';
         try {
-          const r = await fetch(`${API}/bookmarks/folder`, {
+          const r = await req(`${API}/bookmarks/folder`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...AUTH() },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(item),
           });
           const d = await r.json();
@@ -668,7 +740,7 @@
   async function loadXBookmarks() {
     bmXList.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
     try {
-      const r = await fetch(`${API}/bookmarks?count=30`, { headers: AUTH() });
+      const r = await req(`${API}/bookmarks?count=30`);
       const d = await r.json();
       if (!d.success) { bmXList.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
       const items = d.items || [];
@@ -683,7 +755,7 @@
   async function loadFolder() {
     bmFolderList.innerHTML = '<div class="bm-empty">加载中…</div>';
     try {
-      const r = await fetch(`${API}/bookmarks/folder`, { headers: AUTH() });
+      const r = await req(`${API}/bookmarks/folder`);
       const d = await r.json();
       if (!d.success) { bmFolderList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
       renderFolder(d.items || []);
