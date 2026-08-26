@@ -94,6 +94,8 @@
   .tab.active { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
 
   /* X 收藏 */
+  /* 收藏视图需独立滚动：wrap 是 overflow:hidden 的 flex column，此视图占满剩余高度并滚动 */
+  #view-bookmarks { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; }
   .bm-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
   .bm-toolbar button { flex: 1; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; border: 1px solid #e3e6eb; }
   .bm-toolbar .primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -108,7 +110,9 @@
   .bm-card .time { color: #8899a6; font-size: 12px; margin-left: auto; }
   .bm-card .text { font-size: 14px; line-height: 1.5; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 8px; }
   .bm-card .media { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px; margin-bottom: 8px; }
-  .bm-card .media img, .bm-card .media video { width: 100%; height: 90px; object-fit: cover; border-radius: 8px; background: #f3f5f7; }
+  .bm-card .bm-media { position: relative; cursor: pointer; overflow: hidden; border-radius: 8px; background: #f3f5f7; }
+  .bm-card .bm-media img, .bm-card .bm-media video { width: 100%; height: 90px; object-fit: cover; display: block; }
+  .bm-card .bm-play { position: absolute; inset: 0; margin: auto; width: 30px; height: 30px; border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; font-size: 13px; display: flex; align-items: center; justify-content: center; padding-left: 2px; pointer-events: none; }
   .bm-card .actions { display: flex; gap: 8px; }
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; }
   .bm-card .actions .add { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -678,12 +682,13 @@
 
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
-    const mediaHtml = (item.media || []).slice(0, 4).map((m) => {
+    const medias = (item.media || []).slice(0, 4);
+    const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
         const src = m.cover || m.url || '';
-        return src ? `<video src="" poster="${esc2(src)}" muted></video>` : '';
+        return src ? `<div class="bm-media" data-idx="${idx}"><video src="" poster="${esc2(src)}" muted></video><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<img src="${esc2(m.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" />` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}"><img src="${esc2(m.url)}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
@@ -706,6 +711,23 @@
           : `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
              <button class="add" data-tid="${esc2(tid)}">加入收藏夹</button>`}
       </div>`;
+    // 收藏媒体缩略图点击 → lightbox 放大预览（图片全图 / 视频封面）。
+    // 复用下载预览的 lightbox（lb），临时把收藏媒体的 URL 序列填进 _lbItems。
+    const bmLBItems = medias.filter((m) => m.url || m.cover).map((m) => {
+      if (m.type === 'video') {
+        return { type: 'image', src: m.cover || m.url || '', label: '视频', _cover: true };
+      }
+      return { type: 'image', src: m.url || '', label: '图片' };
+    });
+    card.querySelectorAll('.bm-media').forEach((el) => {
+      el.addEventListener('click', () => {
+        const idx = Number(el.dataset.idx || 0);
+        if (!bmLBItems.length) return;
+        _lbItems = bmLBItems;
+        _lbIdx = Math.min(idx, bmLBItems.length - 1);
+        showLightbox(_lbIdx);
+      });
+    });
     card.querySelectorAll('.open').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
     }));
