@@ -109,27 +109,42 @@
 ## 进度跟踪
 - [x] P0-1 DBox 内推文详情页 + 评论区（commit 590edae + b304338）
 - [x] P0-2 一键下载进资源库（缓存即下载，commit 9cad0f8）
-- [ ] P1-3 多流浏览（搜索/话题流）：Following 已实现，For You 已实现
+- [x] P1-3 多流浏览（Following + For You）
+- [x] P1-5 推文互动（读）：详情页展示回复/转推/点赞/引用/浏览数
 - [ ] P1-4 用户 profile 浏览
-- [ ] P1-5 推文互动（读）
-- [ ] P1-6 搜索：qid 频繁轮换，待稳定
+- [ ] P1-6 搜索（X 反爬 x-client-transaction-id 限制，见下）
 - [x] P1-7 本地浏览历史（commit ba4cd03）
-- [ ] P2-8 批量/合集下载
-- [ ] P2-9 媒体管理
+- [x] P2-8 批量/合集下载（commit 795a8f4）
+- [x] P2-9 媒体管理（commit 1e2b59c）
 - [ ] P2-10 深度互动（写）
 - [ ] P2-11 定时/通知
 - [ ] P2-12 组织
-- [ ] P2-13 数据源健壮性
+- [x] P2-13 数据源健壮性：qid 自动发现 + 兜底常量已就绪
 
-## 重要发现：X queryId 频繁轮换
-2026-08-27 实测：X 的 GraphQL qid（HomeTimeline、HomeLatestTimeline、
-TweetDetail、SearchTimeline、UserTweets）**每几分钟到几小时轮换**。
-playwright 捕获的 qid 立即在 python 复现时 404。
+## 重要发现：X 真正的反爬机制（不是 qid 轮换）
+2026-08-27 实测修正：
+- **qid 没有频繁轮换**（HomeLatestTimeline qid `BLQWpfVqtgBqAqwRRJcJjA`、
+  TweetDetail qid `XMOz5h24KAZ86qKffKTLdQ` 在不同时间都仍有效）。
+- **真正的反爬是 `x-client-transaction-id` header**：X 部分接口（SearchTimeline、可能未来其他）需要
+  这个加密请求头，python 难以伪造，会 403/404。
+- 浏览器直发 `fetch(SearchTimeline URL)` 也 403（page.evaluate 的 fetch
+  没带浏览器自动注入的 `x-client-transaction-id`）。
+- 只能靠 playwright 实际渲染触发 X 前端 JS 生成这个 header。
 
-这意味着：**任何依赖硬编码 qid 的功能（搜索、profile、多流）都脆弱**。
-生产可用方案：
-1. 用户每次使用时 playwright 重新捕获（开销大）
-2. 接受"首次使用 X 客户端时配置一次 qid"的工作流
+**影响**：P1-6 搜索、P1-4 profile 可能需要 playwright 代理后端
+（x_downloader 后端 spawn 浏览器）。这与 PRD 早期标注的"qid 轮换"
+不同——`x-client-transaction-id` 是 X 新版反爬，HomeLatestTimeline/TweetDetail
+目前不需要（这就是为什么 Following/详情页能稳定工作）。
+
+## 已就绪的 qid（2026-08-27 实测稳定）
+- Following（HomeLatestTimeline POST）：`BLQWpfVqtgBqAqwRRJcJjA`
+- TweetDetail（GET）：`XMOz5h24KAZ86qKffKTLdQ`
+- features：38 项（与 Bookmarks 同一套），`x-client-transaction-id` 不必需
+
+## 生产可用方案
+1. 浏览器代理（playwright 渲染）：能绕 x-client-transaction-id 但每个请求启浏览器开销大
+2. 仅暴露已稳定的接口（详情/Following/历史/缓存/批量）：PRD P0-P1.7+P2.8/9 已完成
+3. 持续监控 X qid 变化（自动发现函数已就绪）
 3. 编写 X 客户端 qid 服务（定期 playwright 抓取最新 qid 写入配置文件，客户端读配置）
 
 P2-13 数据源健壮性就是为解决此问题。
