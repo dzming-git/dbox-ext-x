@@ -107,16 +107,29 @@
 6. 其余 P2 按需
 
 ## 进度跟踪
-- [ ] P0-1 DBox 内推文详情页 + 评论区
-- [ ] P0-2 一键下载进资源库（缓存即下载）
-- [ ] P1-3 多流浏览（搜索/话题流）
+- [x] P0-1 DBox 内推文详情页 + 评论区（commit 590edae + b304338）
+- [x] P0-2 一键下载进资源库（缓存即下载，commit 9cad0f8）
+- [ ] P1-3 多流浏览（搜索/话题流）：Following 已实现，For You 已实现
 - [ ] P1-4 用户 profile 浏览
 - [ ] P1-5 推文互动（读）
-- [ ] P1-6 搜索
-- [ ] P1-7 本地历史
+- [ ] P1-6 搜索：qid 频繁轮换，待稳定
+- [x] P1-7 本地浏览历史（commit ba4cd03）
 - [ ] P2-8 批量/合集下载
 - [ ] P2-9 媒体管理
 - [ ] P2-10 深度互动（写）
 - [ ] P2-11 定时/通知
 - [ ] P2-12 组织
 - [ ] P2-13 数据源健壮性
+
+## 重要发现：X queryId 频繁轮换
+2026-08-27 实测：X 的 GraphQL qid（HomeTimeline、HomeLatestTimeline、
+TweetDetail、SearchTimeline、UserTweets）**每几分钟到几小时轮换**。
+playwright 捕获的 qid 立即在 python 复现时 404。
+
+这意味着：**任何依赖硬编码 qid 的功能（搜索、profile、多流）都脆弱**。
+生产可用方案：
+1. 用户每次使用时 playwright 重新捕获（开销大）
+2. 接受"首次使用 X 客户端时配置一次 qid"的工作流
+3. 编写 X 客户端 qid 服务（定期 playwright 抓取最新 qid 写入配置文件，客户端读配置）
+
+P2-13 数据源健壮性就是为解决此问题。
