@@ -852,8 +852,14 @@ _GQL_BOOKMARKS_FEATURES = {
 
 # HomeTimeline（关注流）。features 与 Bookmarks 完全一致（X 的 feature 开关是全局共享的，
 # 2026-08 playwright 实测：HomeTimeline 与 Bookmarks 用的是同一套 38 项 features）。
-_GQL_HOME_TIMELINE_QID = 'wp06oo3fRGU4P1sK8rECqQ'  # 已知兜底（会轮换，优先自动发现）
+_GQL_HOME_TIMELINE_QID = 'wp06oo3fRGU4P1sK8rECqQ'  # For You 流（recommendation），已知兜底
 _GQL_HOME_TIMELINE_OPN = 'HomeTimeline'
+# Following（关注中）流：与 For You 是不同接口。X 首页「正在关注」tab 走的是
+# HomeLatestTimeline，且用 POST（body 传 variables/features），不是 GET query。
+# 2026-08 playwright 捕获：qid BLQWpfVqtgBqAqwRRJcJjA，返回的推文 component 是
+# ranked_following（真实关注用户），与 For You 的 for_you_* 完全不同。
+_GQL_FOLLOWING_QID = 'BLQWpfVqtgBqAqwRRJcJjA'  # 已知兜底（会轮换，优先自动发现）
+_GQL_FOLLOWING_OPN = 'HomeLatestTimeline'
 
 
 def _discover_home_timeline_qid(opener, cookie_header):
@@ -919,17 +925,123 @@ def list_home_timeline(cookie_header, count=20, cursor=None):
     # 响应结构：data.home.home_timeline_urt 直接含 instructions（无 timeline 层）
     home = (data.get('data', {}) or {}).get('home', {}) or {}
     tl = home.get('home_timeline_urt') or {}
-    # 过滤广告/推广推文：X 用 entryId 前缀 "promoted-tweet-" 标记广告
-    # （即使 includePromotedContent=false 仍会返回这些）。这里就地修改
-    # instructions.entries，把广告条目移除，避免 _extract_bookmark_tweets 误纳。
+    # 过滤广告与"推荐/探索"来源推文。
+    # 1) 广告：entryId 前缀 "promoted-tweet-"（即使 includePromotedContent=false
+    #    仍会返回）。2) 推荐来源：clientEventInfo.component 为 for_you_simclusters /
+    #    for_you_phoenix_retrieval（X 的 For You 算法推荐，多为未关注用户）。
+    #    只保留"真实关注"推文：for_you_in_network / following_* / 无 component。
+    # 这里就地修改 instructions.entries，避免 _extract_bookmark_tweets 误纳。
     for _inst in (tl.get('instructions') or []):
         _entries = _inst.get('entries') or []
-        if _entries:
-            _inst['entries'] = [
-                e for e in _entries
-                if not (e.get('entryId') or '').startswith('promoted-')
-            ]
+        if not _entries:
+            continue
+        _kept = []
+        for e in _entries:
+            _eid = e.get('entryId') or ''
+            _comp = ((e.get('content') or {}).get('clientEventInfo') or {}).get('component') or ''
+            if _eid.startswith('promoted-'):
+                continue
+            if _comp in ('for_you_simclusters', 'for_you_phoenix_retrieval'):
+                continue
+            _kept.append(e)
+        _inst['entries'] = _kept
     # 包装成 _extract_bookmark_tweets 兼容的 data 结构复用推文/user/media 解析
+    items = _extract_bookmark_tweets(
+        {'data': {'bookmark_timeline_v2': {'timeline': tl}}})
+    next_cursor = None
+    if items:
+        for inst in (tl.get('instructions') or []):
+            for entry in (inst.get('entries') or []):
+                c = entry.get('content') or {}
+                if c.get('entryType') == 'TimelineTimelineCursor' and \
+                        c.get('cursorType') == 'Bottom':
+                    next_cursor = c.get('value')
+    return items, next_cursor
+
+
+def _discover_following_qid(opener, cookie_header):
+    """从 X 前端 bundle 自动发现 HomeLatestTimeline（Following 流）query id。
+
+    首页 bundle 通常不含 HomeLatestTimeline 定义（懒加载），发现失败时回退
+    到已知兜底 qid（会轮换，需定期更新）。
+    """
+    global _GQL_FOLLOWING_QID
+    try:
+        html = fetch_text('https://x.com/', opener,
+                          build_headers(cookie_header, with_bearer=False), timeout=20)
+    except Exception:
+        html = ''
+    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    seen = set(); urls = []
+    for s in scripts:
+        if not s.startswith('http'):
+            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s); urls.append(s)
+    for s in urls:
+        try:
+            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
+        except Exception:
+            continue
+        pat = r'operationName["\']?\s*[:=]\s*["\']HomeLatestTimeline["\']?'
+        for tm in re.finditer(pat, js):
+            win_after = js[tm.end(): tm.end() + 2000]
+            win_before = js[max(0, tm.start() - 2000): tm.start()]
+            m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_after)
+            if not m:
+                m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_before)
+            if m:
+                _GQL_FOLLOWING_QID = m.group(1)
+                log(f'已自动发现 HomeLatestTimeline query id: {_GQL_FOLLOWING_QID}')
+                return _GQL_FOLLOWING_QID
+    return None
+
+
+def list_following_timeline(cookie_header, count=20, cursor=None):
+    """读取 X 关注中（Following）时间线——只含用户真实关注的人。
+
+    与 For You（HomeTimeline）不同，Following 走 HomeLatestTimeline 且用 POST
+    （body 传 variables/features）。返回的推文 component 是 ranked_following
+    （真实关注）与 ranked_following_promoted（关注者中的推广）。
+
+    返回 (items, next_cursor)。复用 _extract_bookmark_tweets 解析。
+    """
+    opener = make_opener(None)
+    qid = _GQL_FOLLOWING_QID
+    if not qid:
+        qid = _discover_following_qid(opener, cookie_header)
+    if not qid:
+        raise RuntimeError('未能发现 HomeLatestTimeline query id')
+    variables = {"count": count, "enableRanking": True,
+                 "includePromotedContent": True,
+                 "requestContext": "launch", "seenTweetIds": []}
+    if cursor:
+        variables["cursor"] = cursor
+    body = json.dumps({'variables': variables,
+                       'features': _GQL_BOOKMARKS_FEATURES}).encode('utf-8')
+    url = f'https://x.com/i/api/graphql/{qid}/{_GQL_FOLLOWING_OPN}'
+    headers = build_headers(cookie_header, with_bearer=True)
+    headers['Content-Type'] = 'application/json'
+    req = urllib.request.Request(url, data=body, headers=headers, method='POST')
+    try:
+        with opener.open(req, timeout=30) as r:
+            raw = r.read().decode('utf-8', 'replace')
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode('utf-8', 'replace')
+    data = json.loads(raw)
+    # 响应结构：data.home.home_timeline_urt 直接含 instructions（无 timeline 层）
+    home = (data.get('data', {}) or {}).get('home', {}) or {}
+    tl = home.get('home_timeline_urt') or {}
+    # 过滤关注者中的推广（ranked_following_promoted），只保留真实关注（ranked_following）
+    for _inst in (tl.get('instructions') or []):
+        _entries = _inst.get('entries') or []
+        if not _entries:
+            continue
+        _inst['entries'] = [
+            e for e in _entries
+            if not (((e.get('content') or {}).get('clientEventInfo') or {})
+                    .get('component') or '').endswith('_promoted')
+        ]
     items = _extract_bookmark_tweets(
         {'data': {'bookmark_timeline_v2': {'timeline': tl}}})
     next_cursor = None
