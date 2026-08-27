@@ -774,7 +774,7 @@ def extract_from_api(tweet_id, cookie_header, opener):
 # GraphQL TweetDetail（X 现已废弃 statuses/show.json，SPA 页面也不内嵌媒体，
 # 结构化数据只能通过 GraphQL 接口获取；query id 会轮换，支持自动发现）。
 # ---------------------------------------------------------------------------
-_GQL_TWEET_DETAIL_QID = 'Lq1caG5YPcdhpTdS2ZRx7Q'  # 当前生效的 TweetDetail query id
+_GQL_TWEET_DETAIL_QID = 'XMOz5h24KAZ86qKffKTLdQ'  # 当前生效的 TweetDetail query id（2026-08 playwright 捕获）
 _GQL_TWEET_DETAIL_FEATURES = {
     "blue_business_profile_image_shape_enabled": True,
     "dont_mention_me_view_api_enabled": True,
@@ -1250,10 +1250,10 @@ def _get_tweet_detail_qid():
     return _GQL_TWEET_DETAIL_QID
 
 
-def _gql_variables(tweet_id):
+def _gql_variables(tweet_id, cursor=None):
     return {
         "focalTweetId": tweet_id,
-        "cursor": None,
+        "cursor": cursor,
         "referrer": None,
         "controller_data": None,
         "rux_context": None,
@@ -1287,6 +1287,118 @@ def _graphql_tweet_detail(tweet_id, cookie_header, opener, gt, qid):
             raise _GraphQLQueryNotFound()
         raise
     return json.loads(raw)
+
+
+def _extract_tweet_obj(r):
+    """从单个 tweet result 提取标准推文对象（与 _extract_bookmark_tweets 一致）。"""
+    if not isinstance(r, dict):
+        return None
+    if r.get('__typename') == 'TweetWithVisibilityResults':
+        r = r.get('tweet') or r
+    if r.get('__typename') != 'Tweet':
+        return None
+    legacy = r.get('legacy') or {}
+    user = ((r.get('core') or {})
+            .get('user_results', {})
+            .get('result', {}) or {})
+    user_legacy = user.get('legacy') or user
+    user_core = user.get('core') or {}
+    u_name = (user_legacy.get('name') or user_core.get('name') or user.get('name'))
+    u_screen = (user_legacy.get('screen_name') or user_core.get('screen_name') or user.get('screen_name'))
+    u_avatar = (user_legacy.get('profile_image_url_https')
+                or (user.get('avatar') or {}).get('image_url')
+                or (user_core.get('avatar') or {}).get('image_url'))
+    return {
+        'tweet_id': r.get('rest_id'),
+        'text': legacy.get('full_text', ''),
+        'created_at': legacy.get('created_at'),
+        'favorite_count': legacy.get('favorite_count'),
+        'retweet_count': legacy.get('retweet_count'),
+        'reply_count': legacy.get('reply_count'),
+        'quote_count': legacy.get('quote_count'),
+        'bookmark_count': legacy.get('bookmark_count'),
+        'view_count': (r.get('views') or {}).get('count'),
+        'author': {
+            'name': u_name,
+            'screen_name': u_screen,
+            'avatar': u_avatar,
+            'verified': user_legacy.get('verified', False),
+        },
+        'media': _normalize_media(legacy),
+        'url': 'https://x.com/{}/status/{}'.format(u_screen or 'unknown', r.get('rest_id')),
+    }
+
+
+def get_tweet_thread(tweet_id, cookie_header, cursor=None):
+    """拉取单条推文详情 + 评论区（对话线程）。
+
+    X 推文详情页的评论区就包含在 TweetDetail 响应里
+    （data.threaded_conversation_with_injections_v2.instructions：
+    第一个是焦点推文，后续 conversationthread-* 是回复）。
+    返回 {'tweet': focal, 'replies': [...], 'next_cursor': ...}。
+    """
+    opener = make_opener(None)
+    qid = _get_tweet_detail_qid()
+    if not qid:
+        qid = _discover_tweet_detail_qid(opener, cookie_header)
+    if not qid:
+        raise RuntimeError('未能发现 TweetDetail query id')
+    url = (f'https://x.com/i/api/graphql/{qid}/TweetDetail'
+           f'?variables={urllib.parse.quote(json.dumps(_gql_variables(tweet_id, cursor)))}'
+           f'&features={urllib.parse.quote(json.dumps(_GQL_TWEET_DETAIL_FEATURES))}')
+    headers = build_headers(cookie_header, with_bearer=True)
+    try:
+        raw = fetch_text(url, opener, headers, timeout=30)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise RuntimeError('TweetDetail query id 失效')
+        raise
+    data = json.loads(raw)
+    if data.get('errors'):
+        raise RuntimeError('X 返回错误: ' + str(data['errors'][0].get('message', data['errors'])))
+    tl = ((data.get('data') or {})
+          .get('threaded_conversation_with_injections_v2') or {}).get('instructions') or []
+
+    focal = None
+    replies = []
+    next_cursor = None
+    seen = set()
+    for inst in tl:
+        # 普通条目（焦点推文 / cursor）
+        for e in (inst.get('entries') or []):
+            c = e.get('content') or {}
+            ic = c.get('itemContent') or {}
+            tr = ic.get('tweet_results') or {}
+            r = tr.get('result') or {}
+            obj = _extract_tweet_obj(r)
+            if obj and obj['tweet_id'] and obj['tweet_id'] not in seen:
+                seen.add(obj['tweet_id'])
+                if focal is None:
+                    focal = obj
+                else:
+                    replies.append(obj)
+            if c.get('entryType') == 'TimelineTimelineCursor' and \
+                    c.get('cursorType') == 'Bottom':
+                next_cursor = c.get('value')
+        # TimelineTimelineModule：评论线程（items 里是回复推文）
+        for e in (inst.get('entries') or []):
+            c = e.get('content') or {}
+            if c.get('__typename') == 'TimelineTimelineModule':
+                for it in (c.get('items') or []):
+                    ic = (it.get('item') or {}).get('itemContent') or {}
+                    tr = ic.get('tweet_results') or {}
+                    r = tr.get('result') or {}
+                    obj = _extract_tweet_obj(r)
+                    if obj and obj['tweet_id'] and obj['tweet_id'] not in seen:
+                        seen.add(obj['tweet_id'])
+                        replies.append(obj)
+    # 若焦点推文不在第一顺位（罕见），用 tweet_id 匹配回填
+    if focal is None:
+        for i, rp in enumerate(replies):
+            if rp['tweet_id'] == tweet_id:
+                focal = replies.pop(i)
+                break
+    return {'tweet': focal, 'replies': replies, 'next_cursor': next_cursor}
 
 
 def _discover_tweet_detail_qid(opener, cookie_header):

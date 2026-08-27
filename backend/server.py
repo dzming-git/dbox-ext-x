@@ -508,6 +508,22 @@ def create_blueprint(host):
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
 
+    @bp.route('/tweet/<tweet_id>', methods=['GET'])
+    @host.login_required
+    def tweet_detail(tweet_id):
+        """拉取单条推文详情 + 评论区（对话线程）。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False,
+                            'message': '未配置 x.com 登录 Cookie'}), 400
+        try:
+            cursor = request.args.get('cursor') or None
+            res = xrun.get_tweet_thread(tweet_id, cookie, cursor)
+        except Exception as e:
+            return jsonify({'success': False,
+                            'message': '拉取推文详情失败: ' + str(e)}), 502
+        return jsonify({'success': True, **res})
+
     @bp.route('/bookmarks', methods=['GET'])
     @host.login_required
     def bookmarks():
