@@ -850,6 +850,88 @@ _GQL_BOOKMARKS_FEATURES = {
     "responsive_web_enhance_cards_enabled": False,
 }
 
+# HomeTimeline（关注流）。features 与 Bookmarks 完全一致（X 的 feature 开关是全局共享的，
+# 2026-08 playwright 实测：HomeTimeline 与 Bookmarks 用的是同一套 38 项 features）。
+_GQL_HOME_TIMELINE_QID = 'wp06oo3fRGU4P1sK8rECqQ'  # 已知兜底（会轮换，优先自动发现）
+_GQL_HOME_TIMELINE_OPN = 'HomeTimeline'
+
+
+def _discover_home_timeline_qid(opener, cookie_header):
+    """从 X 首页 bundle 自动发现 HomeTimeline query id。
+
+    注意：首页 bundle 可能不含 HomeTimeline 定义（懒加载 chunk），发现失败时
+    回退到已知兜底 qid（会轮换，需定期更新）。
+    """
+    global _GQL_HOME_TIMELINE_QID
+    try:
+        html = fetch_text('https://x.com/home', opener,
+                          build_headers(cookie_header, with_bearer=False), timeout=20)
+    except Exception:
+        html = ''
+    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    seen = set(); urls = []
+    for s in scripts:
+        if not s.startswith('http'):
+            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s); urls.append(s)
+    for s in urls:
+        try:
+            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
+        except Exception:
+            continue
+        pat = r'operationName["\']?\s*[:=]\s*["\']HomeTimeline["\']?'
+        for tm in re.finditer(pat, js):
+            win_after = js[tm.end(): tm.end() + 2000]
+            win_before = js[max(0, tm.start() - 2000): tm.start()]
+            m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_after)
+            if not m:
+                m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_before)
+            if m:
+                _GQL_HOME_TIMELINE_QID = m.group(1)
+                log(f'已自动发现 HomeTimeline query id: {_GQL_HOME_TIMELINE_QID}')
+                return _GQL_HOME_TIMELINE_QID
+    return None
+
+
+def list_home_timeline(cookie_header, count=20, cursor=None):
+    """读取 X 关注流（home timeline）推文列表。
+
+    返回 (items, next_cursor)。复用 _extract_bookmark_tweets 的推文/user/media
+    解析（把响应里的 timeline 包装成兼容结构）。
+    """
+    opener = make_opener(None)
+    qid = _GQL_HOME_TIMELINE_QID
+    if not qid:
+        qid = _discover_home_timeline_qid(opener, cookie_header)
+    if not qid:
+        raise RuntimeError('未能发现 HomeTimeline query id')
+    variables = {"count": count, "includePromotedContent": True,
+                 "requestContext": "launch", "withCommunity": True}
+    if cursor:
+        variables["cursor"] = cursor
+    url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_HOME_TIMELINE_OPN}'
+           f'?variables={urllib.parse.quote(json.dumps(variables))}'
+           f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES))}')
+    headers = build_headers(cookie_header, with_bearer=True)
+    raw = fetch_text(url, opener, headers, timeout=30)
+    data = json.loads(raw)
+    # 响应结构：data.home.home_timeline_urt 直接含 instructions（无 timeline 层）
+    home = (data.get('data', {}) or {}).get('home', {}) or {}
+    tl = home.get('home_timeline_urt') or {}
+    # 包装成 _extract_bookmark_tweets 兼容的 data 结构复用推文/user/media 解析
+    items = _extract_bookmark_tweets(
+        {'data': {'bookmark_timeline_v2': {'timeline': tl}}})
+    next_cursor = None
+    if items:
+        for inst in (tl.get('instructions') or []):
+            for entry in (inst.get('entries') or []):
+                c = entry.get('content') or {}
+                if c.get('entryType') == 'TimelineTimelineCursor' and \
+                        c.get('cursorType') == 'Bottom':
+                    next_cursor = c.get('value')
+    return items, next_cursor
+
 
 def _discover_bookmarks_qid(opener, cookie_header):
     """从 X 首页 bundle 自动发现收藏列表 query id（Bookmarks，登录态）。
