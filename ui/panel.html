@@ -848,9 +848,10 @@
     const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
-        return poster ? `<div class="bm-media" data-idx="${idx}"><video src="" poster="${esc2(poster)}" muted></video><span class="bm-play">▶</span></div>` : '';
+        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video"${direct ? ` data-src="${esc2(direct)}"` : ''}><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
@@ -886,6 +887,19 @@
     });
     card.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', () => {
+        // 视频缩略图 → 就地播放（不弹 lightbox）
+        if (el.dataset.type === 'video') {
+          const v = el.querySelector('video');
+          if (v && el.dataset.src && !v.src) {
+            v.src = el.dataset.src;
+            v.controls = true; v.muted = true;
+            v.play().catch(() => {});
+          } else if (v) {
+            if (v.paused) v.play().catch(() => {}); else v.pause();
+          }
+          return;
+        }
+        // 图片缩略图 → lightbox 大图
         const idx = Number(el.dataset.idx || 0);
         if (!bmLBItems.length) return;
         _lbItems = bmLBItems;
@@ -1057,9 +1071,10 @@
     const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
-        return poster ? `<div class="bm-media" data-idx="${idx}"><video src="" poster="${esc2(poster)}" muted></video><span class="bm-play">▶</span></div>` : '';
+        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video"${direct ? ` data-src="${esc2(direct)}"` : ''}><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
     const tid = item.tweet_id || '';
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
@@ -1097,6 +1112,19 @@
     card.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
+        // 视频缩略图 → 就地播放（不弹 lightbox），想全屏点播放器全屏按钮
+        if (el.dataset.type === 'video') {
+          const v = el.querySelector('video');
+          if (v && el.dataset.src && !v.src) {
+            v.src = el.dataset.src;
+            v.controls = true; v.muted = true;
+            v.play().catch(() => {});
+          } else if (v) {
+            if (v.paused) v.play().catch(() => {}); else v.pause();
+          }
+          return;
+        }
+        // 图片缩略图 → lightbox 大图
         const idx = Number(el.dataset.idx || 0);
         if (!bmLBItems.length) return;
         _lbItems = bmLBItems;
