@@ -11,6 +11,7 @@ run.py 的爬虫逻辑保持不变（仅依赖标准库 + ffmpeg），降低迁�
 import os
 import sys
 import io
+import re
 import json
 import time
 import hashlib
@@ -24,10 +25,110 @@ import urllib.error
 from collections import OrderedDict
 
 from flask import Blueprint, request, g, jsonify, Response
+import importlib.util as _ilu
 
 # run.py 仅依赖标准库（无重型副作用），可直接 import 复用其 X API 能力。
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import run as xrun
+# 注意：不能用裸 `import run`，否则会和 pixiv 的 run.py 抢占全局 sys.modules['run']，
+# 导致先加载的一方被后加载方覆盖（典型症状：module 'run' has no attribute 'get_tweet_thread'）。
+# 这里按绝对路径加载到独立模块名，彻底规避模块名冲突。
+_run_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'run.py')
+_spec = _ilu.spec_from_file_location('x_downloader_run', _run_path)
+xrun = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(xrun)
+
+
+class _ProgressStore:
+    """按资源身份持久化下载进度（SQLite）。
+
+    下载进度是「资源」的属性而非进程内临时 job：退出/重启后任意平台都能从磁盘
+    读回进度，前端不再静默丢失；再点下载时按 resource_key 查重——completed 则
+    去重不重复拉取，running 则复用已下文件续传。
+    """
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self._lock = threading.Lock()
+        with self._lock, sqlite3.connect(db_path) as c:
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS download_progress (
+                    resource_key TEXT PRIMARY KEY,
+                    platform TEXT,
+                    resource_id TEXT,
+                    status TEXT,
+                    percent INTEGER DEFAULT 0,
+                    message TEXT DEFAULT '',
+                    files_done INTEGER DEFAULT 0,
+                    files_total INTEGER DEFAULT 0,
+                    working_dir TEXT,
+                    job_id TEXT,
+                    updated_at REAL
+                )"""
+            )
+            c.commit()
+
+    def get(self, resource_key):
+        with self._lock, sqlite3.connect(self.db_path) as c:
+            row = c.execute(
+                "SELECT resource_key, platform, resource_id, status, percent, "
+                "message, files_done, files_total, working_dir, job_id, updated_at "
+                "FROM download_progress WHERE resource_key=?",
+                (resource_key,),
+            ).fetchone()
+        if not row:
+            return None
+        keys = ('resource_key', 'platform', 'resource_id', 'status', 'percent',
+                'message', 'files_done', 'files_total', 'working_dir', 'job_id', 'updated_at')
+        return dict(zip(keys, row))
+
+    def _set(self, **kw):
+        with self._lock, sqlite3.connect(self.db_path) as c:
+            c.execute(
+                """INSERT INTO download_progress
+                   (resource_key, platform, resource_id, status, percent, message,
+                    files_done, files_total, working_dir, job_id, updated_at)
+                   VALUES (:resource_key, :platform, :resource_id, :status, :percent,
+                           :message, :files_done, :files_total, :working_dir, :job_id, :updated_at)
+                   ON CONFLICT(resource_key) DO UPDATE SET
+                       status=excluded.status, percent=excluded.percent,
+                       message=excluded.message, files_done=excluded.files_done,
+                       files_total=excluded.files_total, working_dir=excluded.working_dir,
+                       job_id=excluded.job_id, updated_at=excluded.updated_at""",
+                kw,
+            )
+            c.commit()
+
+    def upsert(self, resource_key, platform, resource_id, working_dir=None, job_id=None,
+               status='pending', percent=0, message='', files_done=0, files_total=0):
+        self._set(resource_key=resource_key, platform=platform, resource_id=resource_id,
+                  status=status, percent=percent, message=message,
+                  files_done=files_done, files_total=files_total,
+                  working_dir=working_dir or '', job_id=job_id or '',
+                  updated_at=time.time())
+
+    def update(self, resource_key, percent=None, message=None, status=None,
+               files_done=None, files_total=None):
+        cur = self.get(resource_key) or {}
+        self._set(
+            resource_key=resource_key, platform=cur.get('platform'),
+            resource_id=cur.get('resource_id'),
+            status=status if status is not None else cur.get('status', 'running'),
+            percent=percent if percent is not None else cur.get('percent', 0),
+            message=message if message is not None else cur.get('message', ''),
+            files_done=files_done if files_done is not None else cur.get('files_done', 0),
+            files_total=files_total if files_total is not None else cur.get('files_total', 0),
+            working_dir=cur.get('working_dir', ''), job_id=cur.get('job_id', ''),
+            updated_at=time.time(),
+        )
+
+    def mark_completed(self, resource_key, message='下载完成'):
+        self.update(resource_key, status='completed', percent=100, message=message)
+
+    def mark_failed(self, resource_key, message='下载失败'):
+        self.update(resource_key, status='failed', message=message)
+
+    def mark_cancelled(self, resource_key, message='已取消'):
+        self.update(resource_key, status='cancelled', percent=0, message=message)
 
 
 def create_blueprint(host):
@@ -40,6 +141,24 @@ def create_blueprint(host):
 
     plugin_dir = os.path.dirname(os.path.abspath(__file__))   # .../x_downloader/backend
     plugin_root = os.path.dirname(plugin_dir)                 # .../x_downloader
+
+    # 按资源身份持久化的下载进度（跨进程、退出不丢）
+    _progress_store = _ProgressStore(
+        os.path.join(host.data_dir, 'download_progress.db'))
+
+    def _tweet_id_from_url(url):
+        if not url:
+            return None
+        m = re.search(r'(?:x\.com|twitter\.com)/\w+/status/(\d+)', url)
+        return m.group(1) if m else None
+
+    def _resource_key(tid):
+        return 'x:' + str(tid)
+
+    def _resource_working_dir(tid):
+        d = os.path.join(host.data_dir, 'downloads', 'x', str(tid))
+        os.makedirs(d, exist_ok=True)
+        return d
 
     def _job_dir(job_id):
         d = os.path.join(host.data_dir, 'jobs', job_id)
@@ -389,7 +508,24 @@ def create_blueprint(host):
         token = _bearer()
         job_id = uuid.uuid4().hex
         _append_log(job_id, f'[diag] received library_id={library_id!r}')
-        wd = _job_dir(job_id)
+
+        # 资源身份：下载进度归属键（退出/重启后仍可按此查回）
+        resource_id = _tweet_id_from_url(params.get('url') or '')
+        resource_key = _resource_key(resource_id) if resource_id else None
+
+        # 查重：已完成则去重不重复拉取；running/failed 可续传（复用已下文件重新拉起）
+        if resource_key:
+            existing = _progress_store.get(resource_key)
+            if existing and existing['status'] == 'completed':
+                return jsonify({'success': True, 'already_done': True,
+                                'resource_key': resource_key,
+                                'message': '该推文已下载完成'})
+            wd = _resource_working_dir(resource_id)   # 固定目录：续传复用已下文件
+            _progress_store.upsert(resource_key, 'x', resource_id,
+                                   working_dir=wd, job_id=job_id,
+                                   status='running', percent=0, message='已启动')
+        else:
+            wd = _job_dir(job_id)
 
         # 物化 cookie（插件按域名从保险库取，run.py 读取文件）
         # 直接通过 host.vault._vault.get_by_domain 拿原始 cookie 列表自行构建 Netscape 文本，
@@ -486,7 +622,7 @@ def create_blueprint(host):
                 'percent': 0, 'message': '已启动', 'logs': [],
                 'done': False, 'error': None,
                 'pending_input': None, 'input_response': None,
-                'proc': proc, 'wd': wd,
+                'proc': proc, 'wd': wd, 'resource_key': resource_key,
                 'library_id': library_id, 'owner_id': owner_id,
                 'hidden': bool(params.get('hidden', True)),
             }
@@ -507,11 +643,17 @@ def create_blueprint(host):
                     if t == 'progress':
                         jobs[job_id]['percent'] = int(obj.get('percent', 0))
                         jobs[job_id]['message'] = obj.get('message', '')
+                        if resource_key:
+                            _progress_store.update(resource_key,
+                                percent=int(obj.get('percent', 0)),
+                                message=obj.get('message', ''))
                     elif t == 'log':
                         _append_log(job_id, obj.get('message', ''))
                     elif t == 'error':
                         jobs[job_id]['error'] = obj.get('message')
                         _append_log(job_id, 'ERROR: ' + obj.get('message', ''))
+                        if resource_key:
+                            _progress_store.mark_failed(resource_key, obj.get('message', '下载失败'))
                     elif t == 'await_input':
                         # 暂停读取，等待前端通过 /input 回写选择（与 run.py 的长轮询对齐）。
                         # 预览模式（input.type="preview"）等待用户浏览确认，不受 30s 超时限制；
@@ -527,6 +669,8 @@ def create_blueprint(host):
                     elif t == 'result':
                         # 降级路径：run.py 直接带 files（未走 /notify）
                         _ingest_files(job_id, obj.get('files', []))
+                        if resource_key:
+                            _progress_store.mark_completed(resource_key, '下载完成')
             except Exception as e:
                 jobs[job_id]['error'] = str(e)
             finally:
@@ -579,6 +723,21 @@ def create_blueprint(host):
     @host.login_required
     def status():
         job_id = request.args.get('job_id')
+        resource_key = request.args.get('resource_key')
+        # 优先按 resource_key 从持久进度读（退出后仍可取回）
+        if not job_id and resource_key:
+            rec = _progress_store.get(resource_key)
+            if not rec:
+                return jsonify({'success': False, 'message': '任务不存在'}), 404
+            return jsonify({
+                'success': True,
+                'resource_key': resource_key,
+                'percent': rec.get('percent', 0),
+                'message': rec.get('message', ''),
+                'done': rec.get('status') in ('completed', 'failed', 'cancelled'),
+                'status': rec.get('status'),
+                'error': rec.get('message') if rec.get('status') == 'failed' else None,
+            })
         job = jobs.get(job_id)
         if not job:
             return jsonify({'success': False, 'message': '任务不存在'}), 404
@@ -591,6 +750,26 @@ def create_blueprint(host):
             'done': job['done'],
             'error': job['error'],
             'pending_input': job.get('pending_input'),
+        })
+
+    @bp.route('/progress', methods=['GET'])
+    @host.login_required
+    def progress():
+        """前端点下载前查询：返回该推文的持久化下载状态（去重/续传判断依据）。"""
+        tid = request.args.get('tweet_id') or _tweet_id_from_url(request.args.get('url', ''))
+        if not tid:
+            return jsonify({'success': False, 'message': '缺少 tweet_id'}), 400
+        resource_key = _resource_key(tid)
+        rec = _progress_store.get(resource_key)
+        if not rec:
+            return jsonify({'success': True, 'resource_key': resource_key, 'status': 'none'})
+        return jsonify({
+            'success': True,
+            'resource_key': resource_key,
+            'status': rec.get('status'),
+            'percent': rec.get('percent', 0),
+            'message': rec.get('message', ''),
+            'working_dir': rec.get('working_dir'),
         })
 
     @bp.route('/timeline', methods=['GET'])
