@@ -344,7 +344,7 @@
       standaloneRoute = e.data.standalone_route;
     }
   });
-  window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x_downloader' }, '*');
+  window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x' }, '*');
 
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status'), logEl = $('log'), progEl = $('prog'), progBar = $('prog-bar');
@@ -404,7 +404,7 @@
         }
       };
       window.addEventListener('message', done);
-      window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x_downloader' }, '*');
+      window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x' }, '*');
       setTimeout(() => { window.removeEventListener('message', done); if (!resolved) resolve(null); }, 1500);
     });
   }
