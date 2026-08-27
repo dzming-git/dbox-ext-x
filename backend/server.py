@@ -489,7 +489,11 @@ def create_blueprint(host):
     @bp.route('/timeline', methods=['GET'])
     @host.login_required
     def timeline():
-        """拉取 X 关注流（home timeline）推文列表。"""
+        """拉取 X 关注中（Following）时间线——只含用户真实关注的人。
+
+        （之前误用 For You / HomeTimeline，会混入大量推荐与广告，已改用
+        HomeLatestTimeline 关注流。）
+        """
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
@@ -497,7 +501,7 @@ def create_blueprint(host):
         try:
             count = min(int(request.args.get('count', 20)), 50)
             cursor = request.args.get('cursor') or None
-            items, next_cursor = xrun.list_home_timeline(cookie, count, cursor)
+            items, next_cursor = xrun.list_following_timeline(cookie, count, cursor)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
