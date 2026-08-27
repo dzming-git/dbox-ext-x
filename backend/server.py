@@ -205,6 +205,83 @@ def create_blueprint(host):
             },
         } for r in rows]
 
+    # ---------- 本地浏览历史（P1-7） ----------
+    def _history_conn():
+        conn = sqlite3.connect(_folder_db_path, timeout=10)
+        conn.execute(
+            '''CREATE TABLE IF NOT EXISTS browse_history(
+                tweet_id TEXT PRIMARY KEY,
+                screen_name TEXT,
+                author_name TEXT,
+                avatar TEXT,
+                text TEXT,
+                created_at TEXT,
+                media TEXT,
+                url TEXT,
+                viewed_at TEXT
+            )''')
+        return conn
+
+    def _history_list(limit=100):
+        conn = _history_conn()
+        try:
+            rows = conn.execute(
+                'SELECT tweet_id, screen_name, author_name, avatar, text, '
+                'created_at, media, url, viewed_at FROM browse_history '
+                'ORDER BY viewed_at DESC LIMIT ?', (limit,)).fetchall()
+        finally:
+            conn.close()
+        return [{
+            'tweet_id': r[0], 'text': r[4], 'created_at': r[5],
+            'media': json.loads(r[6]) if r[6] else [], 'url': r[7],
+            'viewed_at': r[8],
+            'author': {
+                'screen_name': r[1], 'name': r[2], 'avatar': r[3],
+            },
+        } for r in rows]
+
+    def _history_add(item):
+        author = (item.get('author') or {})
+        screen_name = author.get('screen_name') or ''
+        author_name = author.get('name') or screen_name
+        avatar = author.get('avatar') or ''
+        media = item.get('media') or []
+        tid = item.get('tweet_id')
+        if not tid:
+            return
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        with _folder_lock:
+            conn = _history_conn()
+            try:
+                conn.execute(
+                    'INSERT OR REPLACE INTO browse_history'
+                    '(tweet_id, screen_name, author_name, avatar, text, '
+                    'created_at, media, url, viewed_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                    (tid, screen_name, author_name, avatar, item.get('text'),
+                     item.get('created_at'), json.dumps(media, ensure_ascii=False),
+                     item.get('url'), now))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _history_delete(tweet_id):
+        with _folder_lock:
+            conn = _history_conn()
+            try:
+                conn.execute('DELETE FROM browse_history WHERE tweet_id=?', (tweet_id,))
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _history_clear():
+        with _folder_lock:
+            conn = _history_conn()
+            try:
+                conn.execute('DELETE FROM browse_history')
+                conn.commit()
+            finally:
+                conn.close()
+
     def _ingest_files(job_id, files):
         job = jobs.get(job_id)
         if not job:
@@ -526,6 +603,25 @@ def create_blueprint(host):
             return jsonify({'success': False,
                             'message': '拉取推文详情失败: ' + str(e)}), 502
         return jsonify({'success': True, **res})
+
+    @bp.route('/history', methods=['GET', 'POST', 'DELETE'])
+    @host.login_required
+    def history():
+        """本地浏览历史（P1-7）：记录/查询/删除浏览过的推文。"""
+        if request.method == 'POST':
+            item = request.get_json(force=True, silent=True) or {}
+            _history_add(item)
+            return jsonify({'success': True})
+        if request.method == 'DELETE':
+            tid = (request.args.get('tweet_id') or '').strip()
+            if request.args.get('clear'):
+                _history_clear()
+            elif tid:
+                _history_delete(tid)
+            return jsonify({'success': True})
+        # GET 列表
+        limit = min(int(request.args.get('limit', 100)), 300)
+        return jsonify({'success': True, 'items': _history_list(limit)})
 
     @bp.route('/bookmarks', methods=['GET'])
     @host.login_required

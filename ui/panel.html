@@ -191,6 +191,7 @@
   <div class="tabs" id="tabs">
     <button class="tab active" data-view="download">下载推文</button>
     <button class="tab" data-view="browse">浏览</button>
+    <button class="tab" data-view="history">历史</button>
     <button class="tab" data-view="bookmarks">我的 X 收藏</button>
   </div>
 
@@ -219,6 +220,15 @@
     </div>
     <div id="bm-x-list" class="bm-list"><div class="bm-empty">点击「从 X 同步收藏」加载你在 X 上收藏的推文。</div></div>
     <div id="bm-folder-list" class="bm-list" style="display:none"><div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div></div>
+  </div>
+
+  <!-- 历史视图（P1-7 本地浏览历史） -->
+  <div class="view" id="view-history" style="display:none">
+    <div class="bm-toolbar">
+      <button id="hs-refresh" class="primary">🔄 刷新历史</button>
+      <button id="hs-clear" class="secondary">🗑 清空</button>
+    </div>
+    <div id="hs-list" class="bm-list"><div class="bm-empty">浏览过的推文会记录在这里，可回看。</div></div>
   </div>
 
   <!-- 浏览（关注流）视图 -->
@@ -737,6 +747,7 @@
   const tabsEl = $('tabs');
   const viewDownload = $('view-download');
   const viewBrowse = $('view-browse');
+  const viewHistory = $('view-history');
   const viewBookmarks = $('view-bookmarks');
   // 进入浏览 tab 时同步 dbox folder 到 favSet（仅一次）
   let brFavSynced = false;
@@ -763,10 +774,13 @@
       const v = t.dataset.view;
       viewDownload.style.display = v === 'download' ? '' : 'none';
       viewBrowse.style.display = v === 'browse' ? '' : 'none';
+      viewHistory.style.display = v === 'history' ? '' : 'none';
       viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
       if (v === 'browse') {
         syncFavFromServer();
         if (!brList.querySelector('.bm-card')) loadBrowse(true);
+      } else if (v === 'history') {
+        loadHistory();
       }
     });
   });
@@ -1273,6 +1287,7 @@
         dtCurTweet = d.tweet;
         dtBody.innerHTML = '';
         dtBody.appendChild(renderTweetDetailCard(d.tweet));
+        recordHistory(d.tweet);  // P1-7：记录浏览历史（fire-and-forget）
       }
       const replies = d.replies || [];
       dtReplies.innerHTML = replies.length ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
@@ -1303,6 +1318,43 @@
 
   $('dt-back').addEventListener('click', () => { dtEl.classList.remove('active'); });
   $('dt-more').addEventListener('click', loadMoreReplies);
+
+  /* ---- 本地浏览历史（P1-7） ---- */
+  const hsList = $('hs-list');
+
+  async function recordHistory(tweet) {
+    if (!tweet || !tweet.tweet_id) return;
+    try {
+      await req(`${API}/history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(tweet),
+      });
+    } catch (_) {}
+  }
+
+  async function loadHistory() {
+    hsList.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await req(`${API}/history?limit=100`);
+      const d = await r.json();
+      if (!d.success) { hsList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      const items = d.items || [];
+      if (!items.length) { hsList.innerHTML = '<div class="bm-empty">浏览过的推文会记录在这里，可回看。</div>'; return; }
+      hsList.innerHTML = '';
+      // 复用浏览卡渲染（含点开详情/收藏/下载），历史可回看
+      items.forEach((it) => hsList.appendChild(renderBrowseCard(it)));
+    } catch (e) {
+      hsList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  $('hs-refresh').addEventListener('click', loadHistory);
+  $('hs-clear').addEventListener('click', async () => {
+    if (!confirm('确定清空全部浏览历史？')) return;
+    await req(`${API}/history?clear=1`, { method: 'DELETE' });
+    loadHistory();
+  });
 </script>
 </body>
 </html>
