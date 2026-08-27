@@ -120,6 +120,9 @@
   .dt-reply img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
   .dt-reply .dt-reply-media { margin-top: 6px; }
   .dt-reply .dt-reply-media img { width: 100%; height: auto; max-height: 240px; object-fit: contain; border-radius: 8px; }
+  .bm-folderbar { display: flex; gap: 6px; margin-bottom: 10px; }
+  .bm-folderbar select, .bm-folderbar input { flex: 1; border: 1px solid #e3e6eb; border-radius: 8px; padding: 7px 8px; font-size: 12px; color: #0f1419; background: #fff; }
+  .bm-folderbar button { border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; color: #536471; }
   .mc-stats { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; font-size: 13px; color: #536471; }
   .mc-stats b { color: #0f1419; }
   .mc-item { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e3e6eb; border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 12px; color: #536471; }
@@ -223,6 +226,11 @@
     <div class="bm-toolbar">
       <button id="bm-sync" class="primary">🔄 从 X 同步收藏</button>
       <button id="bm-show-folder" class="secondary">📁 我已收藏 (dbox)</button>
+    </div>
+    <div id="bm-folder-bar" class="bm-folderbar" style="display:none">
+      <select id="bm-collection"><option value="">全部收藏</option></select>
+      <input id="bm-collection-input" type="text" placeholder="新集合名" />
+      <button id="bm-collection-add" class="secondary">＋ 新建集合</button>
     </div>
     <div id="bm-x-list" class="bm-list"><div class="bm-empty">点击「从 X 同步收藏」加载你在 X 上收藏的推文。</div></div>
     <div id="bm-folder-list" class="bm-list" style="display:none"><div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div></div>
@@ -901,10 +909,15 @@
         const tid = b.dataset.tid;
         b.disabled = true; b.textContent = '已加入 ✓';
         try {
+          // 带入当前选中集合（若有）
+          const selEl = document.getElementById('bm-collection');
+          const coll = selEl && selEl.value ? selEl.value : null;
+          const payload = { ...item };
+          if (coll) payload.collection = coll;
           const r = await req(`${API}/bookmarks/folder`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(item),
+            body: JSON.stringify(payload),
           });
           const d = await r.json();
           if (!d.success) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入失败: ' + (d.message || '')); }
@@ -944,10 +957,28 @@
     }
   }
 
+  async function loadCollections() {
+    try {
+      const r = await req(`${API}/bookmarks/collections`);
+      const d = await r.json();
+      const sel = $('bm-collection');
+      if (!sel) return;
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">全部收藏</option>';
+      (d.items || []).forEach((c) => {
+        const o = document.createElement('option');
+        o.value = c; o.textContent = c;
+        sel.appendChild(o);
+      });
+      sel.value = cur || '';
+    } catch (_) {}
+  }
+
   async function loadFolder() {
     bmFolderList.innerHTML = '<div class="bm-empty">加载中…</div>';
     try {
-      const r = await req(`${API}/bookmarks/folder`);
+      const coll = $('bm-collection').value || '';
+      const r = await req(`${API}/bookmarks/folder${coll ? `?collection=${encodeURIComponent(coll)}` : ''}`);
       const d = await r.json();
       if (!d.success) { bmFolderList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
       renderFolder(d.items || []);
@@ -976,6 +1007,29 @@
     bmShowingFolder = true;
     bmXList.style.display = 'none';
     bmFolderList.style.display = '';
+    $('bm-folder-bar').style.display = 'flex';
+    loadCollections();
+    loadFolder();
+  });
+
+  // 集合下拉切换时按集合过滤
+  $('bm-collection').addEventListener('change', () => loadFolder());
+  // 新建集合：把输入框内容加入下拉并选中，之后"加入收藏夹"会用当前集合
+  $('bm-collection-add').addEventListener('click', () => {
+    const inp = $('bm-collection-input');
+    const name = (inp.value || '').trim();
+    if (!name) return;
+    const sel = $('bm-collection');
+    // 添加到下拉（若已存在则不重复）
+    let exists = false;
+    Array.from(sel.options).forEach((o) => { if (o.value === name) exists = true; });
+    if (!exists) {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    }
+    sel.value = name;
+    inp.value = '';
     loadFolder();
   });
 

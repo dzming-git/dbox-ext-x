@@ -183,27 +183,54 @@ def create_blueprint(host):
                 created_at TEXT,
                 media TEXT,
                 url TEXT,
-                added_at TEXT
+                added_at TEXT,
+                collection TEXT
             )''')
+        # 兼容旧库：若缺 collection 列则补齐
+        try:
+            cols = [r[1] for r in conn.execute('PRAGMA table_info(bookmarks)').fetchall()]
+            if 'collection' not in cols:
+                conn.execute('ALTER TABLE bookmarks ADD COLUMN collection TEXT')
+                conn.commit()
+        except Exception:
+            pass
         return conn
 
-    def _folder_list():
+    def _folder_list(collection=None):
         conn = _folder_conn()
         try:
-            rows = conn.execute(
-                'SELECT tweet_id, screen_name, author_name, avatar, text, '
-                'created_at, media, url, added_at FROM bookmarks '
-                'ORDER BY added_at DESC').fetchall()
+            if collection:
+                rows = conn.execute(
+                    'SELECT tweet_id, screen_name, author_name, avatar, text, '
+                    'created_at, media, url, added_at, collection FROM bookmarks '
+                    'WHERE collection=? ORDER BY added_at DESC', (collection,)).fetchall()
+            else:
+                rows = conn.execute(
+                    'SELECT tweet_id, screen_name, author_name, avatar, text, '
+                    'created_at, media, url, added_at, collection FROM bookmarks '
+                    'ORDER BY added_at DESC').fetchall()
         finally:
             conn.close()
         return [{
             'tweet_id': r[0], 'text': r[4], 'created_at': r[5],
             'media': json.loads(r[6]) if r[6] else [], 'url': r[7],
-            'added_at': r[8],
+            'added_at': r[8], 'collection': r[9],
             'author': {
                 'screen_name': r[1], 'name': r[2], 'avatar': r[3],
             },
         } for r in rows]
+
+    def _folder_collections():
+        """返回所有已使用的集合名。"""
+        conn = _folder_conn()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT collection FROM bookmarks "
+                "WHERE collection IS NOT NULL AND collection != '' "
+                "ORDER BY collection").fetchall()
+        finally:
+            conn.close()
+        return [r[0] for r in rows]
 
     # ---------- 本地浏览历史（P1-7） ----------
     def _history_conn():
@@ -644,8 +671,15 @@ def create_blueprint(host):
     @bp.route('/bookmarks/folder', methods=['GET'])
     @host.login_required
     def folder_list():
-        """列出本地 X 收藏夹（dbox 持久化的收藏快照）。"""
-        return jsonify({'success': True, 'items': _folder_list()})
+        """列出本地 X 收藏夹（dbox 持久化的收藏快照）。支持 ?collection= 过滤。"""
+        collection = (request.args.get('collection') or '').strip() or None
+        return jsonify({'success': True, 'items': _folder_list(collection)})
+
+    @bp.route('/bookmarks/collections', methods=['GET'])
+    @host.login_required
+    def folder_collections():
+        """返回所有收藏集合名。"""
+        return jsonify({'success': True, 'items': _folder_collections()})
 
     @bp.route('/bookmarks/folder', methods=['POST'])
     @host.login_required
@@ -668,16 +702,18 @@ def create_blueprint(host):
                or (f'https://x.com/{screen_name}/status/{tid}'
                    if screen_name else ''))
         added = time.strftime('%Y-%m-%d %H:%M:%S')
+        collection = (data.get('collection') or '').strip() or None
         with _folder_lock:
             conn = _folder_conn()
             try:
                 conn.execute(
                     'INSERT OR REPLACE INTO bookmarks'
                     '(tweet_id, screen_name, author_name, avatar, text, '
-                    'created_at, media, url, added_at) VALUES (?,?,?,?,?,?,?,?,?)',
+                    'created_at, media, url, added_at, collection) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?)',
                     (tid, screen_name, author_name, avatar, data.get('text'),
                      data.get('created_at'), json.dumps(media, ensure_ascii=False),
-                     url, added))
+                     url, added, collection))
                 conn.commit()
             finally:
                 conn.close()
