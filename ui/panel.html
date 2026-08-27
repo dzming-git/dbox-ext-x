@@ -199,15 +199,15 @@
 
   <!-- 标签切换 -->
   <div class="tabs" id="tabs">
-    <button class="tab active" data-view="download">下载推文</button>
-    <button class="tab" data-view="browse">浏览</button>
+    <button class="tab" data-view="download">下载推文</button>
+    <button class="tab active" data-view="browse">浏览</button>
     <button class="tab" data-view="history">历史</button>
     <button class="tab" data-view="cache">缓存</button>
     <button class="tab" data-view="bookmarks">我的 X 收藏</button>
   </div>
 
   <!-- 下载表单视图 -->
-  <div class="view" id="view-download">
+  <div class="view" id="view-download" style="display:none">
   <!-- 表单：始终可见 -->
   <div class="form" id="form">
     <input id="url" type="text" placeholder="粘贴 X / Twitter 推文链接…" />
@@ -258,7 +258,7 @@
   </div>
 
   <!-- 浏览（关注流）视图 -->
-  <div class="view" id="view-browse" style="display:none">
+  <div class="view" id="view-browse">
     <div class="bm-toolbar">
       <button id="br-refresh" class="primary">🔄 刷新关注流</button>
       <button id="br-batch" class="secondary" disabled>⬇ 批量下载选中 (0)</button>
@@ -1081,14 +1081,34 @@
         <button class="fav ${favSet.has(tid) ? 'on' : ''}" data-tid="${esc2(tid)}">${favSet.has(tid) ? '★ 已收藏' : '☆ 收藏'}</button>
         <button class="dl" data-tid="${esc2(tid)}">⬇ 下载</button>
       </div>`;
-    // 缩略图 / 正文 / 卡片点击：打开 DBox 内推文详情页（不跳外链）。
+    // 点击图片/视频缩略图 → lightbox 大图/播放视频（不是打开帖子）。
+    // 点击正文/标题 → 打开 DBox 内推文详情页。
     // 作者名/头像点击跳作者 profile（仍走外链，因 dbox 暂无用户资料页）。
     const tweetUrl = item.url || `https://x.com/${a.screen_name || 'unknown'}/status/${tid}`;
     const openDetail = (e) => { e.stopPropagation(); openTweetDetail(tid, item); };
-    card.querySelectorAll('.bm-media').forEach((el) => {
-      el.addEventListener('click', openDetail);
+    // 媒体缩略图 → lightbox 预览
+    const bmLBItems = medias.filter((m) => m.url || m.cover).map((m) => {
+      if (m.type === 'video') {
+        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
+        return { type: 'video', src: direct, cover: mediaUrl(m.cover || m.url || '', 'image'), label: '视频', playable: !!direct };
+      }
+      return { type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' };
     });
+    card.querySelectorAll('.bm-media').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = Number(el.dataset.idx || 0);
+        if (!bmLBItems.length) return;
+        _lbItems = bmLBItems;
+        _lbIdx = Math.min(idx, bmLBItems.length - 1);
+        showLightbox(_lbIdx);
+      });
+    });
+    // 正文（及整卡空白区）→ 打开帖子详情
     card.querySelector('.text').addEventListener('click', openDetail);
+    card.addEventListener('click', (e) => {
+      if (e.target === card || e.target.classList.contains('text')) openDetail(e);
+    });
     card.querySelectorAll('[data-link]').forEach((el) => {
       el.addEventListener('click', (e) => { e.stopPropagation(); const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
     });
@@ -1554,6 +1574,20 @@
     await req(`${API}/media/cache`, { method: 'DELETE' });
     loadCache();
   });
+
+  /* ---- 初始化：默认 tab 是浏览，打开即自动加载关注流（无需点刷新） ---- */
+  (function initAutoBrowse() {
+    const waitToken = () => {
+      if (!TOKEN) { setTimeout(waitToken, 200); return; }
+      // 若默认 tab 为浏览且尚未加载，自动拉取关注流
+      const activeTab = tabsEl.querySelector('.tab.active');
+      if (activeTab && activeTab.dataset.view === 'browse' &&
+          brList && !brList.querySelector('.bm-card')) {
+        loadBrowse(true);
+      }
+    };
+    waitToken();
+  })();
 </script>
 </body>
 </html>
