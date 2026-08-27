@@ -120,6 +120,8 @@
   .dt-reply img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
   .dt-reply .dt-reply-media { margin-top: 6px; }
   .dt-reply .dt-reply-media img { width: 100%; height: auto; max-height: 240px; object-fit: contain; border-radius: 8px; }
+  .bm-newbar { text-align: center; margin-bottom: 10px; }
+  .bm-newbar button { width: 100%; padding: 9px; border: none; background: #fff5d6; color: #b58900; border-radius: 9px; font-size: 13px; cursor: pointer; font-weight: 500; }
   .bm-folderbar { display: flex; gap: 6px; margin-bottom: 10px; }
   .bm-folderbar select, .bm-folderbar input { flex: 1; border: 1px solid #e3e6eb; border-radius: 8px; padding: 7px 8px; font-size: 12px; color: #0f1419; background: #fff; }
   .bm-folderbar button { border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; color: #536471; }
@@ -1231,6 +1233,42 @@
 
   $('br-refresh').addEventListener('click', () => loadBrowse(true));
   $('br-more').addEventListener('click', () => loadBrowse(false));
+
+  // P2-11 定时刷新关注流：每 3 分钟静默拉一次最新推文，统计未见过的新 ID
+  let brKnownIds = new Set();
+  document.querySelectorAll('#br-list .bm-card').forEach((c) => {
+    const tid = c.querySelector('.bm-chk')?.dataset?.tid;
+    if (tid) brKnownIds.add(tid);
+  });
+  function brRenderNewTweetsBtn(count) {
+    let el = $('br-new');
+    if (count <= 0) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'br-new';
+      el.className = 'bm-newbar';
+      el.innerHTML = `<button>🔔 有 <b>${count}</b> 条新推文，点击加载</button>`;
+      brList.parentNode.insertBefore(el, brList);
+      el.addEventListener('click', () => loadBrowse(true));
+    } else {
+      el.innerHTML = `<button>🔔 有 <b>${count}</b> 条新推文，点击加载</button>`;
+    }
+  }
+  async function pollNewTweets() {
+    if (brLoading) return;
+    try {
+      const r = await req(`${API}/timeline?count=20`);
+      const d = await r.json();
+      if (!d.success) return;
+      const fresh = (d.items || []).filter((it) => it.tweet_id && !brKnownIds.has(it.tweet_id));
+      if (fresh.length) brRenderNewTweetsBtn(fresh.length);
+    } catch (_) {}
+  }
+  setInterval(pollNewTweets, 180000);  // 每 3 分钟
+  // 切到浏览 tab 时立即查一次
+  tabsEl.addEventListener('click', (e) => {
+    if (e.target?.dataset?.view === 'browse') setTimeout(pollNewTweets, 500);
+  });
 
   // P2-8 批量下载：复选框变化时更新按钮
   function updateBatchBtn() {
