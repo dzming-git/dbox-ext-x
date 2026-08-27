@@ -765,4 +765,41 @@ def create_blueprint(host):
         resp.headers['Content-Disposition'] = 'inline'
         return resp
 
+    @bp.route('/media/cache', methods=['GET', 'DELETE'])
+    @host.login_required
+    def media_cache():
+        """媒体缓存管理（P2-9）：GET 列表 / DELETE 清空。"""
+        if request.method == 'DELETE':
+            nonlocal _lru_total
+            with _LRU_LOCK:
+                for fn in os.listdir(_CACHE_LRU_DIR):
+                    try:
+                        os.remove(os.path.join(_CACHE_LRU_DIR, fn))
+                    except Exception:
+                        pass
+                _lru_meta.clear()
+                _lru_total = 0
+            _cache_save_index()
+            return jsonify({'success': True})
+        # GET 列表
+        items = []
+        try:
+            for fn in os.listdir(_CACHE_LRU_DIR):
+                p = os.path.join(_CACHE_LRU_DIR, fn)
+                if os.path.isfile(p):
+                    ext = os.path.splitext(fn)[1].lower()
+                    items.append({
+                        'file': fn,
+                        'ext': ext,
+                        'size': os.path.getsize(p),
+                        'mtime': os.path.getmtime(p),
+                        'type': 'video' if ext in ('.mp4', '.webm', '.mov') else 'image',
+                    })
+        except Exception:
+            pass
+        items.sort(key=lambda x: -x['mtime'])
+        total = sum(x['size'] for x in items)
+        return jsonify({'success': True, 'items': items, 'count': len(items),
+                        'total_bytes': total})
+
     return bp

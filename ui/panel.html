@@ -120,6 +120,11 @@
   .dt-reply img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
   .dt-reply .dt-reply-media { margin-top: 6px; }
   .dt-reply .dt-reply-media img { width: 100%; height: auto; max-height: 240px; object-fit: contain; border-radius: 8px; }
+  .mc-stats { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; font-size: 13px; color: #536471; }
+  .mc-stats b { color: #0f1419; }
+  .mc-item { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #e3e6eb; border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 12px; color: #536471; }
+  .mc-item .type { font-weight: 600; color: #0f1419; min-width: 40px; }
+  .mc-item .size { margin-left: auto; }
 
   /* 选择型交互 */
   .pick { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
@@ -192,6 +197,7 @@
     <button class="tab active" data-view="download">下载推文</button>
     <button class="tab" data-view="browse">浏览</button>
     <button class="tab" data-view="history">历史</button>
+    <button class="tab" data-view="cache">缓存</button>
     <button class="tab" data-view="bookmarks">我的 X 收藏</button>
   </div>
 
@@ -229,6 +235,16 @@
       <button id="hs-clear" class="secondary">🗑 清空</button>
     </div>
     <div id="hs-list" class="bm-list"><div class="bm-empty">浏览过的推文会记录在这里，可回看。</div></div>
+  </div>
+
+  <!-- 缓存管理视图（P2-9） -->
+  <div class="view" id="view-cache" style="display:none">
+    <div class="bm-toolbar">
+      <button id="mc-refresh" class="primary">🔄 刷新</button>
+      <button id="mc-clear" class="secondary">🗑 清空缓存</button>
+    </div>
+    <div id="mc-stats" class="mc-stats"></div>
+    <div id="mc-list" class="bm-list"><div class="bm-empty">点开的图片/视频会缓存到本地。</div></div>
   </div>
 
   <!-- 浏览（关注流）视图 -->
@@ -748,6 +764,7 @@
   const viewDownload = $('view-download');
   const viewBrowse = $('view-browse');
   const viewHistory = $('view-history');
+  const viewCache = $('view-cache');
   const viewBookmarks = $('view-bookmarks');
   // 进入浏览 tab 时同步 dbox folder 到 favSet（仅一次）
   let brFavSynced = false;
@@ -775,12 +792,15 @@
       viewDownload.style.display = v === 'download' ? '' : 'none';
       viewBrowse.style.display = v === 'browse' ? '' : 'none';
       viewHistory.style.display = v === 'history' ? '' : 'none';
+      viewCache.style.display = v === 'cache' ? '' : 'none';
       viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
       if (v === 'browse') {
         syncFavFromServer();
         if (!brList.querySelector('.bm-card')) loadBrowse(true);
       } else if (v === 'history') {
         loadHistory();
+      } else if (v === 'cache') {
+        loadCache();
       }
     });
   });
@@ -1354,6 +1374,48 @@
     if (!confirm('确定清空全部浏览历史？')) return;
     await req(`${API}/history?clear=1`, { method: 'DELETE' });
     loadHistory();
+  });
+
+  /* ---- 媒体缓存管理（P2-9） ---- */
+  const mcList = $('mc-list');
+  const mcStats = $('mc-stats');
+
+  function fmtSize(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+    return n + ' B';
+  }
+
+  async function loadCache() {
+    mcList.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await req(`${API}/media/cache`);
+      const d = await r.json();
+      if (!d.success) { mcList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      const items = d.items || [];
+      const total = d.total_bytes || 0;
+      mcStats.innerHTML = `共 <b>${items.length}</b> 个文件，占用 <b>${fmtSize(total)}</b>（上限 512MB）`;
+      if (!items.length) { mcList.innerHTML = '<div class="bm-empty">点开的图片/视频会缓存到本地，可回看。</div>'; return; }
+      mcList.innerHTML = '';
+      items.slice(0, 100).forEach((it) => {
+        const el = document.createElement('div');
+        el.className = 'mc-item';
+        el.innerHTML = `<span class="type">${it.type === 'video' ? '🎬' : '🖼'}</span>
+          <span class="name">${esc2(it.file)}</span>
+          <span class="size">${fmtSize(it.size)}</span>`;
+        mcList.appendChild(el);
+      });
+    } catch (e) {
+      mcList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  $('mc-refresh').addEventListener('click', loadCache);
+  $('mc-clear').addEventListener('click', async () => {
+    if (!confirm('确定清空全部媒体缓存？已缓存图片/视频将需要重新从 X 加载。')) return;
+    await req(`${API}/media/cache`, { method: 'DELETE' });
+    loadCache();
   });
 </script>
 </body>
