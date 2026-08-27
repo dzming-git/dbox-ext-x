@@ -356,6 +356,9 @@ def create_blueprint(host):
                 'token': token,
             },
             'cookies': cookies_ctx,
+            # 媒体缓存目录：下载时若 twimg URL 已缓存（用户预览时已下载），
+            # 直接复用本地字节，不再重复访问 twimg（P0-2 缓存即下载）
+            'media_cache_dir': _CACHE_LRU_DIR,
         }
         payload = {'params': params, 'context': context}
 

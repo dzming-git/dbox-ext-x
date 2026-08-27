@@ -31,6 +31,7 @@ import io
 import re
 import json
 import time
+import hashlib
 import shutil
 import socket
 import subprocess
@@ -1643,10 +1644,45 @@ def extract_media(url, cookie_header, proxy_cfg):
 
 
 # ---------------- 下载 ----------------
+# 媒体缓存目录（由 server 传入）：下载前若该 URL 已在本地缓存（用户预览时已下载），
+# 直接复用本地字节，不重复访问 twimg —— P0-2「缓存即下载」。
+_MEDIA_CACHE_DIR = None
+
+
+def _cache_hit_path(url, allowed_exts):
+    """返回本地媒体缓存中匹配 url 的文件路径；无缓存或扩展名不符返回 None。"""
+    if not _MEDIA_CACHE_DIR or not os.path.isdir(_MEDIA_CACHE_DIR):
+        return None
+    try:
+        key = hashlib.md5(url.encode('utf-8')).hexdigest()
+        for fn in os.listdir(_MEDIA_CACHE_DIR):
+            if fn.startswith(key):
+                ext = os.path.splitext(fn)[1].lower()
+                if allowed_exts and ext not in allowed_exts:
+                    continue
+                p = os.path.join(_MEDIA_CACHE_DIR, fn)
+                if os.path.isfile(p):
+                    return p
+    except Exception:
+        return None
+    return None
+
+
 def download_image(url, cookie_header, working_dir, index, proxy_cfg, guest_token=None, progress_cb=None):
     ext = os.path.splitext(urllib.parse.urlparse(url).path)[1] or '.jpg'
     ext = ext if ext.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.webp') else '.jpg'
     dest = os.path.join(working_dir, f'x_media_{index}{ext}')
+    # 缓存即下载：命中本地缓存直接复制
+    cached = _cache_hit_path(url, {'.jpg', '.jpeg', '.png', '.gif', '.webp'})
+    if cached:
+        import shutil
+        shutil.copyfile(cached, dest)
+        if progress_cb:
+            try:
+                progress_cb(1, 1)
+            except Exception:
+                pass
+        return dest
     headers = build_headers(cookie_header, guest_token=guest_token)
     opener = make_opener(proxy_cfg)
     data = fetch_bytes(url, opener, headers, timeout=90)
@@ -1979,6 +2015,9 @@ def main():
     working_dir = context.get('working_dir') or os.getcwd()
     notify_ctx = context.get('notify', {}) or {}
     cookie_header = resolve_cookie(context.get('cookies', {}) or {})
+    # 媒体缓存目录（server 传入）：下载时优先复用本地缓存（P0-2 缓存即下载）
+    global _MEDIA_CACHE_DIR
+    _MEDIA_CACHE_DIR = context.get('media_cache_dir') or None
     url = (params.get('url') or '').strip()
     simulate = bool(params.get('simulate'))
     # 目标资源库：前端放在顶层 body.library_id（与 params 平级），也可能在 params 里
