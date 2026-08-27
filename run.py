@@ -919,6 +919,16 @@ def list_home_timeline(cookie_header, count=20, cursor=None):
     # 响应结构：data.home.home_timeline_urt 直接含 instructions（无 timeline 层）
     home = (data.get('data', {}) or {}).get('home', {}) or {}
     tl = home.get('home_timeline_urt') or {}
+    # 过滤广告/推广推文：X 用 entryId 前缀 "promoted-tweet-" 标记广告
+    # （即使 includePromotedContent=false 仍会返回这些）。这里就地修改
+    # instructions.entries，把广告条目移除，避免 _extract_bookmark_tweets 误纳。
+    for _inst in (tl.get('instructions') or []):
+        _entries = _inst.get('entries') or []
+        if _entries:
+            _inst['entries'] = [
+                e for e in _entries
+                if not (e.get('entryId') or '').startswith('promoted-')
+            ]
     # 包装成 _extract_bookmark_tweets 兼容的 data 结构复用推文/user/media 解析
     items = _extract_bookmark_tweets(
         {'data': {'bookmark_timeline_v2': {'timeline': tl}}})
