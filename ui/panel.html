@@ -93,9 +93,9 @@
   .tab { flex: 1; background: #f3f5f7; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; color: #536471; }
   .tab.active { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
 
-  /* X 收藏 */
-  /* 收藏视图需独立滚动：wrap 是 overflow:hidden 的 flex column，此视图占满剩余高度并滚动 */
-  #view-bookmarks { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; }
+  /* X 收藏 / 浏览 */
+  /* 视图需独立滚动：wrap 是 overflow:hidden 的 flex column，此视图占满剩余高度并滚动 */
+  #view-bookmarks, #view-browse { flex: 1; overflow-y: auto; min-height: 0; padding: 12px; }
   .bm-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
   .bm-toolbar button { flex: 1; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; border: 1px solid #e3e6eb; }
   .bm-toolbar .primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
