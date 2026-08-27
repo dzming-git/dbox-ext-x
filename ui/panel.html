@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>X 下载</title>
+<!-- HLS 播放支持：X 视频为 m3u8 流，原生 <video> 无法直接播放，需 hls.js。
+     若 CDN 不可达（离线环境），会静默失败，下方逻辑自动退化为“打开详情预览”。 -->
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" onerror="window.__HLS_FAILED=true"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -805,25 +808,44 @@
     } catch (_) {}
   }
 
+  // ---- hash 路由（刷新保持视图 / 可深链 / 全屏返回）----
+  function switchView(v, { silent = false } = {}) {
+    tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
+    viewDownload.style.display = v === 'download' ? '' : 'none';
+    viewBrowse.style.display = v === 'browse' ? '' : 'none';
+    viewHistory.style.display = v === 'history' ? '' : 'none';
+    viewCache.style.display = v === 'cache' ? '' : 'none';
+    viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
+    if (!silent) location.hash = '#/view/' + v;
+    if (v === 'browse') {
+      syncFavFromServer();
+      if (!brList.querySelector('.bm-card')) { brAutoRestore = true; loadBrowse(true); }
+    } else if (v === 'history') {
+      loadHistory();
+    } else if (v === 'cache') {
+      loadCache();
+    } else if (v === 'bookmarks') {
+      if (!bmXList.querySelector('.bm-card') && !bmShowingFolder) loadBookmarks();
+    }
+  }
+
+  function parseHash() {
+    const m = (location.hash || '').match(/^#\/view\/(\w+)/);
+    return m ? m[1] : null;
+  }
+
   tabsEl.querySelectorAll('.tab').forEach((t) => {
-    t.addEventListener('click', () => {
-      tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.remove('active'));
-      t.classList.add('active');
-      const v = t.dataset.view;
-      viewDownload.style.display = v === 'download' ? '' : 'none';
-      viewBrowse.style.display = v === 'browse' ? '' : 'none';
-      viewHistory.style.display = v === 'history' ? '' : 'none';
-      viewCache.style.display = v === 'cache' ? '' : 'none';
-      viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
-      if (v === 'browse') {
-        syncFavFromServer();
-        if (!brList.querySelector('.bm-card')) loadBrowse(true);
-      } else if (v === 'history') {
-        loadHistory();
-      } else if (v === 'cache') {
-        loadCache();
-      }
-    });
+    t.addEventListener('click', () => switchView(t.dataset.view));
+  });
+
+  // 初始视图：优先用 hash，否则默认 browse（同原逻辑）。
+  // 延迟到脚本末尾再执行，避免 switchView 内引用的 bmXList/bmShowingFolder 等 const 尚未初始化的 TDZ 问题。
+  const initialView = parseHash() || 'browse';
+  setTimeout(() => switchView(initialView, { silent: true }), 0);
+
+  window.addEventListener('hashchange', () => {
+    const v = parseHash();
+    if (v && ['download', 'browse', 'history', 'cache', 'bookmarks'].includes(v)) switchView(v, { silent: true });
   });
 
   /* ---- X 收藏 ---- */
@@ -852,14 +874,65 @@
     return `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}`;
   }
 
+  // 在卡片内就地播放视频：有 mp4 直链用原生 video；仅有 m3u8 流用 hls.js（经 /media 代理）。
+  // 返回 true 表示已处理（调用方勿再走其它分支）。
+  function playVideoEl(el) {
+    const v = el.querySelector('video');
+    if (!v) return false;
+    const src = el.dataset.src, m3u8 = el.dataset.m3u8;
+    if (src && !v.src) {
+      v.src = src; v.controls = true; v.muted = true;
+      v.play().catch(() => {});
+      return true;
+    }
+    if (m3u8) {
+      if (v.src) { v.paused ? v.play().catch(()=>{}) : v.pause(); return true; }
+      const Hls = window.Hls;
+      if (Hls && Hls.isSupported()) {
+        // capLevelToPlayerSize:false —— 不按缩略图小尺寸锁低清；
+        // 全屏时强制最高 level 保证清晰度（hls.js 在小窗下会自动选低码率，全屏不升档导致糊）。
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: false });
+        hls.loadSource(m3u8);
+        hls.attachMedia(v);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          v.controls = true; v.muted = true;
+          if (document.fullscreenElement === v && hls.levels && hls.levels.length) {
+            hls.currentLevel = hls.levels.length - 1;
+          }
+          v.play().catch(()=>{});
+        });
+        const syncLevel = () => {
+          if (hls.levels && hls.levels.length) {
+            hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
+              ? hls.levels.length - 1 : -1; // 全屏强制最高清，退出恢复 ABR 自动
+          }
+        };
+        v.addEventListener('fullscreenchange', syncLevel);
+        v.addEventListener('webkitbeginfullscreen', syncLevel);
+        v.addEventListener('webkitendfullscreen', syncLevel);
+        v._hls = hls;
+        return true;
+      }
+      // hls.js 不可用（离线/未加载）：退化为打开详情预览（详情页能播 mp4/原生）
+      const openBtn = el.closest('.bm-card')?.querySelector('.open');
+      if (openBtn) { openBtn.click(); return true; }
+    }
+    // 仅有空 video：尝试播放/暂停
+    if (v) { v.paused ? v.play().catch(()=>{}) : v.pause(); return true; }
+    return false;
+  }
+
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
     const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
-        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video"${direct ? ` data-src="${esc2(direct)}"` : ''}><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
+        const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
+        // X 视频常见为 m3u8 流：有 mp4 直链优先 data-src 原生播放；仅有 m3u8 则保留 data-m3u8 供 hls.js 播放
+        const direct = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
+        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video"${direct ? ` data-src="${esc2(direct)}"` : ''}${m3u8 ? ` data-m3u8="${esc2(m3u8)}"` : ''}><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
@@ -898,17 +971,7 @@
     card.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', () => {
         // 视频缩略图 → 就地播放（不弹 lightbox）
-        if (el.dataset.type === 'video') {
-          const v = el.querySelector('video');
-          if (v && el.dataset.src && !v.src) {
-            v.src = el.dataset.src;
-            v.controls = true; v.muted = true;
-            v.play().catch(() => {});
-          } else if (v) {
-            if (v.paused) v.play().catch(() => {}); else v.pause();
-          }
-          return;
-        }
+        if (el.dataset.type === 'video') { playVideoEl(el); return; }
         // 图片缩略图 → lightbox 大图
         const idx = Number(el.dataset.idx || 0);
         if (!bmLBItems.length) return;
@@ -1065,6 +1128,7 @@
   const brLoadmore = $('br-loadmore');
   let brCursor = null;
   let brLoading = false;
+  const brSeenIds = new Set();   // 浏览去重：同一 tweet_id 只渲染一次
   const downloadedTweetIds = new Set();  // 避免重复下载
   const favSet = new Set();              // 已收藏 tweet_id（用于浏览卡按钮态）
   const BROWSE_CACHE_KEY = 'xd_browse_cache';  // localStorage：浏览数据跨视图共享
@@ -1090,6 +1154,7 @@
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
     const card = document.createElement('div');
     card.className = 'bm-card';
+    card.dataset.tid = tid;
     card.innerHTML = `
       <div class="head">
         <input type="checkbox" class="bm-chk" data-tid="${esc2(tid)}" />
@@ -1123,17 +1188,7 @@
       el.addEventListener('click', (e) => {
         e.stopPropagation();
         // 视频缩略图 → 就地播放（不弹 lightbox），想全屏点播放器全屏按钮
-        if (el.dataset.type === 'video') {
-          const v = el.querySelector('video');
-          if (v && el.dataset.src && !v.src) {
-            v.src = el.dataset.src;
-            v.controls = true; v.muted = true;
-            v.play().catch(() => {});
-          } else if (v) {
-            if (v.paused) v.play().catch(() => {}); else v.pause();
-          }
-          return;
-        }
+        if (el.dataset.type === 'video') { playVideoEl(el); return; }
         // 图片缩略图 → lightbox 大图
         const idx = Number(el.dataset.idx || 0);
         if (!bmLBItems.length) return;
@@ -1225,6 +1280,14 @@
   }
 
   // 浏览数据缓存：小屏/全屏共享，避免切换后重新刷新
+  // 按发布时间倒序（最新在前）
+  function sortItemsByTime(items) {
+    return items.slice().sort((a, b) => {
+      const ta = a.created_at ? Date.parse(a.created_at) : 0;
+      const tb = b.created_at ? Date.parse(b.created_at) : 0;
+      return tb - ta;
+    });
+  }
   function saveBrowseCache(items, append) {
     try {
       if (!append) localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items, cursor: brCursor }));
@@ -1237,11 +1300,19 @@
   function renderCachedBrowse() {
     try {
       const c = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null');
+      // 仅「新鲜」缓存用于秒开：超过 5 分钟必须重新向服务端拉取，避免时间线卡在旧数据
       if (!c || !c.items || !c.items.length) return false;
+      if (Date.now() - (c.ts || 0) > 5 * 60 * 1000) return false;
       brList.innerHTML = '';
-      c.items.forEach((it) => brList.appendChild(renderBrowseCard(it)));
+      brSeenIds.clear();
+      sortItemsByTime(c.items).forEach((it) => {
+        const id = it.tweet_id || it.id;
+        if (!id || brSeenIds.has(String(id))) return;
+        brSeenIds.add(String(id));
+        brList.appendChild(renderBrowseCard(it));
+      });
       brCursor = c.cursor || null;
-      brLoadmore.style.display = brCursor ? '' : 'none';
+      brLoadmore.style.display = 'none';
       return true;
     } catch (_) { return false; }
   }
@@ -1249,19 +1320,51 @@
     try { localStorage.setItem(BROWSE_FAV_KEY, JSON.stringify(Array.from(favSet))); } catch (_) {}
   }
 
+  // ---- 浏览位置记忆：记住上次看到的推文，重进时定位回去，往上滑看更新 ----
+  const BROWSE_POS_KEY = 'xd_browse_pos';
+  let brAutoRestore = false;   // 仅「自动进入浏览视图」时恢复；用户手动刷新不恢复
+  function saveBrowsePos() {
+    const cont = viewBrowse;
+    if (!cont) return;
+    const contRect = cont.getBoundingClientRect();
+    const cards = brList.querySelectorAll('.bm-card');
+    for (const c of cards) {
+      const r = c.getBoundingClientRect();
+      // 找视口内（或顶部刚露出）的第一张卡片
+      if (r.bottom > contRect.top) {
+        const absTop = r.top - contRect.top + cont.scrollTop;
+        const tid = c.dataset.tid;
+        if (tid) {
+          try { localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid, top: absTop })); } catch (_) {}
+        }
+        break;
+      }
+    }
+  }
+  function restoreBrowsePos() {
+    if (!brAutoRestore) return;
+    let pos = null;
+    try { pos = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); } catch (_) {}
+    brAutoRestore = false;
+    if (!pos || !pos.tid) return;
+    const card = Array.from(brList.querySelectorAll('.bm-card')).find((c) => c.dataset.tid === pos.tid);
+    if (!card) return;  // 该推文尚未渲染（列表还不够长），降级到顶部
+    const contRect = viewBrowse.getBoundingClientRect();
+    const r = card.getBoundingClientRect();
+    const absTop = r.top - contRect.top + viewBrowse.scrollTop;
+    viewBrowse.scrollTop = Math.max(0, absTop - 8);
+  }
+
   async function loadBrowse(reset = true) {
     if (brLoading) return;
     brLoading = true;
     if (reset) {
-      // 重置前先看本地是否有缓存（5 分钟内视为新鲜）——小屏/全屏切换时直接渲染
-      if (renderCachedBrowse()) {
-        brLoading = false;
-        return;
-      }
-      brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
-      brCursor = null; brLoadmore.style.display = 'none';
+      brCursor = null; brSeenIds.clear();
+      brLoadmore.style.display = 'none';   // 改为自动加载，不再显示手动按钮
+      // 瞬时渲染新鲜缓存做秒开；随后仍向服务端拉取最新（见下方 try），不因缓存提前返回
+      const preview = renderCachedBrowse();
+      if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
-      // 加载更多：按钮变 spinner + 文字
       if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
     }
     try {
@@ -1269,23 +1372,38 @@
       const r = await req(url);
       const d = await r.json();
       if (!d.success) {
-        if (reset) brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
+        if (reset && !brList.querySelector('.bm-card'))
+          brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
         return;
       }
       const items = d.items || [];
-      if (reset) brList.innerHTML = '';
-      items.forEach((it) => brList.appendChild(renderBrowseCard(it)));
+      if (reset) {
+        brList.innerHTML = '';
+        brSeenIds.clear();
+        brCursor = null;
+      }
+      if (!items.length && reset) brList.innerHTML = '<div class="bm-empty">关注流暂时没有新推文。</div>';
+      // 去重：跳过已渲染过的 tweet_id（后端已把转发归一化到原推，同一原推只出现一次）
+      let appended = 0;
+      sortItemsByTime(items).forEach((it) => {
+        const id = it.tweet_id || it.id;
+        if (!id || brSeenIds.has(String(id))) return;
+        brSeenIds.add(String(id));
+        brList.appendChild(renderBrowseCard(it));
+        appended++;
+      });
       brCursor = d.next_cursor || null;
-      brLoadmore.style.display = brCursor ? '' : 'none';
+      brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
       // 缓存
       if (reset) saveBrowseCache(items, false);
       else saveBrowseCache(items, true);
-      if (!items.length && reset) brList.innerHTML = '<div class="bm-empty">关注流暂时没有新推文。</div>';
     } catch (e) {
-      if (reset) brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+      if (reset && !brList.querySelector('.bm-card'))
+        brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     } finally {
       brLoading = false;
       if (brMoreBtn) { brMoreBtn.disabled = false; brMoreBtn.innerHTML = '加载更多'; }
+      restoreBrowsePos();
     }
   }
 
@@ -1305,15 +1423,26 @@
   $('qdl-btn').addEventListener('click', quickOpen);
   $('qdl-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') quickOpen(); });
 
-  $('br-refresh').addEventListener('click', () => loadBrowse(true));
+  $('br-refresh').addEventListener('click', () => { brAutoRestore = false; loadBrowse(true); });
   $('br-more').addEventListener('click', () => loadBrowse(false));
 
+  // 自动加载（无限滚动）：滚动到 #view-browse 底部附近时自动拉下一页，不再依赖手动点「加载更多」
+  const brScroll = $('view-browse');
+  if (brScroll) {
+    let brScrollTimer = null;
+    brScroll.addEventListener('scroll', () => {
+      saveBrowsePos();
+      if (brScrollTimer) return;
+      brScrollTimer = setTimeout(() => {
+        brScrollTimer = null;
+        if (brLoading || !brCursor) return;
+        const nearBottom = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 400;
+        if (nearBottom) loadBrowse(false);
+      }, 250);
+    });
+  }
+
   // P2-11 定时刷新关注流：每 3 分钟静默拉一次最新推文，统计未见过的新 ID
-  let brKnownIds = new Set();
-  document.querySelectorAll('#br-list .bm-card').forEach((c) => {
-    const tid = c.querySelector('.bm-chk')?.dataset?.tid;
-    if (tid) brKnownIds.add(tid);
-  });
   function brRenderNewTweetsBtn(count) {
     let el = $('br-new');
     if (count <= 0) { if (el) el.remove(); return; }
@@ -1334,7 +1463,7 @@
       const r = await req(`${API}/timeline?count=20`);
       const d = await r.json();
       if (!d.success) return;
-      const fresh = (d.items || []).filter((it) => it.tweet_id && !brKnownIds.has(it.tweet_id));
+      const fresh = (d.items || []).filter((it) => it.tweet_id && !brSeenIds.has(String(it.tweet_id)));
       if (fresh.length) brRenderNewTweetsBtn(fresh.length);
     } catch (_) {}
   }
@@ -1637,6 +1766,7 @@
       const activeTab = tabsEl.querySelector('.tab.active');
       if (activeTab && activeTab.dataset.view === 'browse' &&
           brList && !brList.querySelector('.bm-card')) {
+        brAutoRestore = true;
         loadBrowse(true);
       }
     };

@@ -1156,6 +1156,14 @@ def _extract_bookmark_tweets(data):
                 result = result.get('tweet') or result
             if result.get('__typename') != 'Tweet':
                 continue
+            # 转发（retweet）归一化：当该推文是「RT @某人」时，GraphQL 会把原推放在
+            # retweeted_status_results.result 里。同一原推被多个关注者转发会出现多条
+            # 内容相同但 tweet_id 不同的卡片（即用户看到的「一模一样的帖子」）。
+            # 这里统一折叠到【原推】，用原推的 rest_id / 媒体 / 作者，去重更彻底。
+            _rt = (((result.get('retweeted_status_results') or {}).get('result')) or {})
+            if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
+                    and (_rt.get('rest_id') and _rt.get('rest_id') != result.get('rest_id'))):
+                result = _rt
             legacy = result.get('legacy') or {}
             user = ((result.get('core') or {})
                     .get('user_results', {})
