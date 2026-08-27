@@ -264,10 +264,10 @@
 
   <!-- 浏览（首页·关注流）视图 -->
   <div class="view" id="view-browse">
-    <!-- 快速下载：在首页粘贴链接即可下载，不需要专门切到下载 tab -->
+    <!-- 快速打开：在首页粘贴链接即可浏览该推文，看完再决定是否下载 -->
     <div class="quickdl" id="quickdl">
-      <input id="qdl-url" type="text" placeholder="粘贴推文链接，回车直接下载…" />
-      <button id="qdl-btn">⬇ 下载</button>
+      <input id="qdl-url" type="text" placeholder="粘贴推文链接，回车打开浏览…" />
+      <button id="qdl-btn">🔍 打开</button>
     </div>
     <div class="bm-toolbar">
       <button id="br-refresh" class="primary">🔄 刷新</button>
@@ -1289,29 +1289,21 @@
     }
   }
 
-  // 首页快速下载：粘贴链接 → 回车/点按钮 → 直接提交下载
-  async function quickDownload() {
+  // 首页快速打开：粘贴链接 → 回车/点按钮 → 打开该推文详情页浏览，
+  // 用户看完再在详情页决定是否下载（不直接下载）。
+  function quickOpen() {
     const url = $('qdl-url').value.trim();
     if (!url) return;
-    const lib = $('library').value;
-    if (!lib) { alert('请先选择目标资源库'); return; }
+    const m = url.match(/\/status\/(\d+)/);
+    if (!m) { alert('无法识别推文链接'); return; }
     const btn = $('qdl-btn');
-    btn.disabled = true; btn.textContent = '提交中…';
-    try {
-      const r = await req(`${API}/run`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ library_id: lib, params: { url, preview: false, auto: true, hidden: true } }),
-      });
-      const d = await r.json();
-      btn.textContent = d && d.success ? '✓ 已加入下载' : '⚠ 失败';
-      if (d && d.success) $('qdl-url').value = '';
-    } catch (_) {
-      btn.textContent = '⚠ 失败';
-    }
-    setTimeout(() => { btn.disabled = false; btn.textContent = '⬇ 下载'; }, 2000);
+    btn.disabled = true; btn.textContent = '加载中…';
+    openTweetDetail(m[1], null).finally(() => {
+      btn.disabled = false; btn.textContent = '🔍 打开';
+    });
   }
-  $('qdl-btn').addEventListener('click', quickDownload);
-  $('qdl-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') quickDownload(); });
+  $('qdl-btn').addEventListener('click', quickOpen);
+  $('qdl-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') quickOpen(); });
 
   $('br-refresh').addEventListener('click', () => loadBrowse(true));
   $('br-more').addEventListener('click', () => loadBrowse(false));
