@@ -208,6 +208,7 @@
   <!-- 标签切换：首页（浏览）为主，下载是辅助功能放最后 -->
   <div class="tabs" id="tabs">
     <button class="tab active" data-view="browse">🏠 首页</button>
+    <button class="tab" data-view="search">🔍 搜索</button>
     <button class="tab" data-view="bookmarks">⭐ 收藏</button>
     <button class="tab" data-view="history">🕘 历史</button>
     <button class="tab" data-view="cache">📦 缓存</button>
@@ -278,6 +279,19 @@
     </div>
     <div id="br-list" class="bm-list"><div class="bm-empty">点击「刷新」加载你关注的人的最新推文。</div></div>
     <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
+  </div>
+
+  <!-- 搜索视图 -->
+  <div class="view" id="view-search" style="display:none">
+    <div class="quickdl" id="srch-box">
+      <input id="srch-input" type="text" placeholder="搜索关键词、话题或 @用户，回车搜索…" />
+      <button id="srch-btn">🔍 搜索</button>
+    </div>
+    <div class="bm-toolbar">
+      <button id="srch-refresh" class="primary">🔄 刷新</button>
+    </div>
+    <div id="srch-list" class="bm-list"><div class="bm-empty">输入关键词搜索 X 推文。</div></div>
+    <div class="bm-loadmore" id="srch-loadmore" style="display:none"><button id="srch-more">加载更多</button></div>
   </div>
 
   <!-- 预览区：在表单下方展开，不隐藏表单 -->
@@ -790,6 +804,7 @@
   const viewHistory = $('view-history');
   const viewCache = $('view-cache');
   const viewBookmarks = $('view-bookmarks');
+  const viewSearch = $('view-search');
   // 进入浏览 tab 时同步 dbox folder 到 favSet（仅一次）
   let brFavSynced = false;
   async function syncFavFromServer() {
@@ -816,6 +831,7 @@
     viewHistory.style.display = v === 'history' ? '' : 'none';
     viewCache.style.display = v === 'cache' ? '' : 'none';
     viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
+    viewSearch.style.display = v === 'search' ? '' : 'none';
     if (!silent) location.hash = '#/view/' + v;
     if (v === 'browse') {
       syncFavFromServer();
@@ -845,7 +861,7 @@
 
   window.addEventListener('hashchange', () => {
     const v = parseHash();
-    if (v && ['download', 'browse', 'history', 'cache', 'bookmarks'].includes(v)) switchView(v, { silent: true });
+    if (v && ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'].includes(v)) switchView(v, { silent: true });
   });
 
   /* ---- X 收藏 ---- */
@@ -1405,6 +1421,91 @@
       if (brMoreBtn) { brMoreBtn.disabled = false; brMoreBtn.innerHTML = '加载更多'; }
       restoreBrowsePos();
     }
+  }
+
+  /* ---- 搜索 ---- */
+  const srchList = $('srch-list');
+  const srchLoadmore = $('srch-loadmore');
+  const srchMoreBtn = $('srch-more');
+  const srchInput = $('srch-input');
+  let srchLoading = false;
+  let srchCursor = null;
+  let srchSeenIds = new Set();
+  let srchQuery = '';
+
+  async function loadSearch(reset = true) {
+    const q = (srchInput ? srchInput.value : '').trim();
+    if (!q) { srchList.innerHTML = '<div class="bm-empty">输入关键词后回车或点「搜索」。</div>'; return; }
+    if (srchLoading) return;
+    srchLoading = true;
+    if (!reset && q !== srchQuery) reset = true; // 关键词变了，视为全新搜索
+    if (reset) { srchCursor = null; srchSeenIds.clear(); srchQuery = q; }
+    if (reset) {
+      srchLoadmore.style.display = 'none';
+      srchList.innerHTML = '<div class="bm-empty">正在搜索…</div>';
+    } else if (srchMoreBtn) {
+      srchMoreBtn.disabled = true;
+      srchMoreBtn.innerHTML = '<span class="spinner"></span>加载中…';
+    }
+    try {
+      let url = `${API}/search?q=${encodeURIComponent(q)}&count=20`;
+      if (!reset && srchCursor) url += `&cursor=${encodeURIComponent(srchCursor)}`;
+      const r = await req(url);
+      const d = await r.json();
+      if (!d.success) {
+        if (reset && !srchList.querySelector('.bm-card'))
+          srchList.innerHTML = `<div class="bm-empty err">搜索失败: ${esc2(d.message || '未知错误')}</div>`;
+        return;
+      }
+      const items = d.items || [];
+      if (reset) {
+        srchList.innerHTML = '';
+        srchSeenIds.clear();
+        srchCursor = null;
+      }
+      if (!items.length && reset) srchList.innerHTML = '<div class="bm-empty">没有搜到相关推文。</div>';
+      let appended = 0;
+      sortItemsByTime(items).forEach((it) => {
+        const id = it.tweet_id || it.id;
+        if (!id || srchSeenIds.has(String(id))) return;
+        srchSeenIds.add(String(id));
+        srchList.appendChild(renderBrowseCard(it));
+        appended++;
+      });
+      srchCursor = d.next_cursor || null;
+      srchLoadmore.style.display = srchCursor ? '' : 'none';
+    } catch (e) {
+      if (reset && !srchList.querySelector('.bm-card'))
+        srchList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    } finally {
+      srchLoading = false;
+      if (srchMoreBtn) { srchMoreBtn.disabled = false; srchMoreBtn.innerHTML = '加载更多'; }
+    }
+  }
+
+  function doSearch() {
+    const q = (srchInput ? srchInput.value : '').trim();
+    if (!q) return;
+    loadSearch(true);
+  }
+  $('srch-btn').addEventListener('click', doSearch);
+  srchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  $('srch-refresh').addEventListener('click', doSearch);
+  srchMoreBtn.addEventListener('click', () => loadSearch(false));
+
+  // 自动加载（无限滚动）
+  const srchScroll = viewSearch;
+  if (srchScroll) {
+    let srchScrollTimer = null;
+    srchScroll.addEventListener('scroll', () => {
+      if (srchScrollTimer) return;
+      srchScrollTimer = setTimeout(() => {
+        srchScrollTimer = null;
+        if (srchLoading || !srchCursor) return;
+        const nearBottom = srchScroll.scrollTop + srchScroll.clientHeight >= srchScroll.scrollHeight - 400;
+        if (nearBottom) loadSearch(false);
+      }, 250);
+    });
   }
 
   // 首页快速打开：粘贴链接 → 回车/点按钮 → 打开该推文详情页浏览，

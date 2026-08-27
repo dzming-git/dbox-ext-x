@@ -862,6 +862,98 @@ _GQL_HOME_TIMELINE_OPN = 'HomeTimeline'
 _GQL_FOLLOWING_QID = 'BLQWpfVqtgBqAqwRRJcJjA'  # 已知兜底（会轮换，优先自动发现）
 _GQL_FOLLOWING_OPN = 'HomeLatestTimeline'
 
+# SearchTimeline（关键词/用户搜索）。operationName=SearchTimeline，variables 带
+# rawQuery（搜索词），返回 data.search_by_raw_query.search_timeline.timeline。
+# query id 会轮换，支持自动发现。
+_GQL_SEARCH_QID = 'C0BjqDvgUKOk10W2HsaEnw'  # 已知兜底（会轮换，优先自动发现）
+_GQL_SEARCH_OPN = 'SearchTimeline'
+
+# 旧的多 tab Chrome 扩展遗留了一个「搜索」placeholder；下面的 search 是正式实现。
+
+
+def _discover_search_qid(opener, cookie_header):
+    """从 X 首页 bundle 自动发现 SearchTimeline query id。
+
+    首页 bundle 通常含 SearchTimeline 定义（搜索框常驻），发现失败时回退到
+    已知兜底 qid（会轮换，需定期更新）。
+    """
+    global _GQL_SEARCH_QID
+    try:
+        html = fetch_text('https://x.com/', opener,
+                          build_headers(cookie_header, with_bearer=False), timeout=20)
+    except Exception:
+        html = ''
+    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    seen = set(); urls = []
+    for s in scripts:
+        if not s.startswith('http'):
+            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s); urls.append(s)
+    pat = r'operationName["\']?\s*[:=]\s*["\']SearchTimeline["\']?'
+    for s in urls:
+        try:
+            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
+        except Exception:
+            continue
+        for tm in re.finditer(pat, js):
+            win_after = js[tm.end(): tm.end() + 2000]
+            win_before = js[max(0, tm.start() - 2000): tm.start()]
+            m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_after)
+            if not m:
+                m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_before)
+            if m:
+                _GQL_SEARCH_QID = m.group(1)
+                log(f'已自动发现 SearchTimeline query id: {_GQL_SEARCH_QID}')
+                return _GQL_SEARCH_QID
+    return None
+
+
+def search_tweets(cookie_header, query, count=20, cursor=None):
+    """按关键词/用户句柄搜索 X 推文（SearchTimeline）。
+
+    返回 (items, next_cursor)。复用 _extract_bookmark_tweets 解析（把
+    search_by_raw_query.search_timeline 包装成其兼容的 bookmark_timeline_v2 结构）。
+    """
+    opener = make_opener(None)
+    qid = _GQL_SEARCH_QID
+    if not qid:
+        qid = _discover_search_qid(opener, cookie_header)
+    if not qid:
+        raise RuntimeError('未能发现 SearchTimeline query id')
+    variables = {
+        "rawQuery": query,
+        "count": count,
+        "querySource": "typed_query",
+        "product": "Latest",
+        "includePromotedContent": False,
+    }
+    if cursor:
+        variables["cursor"] = cursor
+    url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_SEARCH_OPN}'
+           f'?variables={urllib.parse.quote(json.dumps(variables))}'
+           f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES))}')
+    headers = build_headers(cookie_header, with_bearer=True)
+    raw = fetch_text(url, opener, headers, timeout=30)
+    data = json.loads(raw)
+    # 包装成 _extract_bookmark_tweets 兼容结构（bookmark_timeline_v2.timeline）
+    search_tl = ((data.get('data', {}) or {})
+                 .get('search_by_raw_query', {}) or {}).get('search_timeline') or {}
+    items = _extract_bookmark_tweets(
+        {'data': {'bookmark_timeline_v2': {'timeline': search_tl}}})
+    next_cursor = None
+    try:
+        tl = search_tl.get('timeline') or {}
+        for inst in (tl.get('instructions') or []):
+            for entry in (inst.get('entries') or []):
+                c = entry.get('content') or {}
+                if c.get('entryType') == 'TimelineTimelineCursor' and \
+                        c.get('cursorType') == 'Bottom':
+                    next_cursor = c.get('value')
+    except Exception:
+        pass
+    return items, next_cursor
+
 
 def _discover_home_timeline_qid(opener, cookie_header):
     """从 X 首页 bundle 自动发现 HomeTimeline query id。

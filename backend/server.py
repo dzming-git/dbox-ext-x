@@ -794,6 +794,28 @@ def create_blueprint(host):
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
 
+    @bp.route('/search', methods=['GET'])
+    @host.login_required
+    def search():
+        """按关键词/用户句柄搜索 X 推文（SearchTimeline）。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False,
+                            'message': '未配置 x.com 登录 Cookie'}), 400
+        if not (request.args.get('q') or '').strip():
+            return jsonify({'success': False,
+                            'message': '缺少搜索关键词'}), 400
+        try:
+            count = min(int(request.args.get('count', 20)), 50)
+            cursor = request.args.get('cursor') or None
+            items, next_cursor = xrun.search_tweets(
+                cookie, request.args.get('q').strip(), count, cursor)
+        except Exception as e:
+            return jsonify({'success': False,
+                            'message': '搜索失败: ' + str(e)}), 502
+        return jsonify({'success': True, 'items': items,
+                        'next_cursor': next_cursor})
+
     @bp.route('/tweet/<tweet_id>', methods=['GET'])
     @host.login_required
     def tweet_detail(tweet_id):
