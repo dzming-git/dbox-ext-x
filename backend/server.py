@@ -486,6 +486,24 @@ def create_blueprint(host):
             'pending_input': job.get('pending_input'),
         })
 
+    @bp.route('/timeline', methods=['GET'])
+    @host.login_required
+    def timeline():
+        """拉取 X 关注流（home timeline）推文列表。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False,
+                            'message': '未配置 x.com 登录 Cookie'}), 400
+        try:
+            count = min(int(request.args.get('count', 20)), 50)
+            cursor = request.args.get('cursor') or None
+            items, next_cursor = xrun.list_home_timeline(cookie, count, cursor)
+        except Exception as e:
+            return jsonify({'success': False,
+                            'message': '拉取 X 关注流失败: ' + str(e)}), 502
+        return jsonify({'success': True, 'items': items,
+                        'next_cursor': next_cursor})
+
     @bp.route('/bookmarks', methods=['GET'])
     @host.login_required
     def bookmarks():
