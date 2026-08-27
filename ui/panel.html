@@ -140,6 +140,11 @@
   .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
   .tab { flex: 1; background: #f3f5f7; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; color: #536471; }
   .tab.active { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+  .quickdl { display: flex; gap: 6px; margin-bottom: 10px; }
+  .quickdl input { flex: 1; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 12px; font-size: 13px; color: #0f1419; background: #fff; }
+  .quickdl input:focus { outline: none; border-color: #1d9bf0; box-shadow: 0 0 0 3px rgba(29,155,240,.15); }
+  .quickdl button { border: none; background: #1d9bf0; color: #fff; border-radius: 9px; padding: 0 16px; font-size: 13px; cursor: pointer; }
+  .quickdl button:hover { background: #1a8cd8; }
 
   /* X 收藏 / 浏览 */
   /* 视图需独立滚动：wrap 是 overflow:hidden 的 flex column，此视图占满剩余高度并滚动 */
@@ -194,16 +199,16 @@
 <body>
 <div class="wrap">
   <div class="toolbar">
-    <span class="title">🐦 X 下载</span>
+    <span class="title">🐦 X</span>
   </div>
 
-  <!-- 标签切换 -->
+  <!-- 标签切换：首页（浏览）为主，下载是辅助功能放最后 -->
   <div class="tabs" id="tabs">
-    <button class="tab" data-view="download">下载推文</button>
-    <button class="tab active" data-view="browse">浏览</button>
-    <button class="tab" data-view="history">历史</button>
-    <button class="tab" data-view="cache">缓存</button>
-    <button class="tab" data-view="bookmarks">我的 X 收藏</button>
+    <button class="tab active" data-view="browse">🏠 首页</button>
+    <button class="tab" data-view="bookmarks">⭐ 收藏</button>
+    <button class="tab" data-view="history">🕘 历史</button>
+    <button class="tab" data-view="cache">📦 缓存</button>
+    <button class="tab" data-view="download">⬇ 下载</button>
   </div>
 
   <!-- 下载表单视图 -->
@@ -257,13 +262,18 @@
     <div id="mc-list" class="bm-list"><div class="bm-empty">点开的图片/视频会缓存到本地。</div></div>
   </div>
 
-  <!-- 浏览（关注流）视图 -->
+  <!-- 浏览（首页·关注流）视图 -->
   <div class="view" id="view-browse">
+    <!-- 快速下载：在首页粘贴链接即可下载，不需要专门切到下载 tab -->
+    <div class="quickdl" id="quickdl">
+      <input id="qdl-url" type="text" placeholder="粘贴推文链接，回车直接下载…" />
+      <button id="qdl-btn">⬇ 下载</button>
+    </div>
     <div class="bm-toolbar">
-      <button id="br-refresh" class="primary">🔄 刷新关注流</button>
+      <button id="br-refresh" class="primary">🔄 刷新</button>
       <button id="br-batch" class="secondary" disabled>⬇ 批量下载选中 (0)</button>
     </div>
-    <div id="br-list" class="bm-list"><div class="bm-empty">点击「刷新关注流」加载你关注的人的最新推文。</div></div>
+    <div id="br-list" class="bm-list"><div class="bm-empty">点击「刷新」加载你关注的人的最新推文。</div></div>
     <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
   </div>
 
@@ -1278,6 +1288,30 @@
       if (brMoreBtn) { brMoreBtn.disabled = false; brMoreBtn.innerHTML = '加载更多'; }
     }
   }
+
+  // 首页快速下载：粘贴链接 → 回车/点按钮 → 直接提交下载
+  async function quickDownload() {
+    const url = $('qdl-url').value.trim();
+    if (!url) return;
+    const lib = $('library').value;
+    if (!lib) { alert('请先选择目标资源库'); return; }
+    const btn = $('qdl-btn');
+    btn.disabled = true; btn.textContent = '提交中…';
+    try {
+      const r = await req(`${API}/run`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ library_id: lib, params: { url, preview: false, auto: true, hidden: true } }),
+      });
+      const d = await r.json();
+      btn.textContent = d && d.success ? '✓ 已加入下载' : '⚠ 失败';
+      if (d && d.success) $('qdl-url').value = '';
+    } catch (_) {
+      btn.textContent = '⚠ 失败';
+    }
+    setTimeout(() => { btn.disabled = false; btn.textContent = '⬇ 下载'; }, 2000);
+  }
+  $('qdl-btn').addEventListener('click', quickDownload);
+  $('qdl-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') quickDownload(); });
 
   $('br-refresh').addEventListener('click', () => loadBrowse(true));
   $('br-more').addEventListener('click', () => loadBrowse(false));
