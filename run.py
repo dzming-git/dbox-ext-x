@@ -864,9 +864,8 @@ _GQL_FOLLOWING_OPN = 'HomeLatestTimeline'
 
 # SearchTimeline（关键词/用户搜索）。operationName=SearchTimeline，variables 带
 # rawQuery（搜索词），返回 data.search_by_raw_query.search_timeline.timeline。
-# query id 会轮换且无长期稳定的公共兜底值，故初始为 None，强制从 X bundle
-# 自动发现（首次搜索时发现并缓存），避免用失效 id 导致 404。
-_GQL_SEARCH_QID = None
+# 该 id 来自 2026-08 真实抓包（可用的有效值）；id 会轮换，若失效会自动发现兜底。
+_GQL_SEARCH_QID = 'hyPfJYJ_XAtDYoslQc-Rgg'
 _GQL_SEARCH_OPN = 'SearchTimeline'
 
 # 旧的多 tab Chrome 扩展遗留了一个「搜索」placeholder；下面的 search 是正式实现。
@@ -928,8 +927,9 @@ def search_tweets(cookie_header, query, count=20, cursor=None):
         "rawQuery": query,
         "count": count,
         "querySource": "typed_query",
-        "product": "Latest",
-        "includePromotedContent": False,
+        "product": "Top",
+        "withGrokTranslatedBio": True,
+        "withQuickPromoteEligibilityTweetFields": False,
     }
     if cursor:
         variables["cursor"] = cursor
@@ -939,11 +939,13 @@ def search_tweets(cookie_header, query, count=20, cursor=None):
     headers = build_headers(cookie_header, with_bearer=True)
     raw = fetch_text(url, opener, headers, timeout=30)
     data = json.loads(raw)
-    # 包装成 _extract_bookmark_tweets 兼容结构（bookmark_timeline_v2.timeline）
+    # 包装成 _extract_bookmark_tweets 兼容结构（bookmark_timeline_v2.timeline）。
+    # 真实响应 search_timeline = {"timeline": {instructions...}}，需传内层 timeline。
     search_tl = ((data.get('data', {}) or {})
                  .get('search_by_raw_query', {}) or {}).get('search_timeline') or {}
+    inner_tl = search_tl.get('timeline') or search_tl
     items = _extract_bookmark_tweets(
-        {'data': {'bookmark_timeline_v2': {'timeline': search_tl}}})
+        {'data': {'bookmark_timeline_v2': {'timeline': inner_tl}}})
     next_cursor = None
     try:
         tl = search_tl.get('timeline') or {}
