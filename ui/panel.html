@@ -835,7 +835,8 @@
     if (!silent) location.hash = '#/view/' + v;
     if (v === 'browse') {
       syncFavFromServer();
-      if (!brList.querySelector('.bm-card')) { brAutoRestore = true; loadBrowse(true); }
+      if (!brList.querySelector('.bm-card')) { loadBrowse(true); }
+      else { setTimeout(brAutoFill, 300); }  // 已有缓存卡片时也尝试补满，保证无脑上滑
     } else if (v === 'history') {
       loadHistory();
     } else if (v === 'cache') {
@@ -1384,7 +1385,7 @@
       if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
     }
     try {
-      const url = `${API}/timeline?count=20${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
+      const url = `${API}/timeline?count=30${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
       const r = await req(url);
       const d = await r.json();
       if (!d.success) {
@@ -1419,7 +1420,19 @@
     } finally {
       brLoading = false;
       if (brMoreBtn) { brMoreBtn.disabled = false; brMoreBtn.innerHTML = '加载更多'; }
-      restoreBrowsePos();
+      // 无脑上滑：内容不足一屏（还无法触发滚动）时自动续加载，直到填满或没有更多
+      setTimeout(brAutoFill, 200);
+    }
+  }
+
+  // 无脑上滑：若关注流尚未填满可视区（scrollHeight<=clientHeight 无法滚动触发
+  // 无限滚动），则自动继续加载下一页，保证用户只要一直上滑就有新推文，无需点按钮。
+  function brAutoFill() {
+    if (brLoading || !brCursor) return;
+    const cont = viewBrowse;
+    if (!cont) return;
+    if (cont.scrollHeight <= cont.clientHeight + 8) {
+      loadBrowse(false);
     }
   }
 
@@ -1867,7 +1880,6 @@
       const activeTab = tabsEl.querySelector('.tab.active');
       if (activeTab && activeTab.dataset.view === 'browse' &&
           brList && !brList.querySelector('.bm-card')) {
-        brAutoRestore = true;
         loadBrowse(true);
       }
     };

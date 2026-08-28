@@ -864,18 +864,20 @@ _GQL_FOLLOWING_OPN = 'HomeLatestTimeline'
 
 # SearchTimeline（关键词/用户搜索）。operationName=SearchTimeline，variables 带
 # rawQuery（搜索词），返回 data.search_by_raw_query.search_timeline.timeline。
-# query id 会轮换，支持自动发现。
-_GQL_SEARCH_QID = 'C0BjqDvgUKOk10W2HsaEnw'  # 已知兜底（会轮换，优先自动发现）
+# query id 会轮换且无长期稳定的公共兜底值，故初始为 None，强制从 X bundle
+# 自动发现（首次搜索时发现并缓存），避免用失效 id 导致 404。
+_GQL_SEARCH_QID = None
 _GQL_SEARCH_OPN = 'SearchTimeline'
 
 # 旧的多 tab Chrome 扩展遗留了一个「搜索」placeholder；下面的 search 是正式实现。
 
 
 def _discover_search_qid(opener, cookie_header):
-    """从 X 首页 bundle 自动发现 SearchTimeline query id。
+    """从 X 首页 bundle 自动发现 SearchTimeline（全局推文搜索）query id。
 
-    首页 bundle 通常含 SearchTimeline 定义（搜索框常驻），发现失败时回退到
-    已知兜底 qid（会轮换，需定期更新）。
+    SearchTimeline 的 query id 轮换频繁且无稳定公共兜底值，故必须自动发现。
+    注意：bundle 里还有 BookmarkSearchTimeline（收藏夹内搜索），必须排除，
+    用负向断言确保匹配的是独立的 SearchTimeline。
     """
     global _GQL_SEARCH_QID
     try:
@@ -890,7 +892,8 @@ def _discover_search_qid(opener, cookie_header):
             s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
         if s not in seen:
             seen.add(s); urls.append(s)
-    pat = r'operationName["\']?\s*[:=]\s*["\']SearchTimeline["\']?'
+    # 精确匹配独立 SearchTimeline，排除 BookmarkSearchTimeline
+    pat = r'operationName["\']?\s*[:=]\s*["\'](?<!Bookmark)SearchTimeline["\']?'
     for s in urls:
         try:
             js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
