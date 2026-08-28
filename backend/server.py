@@ -32,7 +32,7 @@ import importlib.util as _ilu
 # 导致先加载的一方被后加载方覆盖（典型症状：module 'run' has no attribute 'get_tweet_thread'）。
 # 这里按绝对路径加载到独立模块名，彻底规避模块名冲突。
 _run_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'run.py')
-_spec = _ilu.spec_from_file_location('x_downloader_run', _run_path)
+_spec = _ilu.spec_from_file_location('x_run', _run_path)
 xrun = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(xrun)
 
@@ -132,15 +132,15 @@ class _ProgressStore:
 
 
 def create_blueprint(host):
-    bp = Blueprint('x_downloader', __name__, url_prefix=host.url_prefix)
+    bp = Blueprint('x', __name__, url_prefix=host.url_prefix)
 
     # 进程级任务状态（存于 host.app_state，框架不干预内容）
     jobs = host.app_state.setdefault('jobs', {})
     jobs_lock = host.app_state.setdefault('jobs_lock', threading.Lock())
     input_events = host.app_state.setdefault('input_events', {})
 
-    plugin_dir = os.path.dirname(os.path.abspath(__file__))   # .../x_downloader/backend
-    plugin_root = os.path.dirname(plugin_dir)                 # .../x_downloader
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))   # .../x/backend
+    plugin_root = os.path.dirname(plugin_dir)                 # .../x
 
     # 按资源身份持久化的下载进度（跨进程、退出不丢）
     _progress_store = _ProgressStore(
