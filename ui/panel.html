@@ -186,13 +186,15 @@
   .bm-card .media.m4 img, .bm-card .media.m4 video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .bm-card .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
 
-  /* 下拉刷新指示器：固定在面板顶部，默认隐藏，下拉时滑入 */
+  /* 下拉刷新指示器：贴在滚动容器顶部内侧，默认隐藏在内容上沿之上；
+     下拉时资源整体向下平移，指示器同步在露出的空隙里出现，与资源一起往下走 */
+  #view-browse, #view-search { position: relative; }
   .ptr-indicator {
-    position: fixed; top: 0; left: 0; right: 0; height: 54px;
+    position: absolute; top: 12px; left: 0; right: 0; height: 48px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    background: rgba(255,255,255,.96); color: #536471; font-size: 13px;
-    transform: translateY(-58px); opacity: 0; z-index: 9999;
-    pointer-events: none; box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    background: transparent; color: #536471; font-size: 13px;
+    transform: translateY(-48px); opacity: 0; z-index: 5;
+    pointer-events: none;
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
   .bm-card .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
@@ -1672,47 +1674,53 @@
   }
 
   // 通用下拉刷新：在滚动容器顶部下拉（触摸）触发 onRefresh。
-  // 仅当 scrollTop<=0 且向下拉时生效；松手超过阈值即刷新，刷新中显示「刷新中…」。
+  // 下拉时资源整体向下平移，指示器在露出的空隙里同步出现（与资源一起往下走）；
+  // 松手超过阈值即刷新，刷新中显示「刷新中…」。仅当 scrollTop<=0 且向下拉时生效。
   function attachPullToRefresh(scrollEl, onRefresh, opts) {
     opts = opts || {};
-    const threshold = opts.threshold || 60;
-    const maxPull = opts.maxPull || 96;
+    const threshold = opts.threshold || 56;
+    const maxPull = opts.maxPull || 84;
     const ind = document.createElement('div');
     ind.className = 'ptr-indicator';
     ind.innerHTML = '<span class="ptr-icon">↓</span><span class="ptr-text">下拉刷新</span>';
-    document.body.appendChild(ind);
+    ind.style.top = getComputedStyle(scrollEl).paddingTop || '0';
+    scrollEl.appendChild(ind);
     const txtEl = ind.querySelector('.ptr-text');
     const iconEl = ind.querySelector('.ptr-icon');
-    let active = false, pulling = false, refreshing = false, startY = 0, dist = 0;
+    let active = false, pulling = false, refreshing = false, startY = 0, dist = 0, kids = [];
 
+    function contentTransform(y) { for (const c of kids) c.style.transform = `translateY(${y}px)`; }
     function setInd(d) {
       const e = Math.max(0, Math.min(d, maxPull));
-      ind.style.transform = `translateY(${e - ind.offsetHeight}px)`;
+      ind.style.transform = `translateY(${-ind.offsetHeight + Math.min(e, ind.offsetHeight)}px)`;
       ind.style.opacity = Math.min(1, e / threshold);
       if (refreshing) { txtEl.textContent = '刷新中…'; return; }
       if (e >= threshold) { txtEl.textContent = '释放刷新'; iconEl.textContent = '↑'; }
       else { txtEl.textContent = '下拉刷新'; iconEl.textContent = '↓'; }
     }
-    function resetInd() {
+    function resetAll() {
       ind.style.transition = 'transform .3s, opacity .3s';
-      ind.style.transform = 'translateY(-58px)';
+      contentTransform(0);
+      ind.style.transform = `translateY(${-ind.offsetHeight}px)`;
       ind.style.opacity = 0;
       setTimeout(() => { ind.style.transition = ''; }, 300);
     }
     function startRefresh() {
       refreshing = true;
       ind.style.transition = 'transform .2s, opacity .2s';
+      contentTransform(threshold);
       ind.style.transform = 'translateY(0)';
       ind.style.opacity = 1;
       txtEl.textContent = '刷新中…';
       iconEl.innerHTML = '<span class="spinner" style="width:15px;height:15px;border-width:2px;display:inline-block;vertical-align:middle"></span>';
       Promise.resolve().then(() => onRefresh()).then(finishRefresh).catch(finishRefresh);
     }
-    function finishRefresh() { refreshing = false; resetInd(); }
+    function finishRefresh() { refreshing = false; resetAll(); }
 
     scrollEl.addEventListener('touchstart', (e) => {
       if (refreshing || scrollEl.scrollTop > 0) { active = false; return; }
       active = true; pulling = false; dist = 0; startY = e.touches[0].clientY;
+      kids = Array.from(scrollEl.children).filter(c => c !== ind);
     }, { passive: true });
     scrollEl.addEventListener('touchmove', (e) => {
       if (!active || refreshing) return;
@@ -1725,6 +1733,7 @@
       if (delta > 0 && scrollEl.scrollTop <= 0) {
         if (e.cancelable) e.preventDefault();
         dist = Math.min(delta * 0.5, maxPull);
+        contentTransform(dist);
         setInd(dist);
       }
     }, { passive: false });
@@ -1732,7 +1741,7 @@
       if (!active || refreshing) { active = false; return; }
       active = false;
       if (pulling && dist >= threshold) startRefresh();
-      else resetInd();
+      else resetAll();
       pulling = false; dist = 0;
     });
   }
