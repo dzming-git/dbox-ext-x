@@ -11,7 +11,7 @@
   "ui": {
     "mount": "floating",
     "title": "X",
-    "icon": "🐦",
+    "icon": "https://abs.twimg.com/favicons/twitter.ico",
     "entry": "panel.html",
     "needs_credential": true,
     "sandbox": "allow-scripts allow-same-origin allow-forms allow-popups",
