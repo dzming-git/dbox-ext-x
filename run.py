@@ -918,6 +918,7 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top'):
     返回 (items, next_cursor)。复用 _extract_bookmark_tweets 解析（把
     search_by_raw_query.search_timeline 包装成其兼容的 bookmark_timeline_v2 结构）。
     """
+    global _GQL_SEARCH_QID
     opener = make_opener(None)
     qid = _GQL_SEARCH_QID
     if not qid:
@@ -934,12 +935,30 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top'):
     }
     if cursor:
         variables["cursor"] = cursor
-    url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_SEARCH_OPN}'
-           f'?variables={urllib.parse.quote(json.dumps(variables))}'
-           f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES))}')
     headers = build_headers(cookie_header, with_bearer=True)
-    raw = fetch_text(url, opener, headers, timeout=30)
-    data = json.loads(raw)
+
+    def _do_search(qid):
+        # ensure_ascii=False：中文 rawQuery 以 UTF-8 原始输出，与 X 网页端真实请求的编码一致
+        url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_SEARCH_OPN}'
+               f'?variables={urllib.parse.quote(json.dumps(variables, ensure_ascii=False))}'
+               f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES, ensure_ascii=False))}')
+        raw = fetch_text(url, opener, headers, timeout=30)
+        return json.loads(raw)
+
+    try:
+        data = _do_search(qid)
+    except urllib.error.HTTPError as e:
+        # query id 会轮换：404 说明当前 id 已失效，重新自动发现后重试一次
+        if e.code == 404:
+            _GQL_SEARCH_QID = None
+            new_qid = _discover_search_qid(opener, cookie_header)
+            if new_qid and new_qid != qid:
+                qid = new_qid
+                data = _do_search(qid)
+            else:
+                raise
+        else:
+            raise
     # 包装成 _extract_bookmark_tweets 兼容结构（bookmark_timeline_v2.timeline）。
     # 真实响应 search_timeline = {"timeline": {instructions...}}，需传内层 timeline。
     search_tl = ((data.get('data', {}) or {})
