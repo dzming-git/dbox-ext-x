@@ -891,20 +891,26 @@ def _discover_search_qid(opener, cookie_header):
             s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
         if s not in seen:
             seen.add(s); urls.append(s)
-    # 精确匹配独立 SearchTimeline，排除 BookmarkSearchTimeline
-    pat = r'operationName["\']?\s*[:=]\s*["\'](?<!Bookmark)SearchTimeline["\']?'
+    # 精确匹配独立 SearchTimeline 的 queryId（排除 BookmarkSearchTimeline）。
+    # bundle 里格式为 queryId:"<id>",operationName:"SearchTimeline"（queryId 在前）。
+    # 兼容两种顺序（queryId 在前 / operationName 在前），避免宽泛窗口误取相邻 query 的 id。
+    pats = [
+        # queryId 在前：queryId:"xxx",operationName:"SearchTimeline"
+        r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']\s*,?\s*operationName["\']?\s*[:=]\s*["\']SearchTimeline["\']?',
+        # operationName 在前：operationName:"SearchTimeline",queryId:"xxx"
+        r'operationName["\']?\s*[:=]\s*["\']SearchTimeline["\']?\s*,?\s*queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']',
+    ]
     for s in urls:
         try:
             js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
         except Exception:
             continue
-        for tm in re.finditer(pat, js):
-            win_after = js[tm.end(): tm.end() + 2000]
-            win_before = js[max(0, tm.start() - 2000): tm.start()]
-            m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_after)
-            if not m:
-                m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_before)
-            if m:
+        for pat in pats:
+            for m in re.finditer(pat, js):
+                # 排除 BookmarkSearchTimeline（负向检查前一个操作名）
+                before = js[max(0, m.start() - 40): m.start()]
+                if re.search(r'Bookmark$', before):
+                    continue
                 _GQL_SEARCH_QID = m.group(1)
                 log(f'已自动发现 SearchTimeline query id: {_GQL_SEARCH_QID}')
                 return _GQL_SEARCH_QID
