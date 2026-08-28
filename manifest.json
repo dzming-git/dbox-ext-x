@@ -1,6 +1,6 @@
 {
   "id": "x_downloader",
-  "name": "X（推特）媒体下载器",
+  "name": "X（推特）媒体",
   "description": "纯爬虫实现，不依赖 yt-dlp。从 X/Twitter 推文解析图片原图与视频 m3u8；默认先解析并预览推文资源（图片直接显示、视频显示封面点击后播放），确认后一键下载整个帖子。图片直连下载，视频分片下载后由系统 ffmpeg 合并为 mp4。需安装 ffmpeg（用于合并视频）。Cookie 由系统按域名自动匹配，无需手动选择。",
   "timeout": 600,
   "enabled": true,
@@ -10,7 +10,7 @@
   "required_cookies": ["x.com"],
   "ui": {
     "mount": "floating",
-    "title": "X 下载预览",
+    "title": "X",
     "icon": "🐦",
     "entry": "panel.html",
     "needs_credential": true,
