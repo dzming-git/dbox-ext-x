@@ -265,7 +265,6 @@
   <!-- 历史视图（P1-7 本地浏览历史） -->
   <div class="view" id="view-history" style="display:none">
     <div class="bm-toolbar">
-      <button id="hs-refresh" class="primary">🔄 刷新历史</button>
       <button id="hs-clear" class="secondary">🗑 清空</button>
     </div>
     <div id="hs-list" class="bm-list"><div class="bm-empty">浏览过的推文会记录在这里，可回看。</div></div>
@@ -274,7 +273,6 @@
   <!-- 缓存管理视图（P2-9） -->
   <div class="view" id="view-cache" style="display:none">
     <div class="bm-toolbar">
-      <button id="mc-refresh" class="primary">🔄 刷新</button>
       <button id="mc-clear" class="secondary">🗑 清空缓存</button>
     </div>
     <div id="mc-stats" class="mc-stats"></div>
@@ -289,10 +287,9 @@
       <button id="qdl-btn">🔍 打开</button>
     </div>
     <div class="bm-toolbar">
-      <button id="br-refresh" class="primary">🔄 刷新</button>
       <button id="br-batch" class="secondary" disabled>⬇ 批量下载选中 (0)</button>
     </div>
-    <div id="br-list" class="bm-list"><div class="bm-empty">点击「刷新」加载你关注的人的最新推文。</div></div>
+    <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
     <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
   </div>
 
@@ -307,7 +304,6 @@
         <button id="srch-prod-top" class="primary sm">🔥 热门</button>
         <button id="srch-prod-latest" class="sm">🕐 最新</button>
       </span>
-      <button id="srch-refresh" class="primary">🔄 刷新</button>
     </div>
     <div id="srch-list" class="bm-list"><div class="bm-empty">输入关键词搜索 X 推文。</div></div>
     <div class="bm-loadmore" id="srch-loadmore" style="display:none"><button id="srch-more">加载更多</button></div>
@@ -1618,7 +1614,6 @@
   }
   $('srch-btn').addEventListener('click', doSearch);
   srchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
-  $('srch-refresh').addEventListener('click', doSearch);
   srchMoreBtn.addEventListener('click', () => loadSearch(false));
   $('srch-prod-top').addEventListener('click', () => setSrchProduct('Top'));
   $('srch-prod-latest').addEventListener('click', () => setSrchProduct('Latest'));
@@ -1654,7 +1649,6 @@
   $('qdl-btn').addEventListener('click', quickOpen);
   $('qdl-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') quickOpen(); });
 
-  $('br-refresh').addEventListener('click', () => { brOpenMode = false; loadBrowse(true); });
   $('br-more').addEventListener('click', () => loadBrowse(false));
 
   // 自动加载（无限滚动）：滚动到 #view-browse 底部附近时自动拉下一页，不再依赖手动点「加载更多」
@@ -2004,7 +1998,6 @@
     }
   }
 
-  $('hs-refresh').addEventListener('click', loadHistory);
   $('hs-clear').addEventListener('click', async () => {
     if (!confirm('确定清空全部浏览历史？')) return;
     await req(`${API}/history?clear=1`, { method: 'DELETE' });
@@ -2046,7 +2039,6 @@
     }
   }
 
-  $('mc-refresh').addEventListener('click', loadCache);
   $('mc-clear').addEventListener('click', async () => {
     if (!confirm('确定清空全部媒体缓存？已缓存图片/视频将需要重新从 X 加载。')) return;
     await req(`${API}/media/cache`, { method: 'DELETE' });
