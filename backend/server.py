@@ -808,8 +808,9 @@ def create_blueprint(host):
         try:
             count = min(int(request.args.get('count', 20)), 50)
             cursor = request.args.get('cursor') or None
+            product = (request.args.get('product') or 'Top').strip()
             items, next_cursor = xrun.search_tweets(
-                cookie, request.args.get('q').strip(), count, cursor)
+                cookie, request.args.get('q').strip(), count, cursor, product)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '搜索失败: ' + str(e)}), 502

@@ -911,9 +911,10 @@ def _discover_search_qid(opener, cookie_header):
     return None
 
 
-def search_tweets(cookie_header, query, count=20, cursor=None):
+def search_tweets(cookie_header, query, count=20, cursor=None, product='Top'):
     """按关键词/用户句柄搜索 X 推文（SearchTimeline）。
 
+    product 可选 'Top'（热门）或 'Latest'（最新），对应 X 搜索页两种排序。
     返回 (items, next_cursor)。复用 _extract_bookmark_tweets 解析（把
     search_by_raw_query.search_timeline 包装成其兼容的 bookmark_timeline_v2 结构）。
     """
@@ -927,7 +928,7 @@ def search_tweets(cookie_header, query, count=20, cursor=None):
         "rawQuery": query,
         "count": count,
         "querySource": "typed_query",
-        "product": "Top",
+        "product": product if product in ('Top', 'Latest') else 'Top',
         "withGrokTranslatedBio": True,
         "withQuickPromoteEligibilityTweetFields": False,
     }

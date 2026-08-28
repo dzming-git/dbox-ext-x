@@ -156,6 +156,9 @@
   .bm-toolbar button { flex: 1; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; border: 1px solid #e3e6eb; }
   .bm-toolbar .primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .bm-toolbar .secondary { background: #fff; color: #536471; }
+  .bm-toolbar .srch-prod { display: flex; gap: 6px; flex: 0 0 auto; }
+  .bm-toolbar .srch-prod button { flex: 0 0 auto; padding: 9px 12px; }
+  .bm-toolbar .srch-prod button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .bm-list { display: flex; flex-direction: column; gap: 10px; }
   .bm-empty { color: #8899a6; font-size: 13px; text-align: center; padding: 24px 0; }
   .bm-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 10px 12px; }
@@ -288,6 +291,10 @@
       <button id="srch-btn">🔍 搜索</button>
     </div>
     <div class="bm-toolbar">
+      <span class="srch-prod" id="srch-prod">
+        <button id="srch-prod-top" class="primary sm">🔥 热门</button>
+        <button id="srch-prod-latest" class="sm">🕐 最新</button>
+      </span>
       <button id="srch-refresh" class="primary">🔄 刷新</button>
     </div>
     <div id="srch-list" class="bm-list"><div class="bm-empty">输入关键词搜索 X 推文。</div></div>
@@ -1445,6 +1452,17 @@
   let srchCursor = null;
   let srchSeenIds = new Set();
   let srchQuery = '';
+  let srchProduct = 'Top';  // 'Top' 热门 / 'Latest' 最新
+
+  function setSrchProduct(p) {
+    if (srchProduct === p) return;
+    srchProduct = p;
+    const topBtn = $('srch-prod-top');
+    const latestBtn = $('srch-prod-latest');
+    if (topBtn) topBtn.className = 'sm' + (p === 'Top' ? ' primary' : '');
+    if (latestBtn) latestBtn.className = 'sm' + (p === 'Latest' ? ' primary' : '');
+    if (srchQuery) loadSearch(true);  // 已有搜索时切模式重新搜
+  }
 
   async function loadSearch(reset = true) {
     const q = (srchInput ? srchInput.value : '').trim();
@@ -1461,7 +1479,7 @@
       srchMoreBtn.innerHTML = '<span class="spinner"></span>加载中…';
     }
     try {
-      let url = `${API}/search?q=${encodeURIComponent(q)}&count=20`;
+      let url = `${API}/search?q=${encodeURIComponent(q)}&count=20&product=${encodeURIComponent(srchProduct)}`;
       if (!reset && srchCursor) url += `&cursor=${encodeURIComponent(srchCursor)}`;
       const r = await req(url);
       const d = await r.json();
@@ -1505,6 +1523,8 @@
   srchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
   $('srch-refresh').addEventListener('click', doSearch);
   srchMoreBtn.addEventListener('click', () => loadSearch(false));
+  $('srch-prod-top').addEventListener('click', () => setSrchProduct('Top'));
+  $('srch-prod-latest').addEventListener('click', () => setSrchProduct('Latest'));
 
   // 自动加载（无限滚动）
   const srchScroll = viewSearch;
