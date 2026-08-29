@@ -1015,6 +1015,9 @@
   let activeView = 'browse';
   function switchView(v, { silent = false } = {}) {
     activeView = v;
+    // 记忆当前所在视图：迷你窗关闭/重开（iframe 可能被重载或 hash 被框架改写）后，
+    // 用 localStorage 而非 URL hash 作为权威来源，保证重开回到上次停留的标签页。
+    try { localStorage.setItem('xd_active_view', v); } catch (_) {}
     tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
     viewDownload.style.display = v === 'download' ? '' : 'none';
     viewBrowse.style.display = v === 'browse' ? '' : 'none';
@@ -1059,9 +1062,12 @@
     t.addEventListener('click', () => switchView(t.dataset.view));
   });
 
-  // 初始视图：优先用 hash，否则默认 browse（同原逻辑）。
+  // 初始视图：优先用 localStorage 记忆的视图（迷你窗重开可靠还原），其次 hash，最后默认 browse。
   // 延迟到脚本末尾再执行，避免 switchView 内引用的 bmXList/bmShowingFolder 等 const 尚未初始化的 TDZ 问题。
-  const initialView = parseHash() || 'browse';
+  let initialView;
+  try { initialView = localStorage.getItem('xd_active_view'); } catch (_) {}
+  if (!initialView) initialView = parseHash();
+  if (!initialView || !['download', 'browse', 'history', 'cache', 'bookmarks', 'search'].includes(initialView)) initialView = 'browse';
   setTimeout(() => switchView(initialView, { silent: true }), 0);
 
   window.addEventListener('hashchange', () => {
@@ -1497,10 +1503,12 @@
   }
   function saveBrowseCache(items, append) {
     try {
-      if (!append) localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items, cursor: brCursor }));
+      const MAX_CACHE = 400;   // 限制缓存规模，避免每次打开都把最新一页 concat 进去做成无限增长、排序重排后位置记忆错位
+      if (!append) localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: sortItemsByTime(items).slice(0, MAX_CACHE), cursor: brCursor }));
       else {
         const old = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
-        localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: (old.items || []).concat(items), cursor: brCursor }));
+        const merged = sortItemsByTime((old.items || []).concat(items)).slice(0, MAX_CACHE);
+        localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: merged, cursor: brCursor }));
       }
     } catch (_) {}
   }
@@ -1532,6 +1540,8 @@
   function saveBrowsePos() {
     const cont = viewBrowse;
     if (!cont) return;
+    if (activeView !== 'browse') return;   // 仅当浏览视图可见时才记录，避免隐藏容器/其它视图的滚动污染位置记忆
+    if (cont.style.display === 'none' || getComputedStyle(cont).display === 'none') return;
     const contRect = cont.getBoundingClientRect();
     const cards = brList.querySelectorAll('.bm-card');
     for (const c of cards) {
@@ -1552,13 +1562,21 @@
     let pos = null;
     try { pos = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); } catch (_) {}
     brOpenMode = false;
-    if (!pos || !pos.tid) return;
+    if (!pos || !pos.tid) { viewBrowse.scrollTop = 0; return; }   // 无记忆 → 回到最新（顶部）
     const card = Array.from(brList.querySelectorAll('.bm-card')).find((c) => c.dataset.tid === pos.tid);
-    if (!card) return;  // 该推文尚未渲染（列表还不够长），降级到顶部
+    if (!card) { viewBrowse.scrollTop = 0; return; }   // 该推文已不在当前缓存 → 回到最新，而不是落在别处
     const contRect = viewBrowse.getBoundingClientRect();
     const r = card.getBoundingClientRect();
     const absTop = r.top - contRect.top + viewBrowse.scrollTop;
     viewBrowse.scrollTop = Math.max(0, absTop - 8);
+    // 媒体图可能晚于布局加载导致卡片高度变化，下一帧再校正一次，避免「跳到别的帖子」。
+    requestAnimationFrame(() => {
+      const c2 = brList.querySelector(`.bm-card[data-tid="${CSS.escape(pos.tid)}]`);
+      if (!c2) return;
+      const rr = c2.getBoundingClientRect();
+      const at = rr.top - viewBrowse.getBoundingClientRect().top + viewBrowse.scrollTop;
+      viewBrowse.scrollTop = Math.max(0, at - 8);
+    });
   }
 
   // 打开即秒开：先渲染上次缓存、恢复到上次查看位置，随后后台静默拉取最新（见 loadBrowse 的 open 模式）。
@@ -1607,6 +1625,12 @@
       }
       prependNewTweets(d.items || []);
       brCursor = d.next_cursor || null;
+      // 主动刷新＝已「追到最新」：把记忆位置重置为最新（顶部），下次打开/重开直接看到刚刷到的已读帖子，
+      // 而不是又跳回之前深翻到的旧帖。
+      try {
+        const firstCard = brList.querySelector('.bm-card');
+        if (firstCard) localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid: firstCard.dataset.tid, top: 0 }));
+      } catch (_) {}
     } catch (e) {
       if (!brList.querySelector('.bm-card'))
         brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
