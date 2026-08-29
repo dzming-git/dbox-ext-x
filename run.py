@@ -1242,6 +1242,41 @@ def _normalize_media(tweet_legacy):
     return media
 
 
+def _author_dict(user_legacy, user_core, user):
+    """从多种 user 结构里归一化出 author 字典。"""
+    return {
+        'name': (user_legacy.get('name') or user_core.get('name') or user.get('name')),
+        'screen_name': (user_legacy.get('screen_name') or user_core.get('screen_name')
+                        or user.get('screen_name')),
+        'avatar': (user_legacy.get('profile_image_url_https')
+                   or (user.get('avatar') or {}).get('image_url')
+                   or (user_core.get('avatar') or {}).get('image_url')),
+        'verified': user_legacy.get('verified', False),
+    }
+
+
+def _extract_quoted(qtweet):
+    """从被引用的原推里提取作者/正文/媒体（用于「引用转发」嵌套展示）。
+
+    「引用转发」(quote) 的外层推文是引用者自己的内容，被引用的原推放在
+    quoted_status_results.result 里——之前这段代码从未解析，导致引用原推里的
+    图片/视频丢失。这里把它的作者、正文、媒体一并提取出来。
+    """
+    ql = qtweet.get('legacy') or {}
+    qu = (((qtweet.get('core') or {}).get('user_results') or {}).get('result')) or {}
+    qul = qu.get('legacy') or qu
+    quc = qu.get('core') or {}
+    return {
+        'tweet_id': qtweet.get('rest_id'),
+        'author': _author_dict(qul, quc, qu),
+        'text': ql.get('full_text', ''),
+        'media': _normalize_media(ql),
+        'url': 'https://x.com/{}/status/{}'.format(
+            (qul.get('screen_name') or qu.get('screen_name') or 'unknown'),
+            qtweet.get('rest_id')),
+    }
+
+
 def _extract_bookmark_tweets(data):
     """从 Bookmarks 响应里提取推文列表（含作者、媒体）。
 
@@ -1282,14 +1317,51 @@ def _extract_bookmark_tweets(data):
                 result = result.get('tweet') or result
             if result.get('__typename') != 'Tweet':
                 continue
-            # 转发（retweet）归一化：当该推文是「RT @某人」时，GraphQL 会把原推放在
-            # retweeted_status_results.result 里。同一原推被多个关注者转发会出现多条
-            # 内容相同但 tweet_id 不同的卡片（即用户看到的「一模一样的帖子」）。
-            # 这里统一折叠到【原推】，用原推的 rest_id / 媒体 / 作者，去重更彻底。
-            _rt = (((result.get('retweeted_status_results') or {}).get('result')) or {})
+            # ---- 转发 / 引用关系解析（保留「谁转发/引用了谁」，不再无脑折叠成原推）----
+            # 外层推文（转发者 / 引用者 A）
+            outer = result
+            _ou = (((outer.get('core') or {}).get('user_results') or {}).get('result')) or {}
+            rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
+
+            # 1) 纯转发（RT @某人）：原推放在 retweeted_status_results.result。
+            #    卡片主体用原推（含其媒体），但保留「A 转发了」的上下文。
+            _rt = (((outer.get('retweeted_status_results') or {}).get('result')) or {})
             if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
-                    and (_rt.get('rest_id') and _rt.get('rest_id') != result.get('rest_id'))):
+                    and (_rt.get('rest_id') and _rt.get('rest_id') != outer.get('rest_id'))):
                 result = _rt
+                retweeted_by = rt_by
+                quoted = None
+            else:
+                retweeted_by = None
+                # 2) 引用转发（引用某推）：被引原推放在 quoted_status_results.result，
+                #    其图片/视频之前未被解析，这里提取出来做嵌套展示。
+                _q = (((outer.get('quoted_status_results') or {}).get('result')) or {})
+                if (isinstance(_q, dict) and _q.get('__typename') == 'Tweet'
+                        and (_q.get('rest_id') and _q.get('rest_id') != outer.get('rest_id'))):
+                    quoted = _extract_quoted(_q)
+                else:
+                    quoted = None
+
+            # 3) 扁平化 RT：full_text 形如 “RT @handle: ...” 但无嵌套 retweeted_status
+            #    （老接口 / 部分响应会这样）。此时上面的 author 其实是转发者，
+            #    需要纠正为「原推作者为主、转发者为次要上下文」。
+            if retweeted_by is None:
+                m = re.match(r'^\s*RT\s+@([A-Za-z0-9_]+)\b\s*:?\s*', (result.get('legacy') or {}).get('full_text', '') or '')
+                if m:
+                    rt_handle = m.group(1)
+                    retweeted_by = rt_by  # 外层作者 = 转发者
+                    author = {
+                        'name': rt_handle,
+                        'screen_name': rt_handle,
+                        'avatar': None,
+                        'verified': False,
+                    }
+                    # 去掉文本里的 “RT @x:” 前缀，避免与转推提示重复
+                    _leg = dict(result.get('legacy') or {})
+                    _leg['full_text'] = (result.get('legacy') or {}).get('full_text', '')[m.end():]
+                    result = dict(result)
+                    result['legacy'] = _leg
+
             legacy = result.get('legacy') or {}
             user = ((result.get('core') or {})
                     .get('user_results', {})
@@ -1300,32 +1372,20 @@ def _extract_bookmark_tweets(data):
             # - 扁平结构：user 直接含 name/screen_name
             user_legacy = user.get('legacy') or user
             user_core = (user.get('core') or {})
-            u_name = (user_legacy.get('name') or user_core.get('name')
-                      or user.get('name'))
-            u_screen = (user_legacy.get('screen_name') or user_core.get('screen_name')
-                        or user.get('screen_name'))
-            u_avatar = (user_legacy.get('profile_image_url_https')
-                        or (user.get('avatar') or {}).get('image_url')
-                        or (user_core.get('avatar') or {}).get('image_url'))
+            author = _author_dict(user_legacy, user_core, user)
             media = _normalize_media(legacy)
-            if not media:
-                # 引用推文也可能带媒体，简单跳过引用层
-                pass
             out.append({
                 'tweet_id': result.get('rest_id'),
                 'text': legacy.get('full_text', ''),
                 'created_at': legacy.get('created_at'),
                 'favorite_count': legacy.get('favorite_count'),
                 'retweet_count': legacy.get('retweet_count'),
-                'author': {
-                    'name': u_name,
-                    'screen_name': u_screen,
-                    'avatar': u_avatar,
-                    'verified': user_legacy.get('verified', False),
-                },
+                'author': author,
                 'media': media,
+                'retweeted_by': retweeted_by,
+                'quoted': quoted,
                 'url': 'https://x.com/{}/status/{}'.format(
-                    u_screen or 'unknown', result.get('rest_id')),
+                    author.get('screen_name') or 'unknown', result.get('rest_id')),
             })
     return out
 

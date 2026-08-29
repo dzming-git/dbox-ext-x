@@ -103,7 +103,10 @@
   .detail-scroll { flex: 1; overflow-y: auto; padding: 14px; }
   .dt-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
   .dt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .dt-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }
+  .dt-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #e9eef2; }
+  /* 转推：一行小字带过，主头像/名字始终是原推作者 */
+  .rt-note { font-size: 12px; color: #6b7785; padding: 4px 2px 6px; display: flex; align-items: center; gap: 4px; }
+  .rt-note b { color: #536471; font-weight: 600; }
   .dt-name { font-weight: 600; font-size: 15px; color: #0f1419; }
   .dt-handle { color: #536471; font-size: 13px; }
   .dt-time { color: #8899a6; font-size: 13px; margin-left: auto; }
@@ -169,7 +172,7 @@
   .bm-empty { color: #8899a6; font-size: 13px; text-align: center; padding: 24px 0; }
   .bm-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 10px 12px; }
   .bm-card .head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .bm-card .avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; cursor: pointer; }
+  .bm-card .avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; cursor: pointer; background: #e9eef2; }
   .bm-card .name { font-weight: 600; font-size: 13px; color: #0f1419; cursor: pointer; }
   .bm-card .name:hover { text-decoration: underline; }
   .bm-card .handle { color: #536471; font-size: 12px; }
@@ -1297,13 +1300,11 @@
   // 从 localStorage 恢复已收藏集合（小屏全屏共享）
   try { (JSON.parse(localStorage.getItem(BROWSE_FAV_KEY) || '[]') || []).forEach((t) => favSet.add(t)); } catch (_) {}
 
-  // 浏览卡片：缩略图/作者点击直接跳原推文或作者 profile，actions 是 [⭐ 收藏] [⬇ 下载]
-  function renderBrowseCard(item) {
-    const a = item.author || {};
-    const medias = (item.media || []).slice(0, 4);
-    // 按媒体数量设置 grid 类（m1=单张大图、m2=2张并排、m3/m4=2x2）
+  // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
+  function cardMediaInner(mediaList) {
+    const medias = (mediaList || []).slice(0, 4);
     const mCls = `m${Math.min(medias.length, 4)}`;
-    const mediaHtml = medias.map((m, idx) => {
+    const html = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
@@ -1313,12 +1314,62 @@
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
+    return html ? `<div class="media ${mCls}">${html}</div>` : '';
+  }
+
+  // 给某个卡片区块内的媒体缩略图绑定交互：点图进灯箱、点视频原地点播
+  function wireMediaBlock(blockEl, mediaList) {
+    if (!blockEl) return;
+    const lbItems = (mediaList || []).filter((m) => m.type !== 'video' && (m.url || m.cover))
+      .map((m) => ({ type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' }));
+    blockEl.querySelectorAll('.bm-media').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = Number(el.dataset.idx || 0);
+        if (el.dataset.type === 'video') {
+          playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);
+          return;
+        }
+        if (!lbItems.length) return;
+        _lbItems = lbItems;
+        _lbIdx = Math.min(idx, lbItems.length - 1);
+        showLightbox(_lbIdx);
+      });
+    });
+  }
+
+  // 引用转发（quote）的嵌套卡片 HTML：含头像/名字/正文/媒体
+  function quotedHtml(q) {
+    const a = (q && q.author) || {};
+    const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
+    const tid = (q && q.tweet_id) || '';
+    const qurl = (q && q.url) || '';
+    return `
+      <div class="quoted" data-tid="${esc2(tid)}" data-url="${esc2(qurl)}">
+        <div class="q-head">
+          ${a.avatar ? `<img class="q-avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
+          <div>
+            <div class="q-name" data-link="${esc2(profileUrl)}">${esc2(a.name || a.screen_name || '未知用户')}</div>
+            <div class="q-handle">@${esc2(a.screen_name || 'unknown')}</div>
+          </div>
+        </div>
+        <div class="q-text">${esc2((q && q.text) || '')}</div>
+        ${cardMediaInner((q && q.media) || [])}
+      </div>`;
+  }
+
+  // 浏览卡片：缩略图/作者点击直接跳原推文或作者 profile，actions 是 [⭐ 收藏] [⬇ 下载]
+  function renderBrowseCard(item) {
+    const a = item.author || {};
+    const medias = (item.media || []).slice(0, 4);
+    const mediaHtml = cardMediaInner(medias);
     const tid = item.tweet_id || '';
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
     const card = document.createElement('div');
     card.className = 'bm-card';
     card.dataset.tid = tid;
     card.innerHTML = `
+      ${item.retweeted_by ? `<div class="rt-note">↻ 由 @${esc2(item.retweeted_by.screen_name || item.retweeted_by.name || '某人')} 转发</div>` : ''}
       <div class="head">
         ${a.avatar ? `<img class="avatar" data-link="${esc2(profileUrl)}" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
@@ -1328,7 +1379,8 @@
         <div class="time">${esc2(fmtTime(item.created_at))}</div>
       </div>
       <div class="text">${esc2(item.text || '')}</div>
-      ${mediaHtml ? `<div class="media ${mCls}">${mediaHtml}</div>` : ''}
+      ${mediaHtml}
+      ${item.quoted ? quotedHtml(item.quoted) : ''}
       <div class="actions">
         <button class="fav ${favSet.has(tid) ? 'on' : ''}" data-tid="${esc2(tid)}">${favSet.has(tid) ? '★ 已收藏' : '☆ 收藏'}</button>
         <button class="dl" data-tid="${esc2(tid)}">⬇ 下载</button>
@@ -1338,24 +1390,9 @@
     // 作者名/头像点击跳作者 profile（仍走外链，因 dbox 暂无用户资料页）。
     const tweetUrl = item.url || `https://x.com/${a.screen_name || 'unknown'}/status/${tid}`;
     const openDetail = (e) => { e.stopPropagation(); openTweetDetail(tid, item); };
-    // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
-    const bmLBItems = medias.filter((m) => m.type !== 'video' && (m.url || m.cover)).map((m) => {
-      return { type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' };
-    });
-    card.querySelectorAll('.bm-media').forEach((el) => {
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (el.dataset.type === 'video') {
-          playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);   // 视频原地点播，不弹窗
-          return;
-        }
-        const idx = Number(el.dataset.idx || 0);
-        if (!bmLBItems.length) return;
-        _lbItems = bmLBItems;
-        _lbIdx = Math.min(idx, bmLBItems.length - 1);
-        showLightbox(_lbIdx);
-      });
-    });
+    // 主图 + 引用卡片内的图：绑定灯箱/原地点播
+    wireMediaBlock(card.querySelector('.media'), medias);
+    if (item.quoted) wireMediaBlock(card.querySelector('.quoted'), item.quoted.media || []);
     // 正文（及整卡空白区）→ 打开帖子详情
     card.querySelector('.text').addEventListener('click', openDetail);
     card.addEventListener('click', (e) => {
@@ -1364,6 +1401,16 @@
     card.querySelectorAll('[data-link]').forEach((el) => {
       el.addEventListener('click', (e) => { e.stopPropagation(); const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
     });
+    // 引用卡片整体 → 打开被引用推文详情
+    const qEl = card.querySelector('.quoted');
+    if (qEl) {
+      qEl.addEventListener('click', (e) => {
+        if (e.target.closest('[data-link]') || e.target.closest('.bm-media')) return;  // 链接/媒体自行处理
+        e.stopPropagation();
+        const qt = qEl.dataset.tid;
+        if (qt) openTweetDetail(qt, item.quoted);
+      });
+    }
     // 收藏 / 移出收藏
     card.querySelectorAll('.fav').forEach((b) => b.addEventListener('click', () => {
       const t = b.dataset.tid;
@@ -2062,6 +2109,7 @@
     const card = document.createElement('div');
     card.className = 'dt-card';
     card.innerHTML = `
+      ${t.retweeted_by ? `<div class="rt-note">↻ 由 @${esc2(t.retweeted_by.screen_name || t.retweeted_by.name || '某人')} 转发</div>` : ''}
       <div class="dt-head">
         ${a.avatar ? `<img class="dt-avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
