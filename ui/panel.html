@@ -829,9 +829,14 @@
     _drillStack.push(kind);
   }
   function closeDrillViaApp(kind) {
-    if (_drillStack.length) { history.back(); }                 // 由 popstate 统一关闭
-    else if (kind === 'lb') lbEl.classList.remove('active');
+    // 直接关闭浮层，确保「返回」按钮始终有效（不再依赖 popstate 时序）
+    if (kind === 'lb') lbEl.classList.remove('active');
     else if (kind === 'detail') dtEl.classList.remove('active');
+    // 同步历史栈：仅当本浮层是当前最上层（最近压入的 drill）时，回退一次以消费
+    // 对应历史项；出栈与再次关闭交由 popstate 统一处理（幂等，重复移除 active 无副作用）
+    if (_drillStack.length && _drillStack[_drillStack.length - 1] === kind) {
+      try { history.back(); } catch (e) {}
+    }
   }
   window.addEventListener('popstate', () => {
     const kind = _drillStack.pop();
