@@ -236,6 +236,11 @@
   /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感（带轻微缩放，更明显） */
   @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .bm-card.card-enter { animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both; }
+  /* 跨设备已读置灰：本设备或其它设备已看过（created_at <= 服务端 read_at）的条目
+     弱化显示，便于「我看到哪了」跨设备可见；内容仍在、可正常点击，不做隐藏。 */
+  .bm-card.read { opacity: .5; }
+  .bm-card.read .text { color: #536471; }
+  .bm-card.read .name { font-weight: 500; }
 </style>
 </head>
 <body>
@@ -396,6 +401,24 @@
   //   scroll_tid lww + device 滚动位置按设备隔离，不串台
   const XSTATE = (window.DBoxState && window.DBoxState.init({ ns: 'x' })) || null;
   function xSet(key, value, opts) { if (XSTATE) try { XSTATE.set(key, value, opts); } catch (_) {} }
+
+  // 跨设备已读置灰：把「时间不晚于服务端已读边界 read_at」的条目标为已读。
+  // read_at 由 saveBrowsePos 以 max 策略写入服务端（只前进、不被旧值回退），
+  // 因此在电脑上看过的内容，手机刷新后同样呈已读态——只读标记，不自动跳转。
+  function markReadFromServer() {
+    if (!XSTATE) return;
+    const boundary = XSTATE.get('read_at');
+    if (!boundary) return;
+    const bt = Date.parse(boundary);
+    if (!bt) return;
+    try {
+      document.querySelectorAll('.bm-card[data-ct]').forEach((c) => {
+        const t = Date.parse(c.dataset.ct || '');
+        if (t && t <= bt) c.classList.add('read');
+        else c.classList.remove('read');
+      });
+    } catch (_) {}
+  }
   // 用户是否已手动切换过视图：若是，后台对账不再覆盖他的选择（避免"被拉走"）
   let userSwitchedView = false;
   window.addEventListener('message', (e) => {
@@ -1117,6 +1140,8 @@
           } catch (_) {}
           if (activeView === 'browse') renderCachedBrowse();
         }
+        // 服务端 read_at 此刻才到：对已渲染的卡片补一次已读标记
+        markReadFromServer();
         const v = XSTATE.get('active_view');
         const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'];
         if (v && !userSwitchedView && v !== activeView && VALID.includes(v)) {
@@ -1434,6 +1459,8 @@
     const card = document.createElement('div');
     card.className = 'bm-card';
     card.dataset.tid = tid;
+    // 带上发布时间：供跨设备「已读置灰」与服务端 read_at 边界比较
+    card.dataset.ct = item.created_at || '';
     card.innerHTML = `
       ${item.retweeted_by ? `<div class="rt-note">↻ 由 @${esc2(item.retweeted_by.screen_name || item.retweeted_by.name || '某人')} 转发</div>` : ''}
       <div class="head">
@@ -1587,6 +1614,7 @@
       });
       brCursor = c.cursor || null;
       brLoadmore.style.display = 'none';
+      markReadFromServer();   // 渲染完按服务端已读边界置灰
       return true;
     } catch (_) { return false; }
   }
@@ -1687,6 +1715,7 @@
     frag.querySelectorAll('img').forEach((img) => {
       if (!img.complete) img.addEventListener('load', reanchor, { once: true });
     });
+    markReadFromServer();   // 新插入的卡片同样按服务端已读边界置灰
     return inserted;
   }
   function fmtCdTime(iso) {
