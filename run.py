@@ -1322,14 +1322,25 @@ def _extract_bookmark_tweets(data):
             outer = result
             _ou = (((outer.get('core') or {}).get('user_results') or {}).get('result')) or {}
             rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
+            # 转发者的 screen_name —— 后续用「原推作者 != 转发者」来可靠区分，
+            # 避免 X 偶发把转推事件自身嵌回 retweeted_status_results（rest_id 还可能
+            # 因 str/int 不一致导致 != 误判）造成的「A 转发 A」自嵌套。
+            _ou_screen = (_ou.get('legacy') or _ou).get('screen_name')
+
+            def _screen_of(t):
+                if not isinstance(t, dict):
+                    return None
+                u = (((t.get('core') or {}).get('user_results') or {}).get('result')) or {}
+                return (u.get('legacy') or u).get('screen_name')
 
             # 1) 纯转发（RT @某人）：原推放在 retweeted_status_results.result。
             #    卡片主体用原推（含其媒体），转发者降为 retweeted_by 的小字提示。
+            #    仅当原推作者与转发者不同时才算「真正转推」（排除自嵌套）。
             retweeted_by = None
             quoted = None
             _rt = (((outer.get('retweeted_status_results') or {}).get('result')) or {})
             if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
-                    and (_rt.get('rest_id') and _rt.get('rest_id') != outer.get('rest_id'))):
+                    and _screen_of(_rt) and _screen_of(_rt) != _ou_screen):
                 result = _rt
                 retweeted_by = rt_by
             else:
@@ -1337,7 +1348,7 @@ def _extract_bookmark_tweets(data):
                 #    其图片/视频之前未被解析，这里提取出来做嵌套展示。
                 _q = (((outer.get('quoted_status_results') or {}).get('result')) or {})
                 if (isinstance(_q, dict) and _q.get('__typename') == 'Tweet'
-                        and (_q.get('rest_id') and _q.get('rest_id') != outer.get('rest_id'))):
+                        and _screen_of(_q) and _screen_of(_q) != _ou_screen):
                     quoted = _extract_quoted(_q)
 
             legacy = result.get('legacy') or {}
@@ -1497,12 +1508,17 @@ def _extract_tweet_obj(r):
     if r.get('__typename') != 'Tweet':
         return None
     # 纯转发：用嵌套原推作为主体，转发者降为 retweeted_by 的小字提示。
+    # 仅当原推作者 != 转发者才算真正转推，排除 X 把转推事件自身嵌回的自嵌套。
     retweeted_by = None
     _ou = (((r.get('core') or {}).get('user_results') or {}).get('result')) or {}
     rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
+    _ou_screen = (_ou.get('legacy') or _ou).get('screen_name')
     _rt = (((r.get('retweeted_status_results') or {}).get('result')) or {})
-    if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
-            and (_rt.get('rest_id') and _rt.get('rest_id') != r.get('rest_id'))):
+    _rt_screen = None
+    if isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet':
+        _rtu = (((_rt.get('core') or {}).get('user_results') or {}).get('result')) or {}
+        _rt_screen = (_rtu.get('legacy') or _rtu).get('screen_name')
+    if _rt_screen and _rt_screen != _ou_screen:
         r = _rt
         retweeted_by = rt_by
     else:
