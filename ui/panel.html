@@ -295,9 +295,6 @@
       <input id="qdl-url" type="text" placeholder="粘贴推文链接，回车打开浏览…" />
       <button id="qdl-btn">🔍 打开</button>
     </div>
-    <div class="bm-toolbar">
-      <button id="br-batch" class="secondary" disabled>⬇ 批量下载选中 (0)</button>
-    </div>
     <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
     <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
   </div>
@@ -1269,7 +1266,6 @@
     card.dataset.tid = tid;
     card.innerHTML = `
       <div class="head">
-        <input type="checkbox" class="bm-chk" data-tid="${esc2(tid)}" />
         ${a.avatar ? `<img class="avatar" data-link="${esc2(profileUrl)}" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
           <div class="name" data-link="${esc2(profileUrl)}">${esc2(a.name || a.screen_name || '未知用户')}</div>
@@ -1314,9 +1310,6 @@
     card.querySelectorAll('[data-link]').forEach((el) => {
       el.addEventListener('click', (e) => { e.stopPropagation(); const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
     });
-    // 多选 checkbox 不冒泡到正文/详情
-    const chk = card.querySelector('.bm-chk');
-    if (chk) chk.addEventListener('click', (e) => e.stopPropagation());
     // 收藏 / 移出收藏
     card.querySelectorAll('.fav').forEach((b) => b.addEventListener('click', () => {
       const t = b.dataset.tid;
@@ -1986,46 +1979,6 @@
   // 切到浏览 tab 时立即查一次
   tabsEl.addEventListener('click', (e) => {
     if (e.target?.dataset?.view === 'browse') setTimeout(pollNewTweets, 500);
-  });
-
-  // P2-8 批量下载：复选框变化时更新按钮
-  function updateBatchBtn() {
-    const checked = brList.querySelectorAll('.bm-chk:checked');
-    const btn = $('br-batch');
-    if (!btn) return;
-    btn.disabled = checked.length === 0;
-    btn.textContent = `⬇ 批量下载选中 (${checked.length})`;
-  }
-  brList.addEventListener('change', (e) => {
-    if (e.target.classList && e.target.classList.contains('bm-chk')) updateBatchBtn();
-  });
-  $('br-batch').addEventListener('click', async () => {
-    const checked = Array.from(brList.querySelectorAll('.bm-chk:checked'));
-    if (!checked.length) return;
-    const btn = $('br-batch');
-    btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>提交中…';
-    const lib = $('library').value;
-    if (!lib) { alert('请先选择目标资源库'); btn.disabled = false; updateBatchBtn(); return; }
-    const hidden = $('hidden').checked;
-    let ok = 0, fail = 0;
-    for (const c of checked) {
-      const tid = c.dataset.tid;
-      const card = c.closest('.bm-card');
-      const url = card?.querySelector('.open, .dl')?.dataset?.url || '';
-      if (!url) continue;
-      const r = await req(`${API}/run`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          library_id: lib, params: { url, preview: false, auto: true, hidden },
-        }),
-      });
-      const d = await r.json();
-      if (d && d.success) ok++; else fail++;
-    }
-    btn.textContent = `✅ 完成 ${ok}，失败 ${fail}`;
-    // 取消选中
-    checked.forEach((c) => { c.checked = false; });
-    setTimeout(updateBatchBtn, 2500);
   });
 
   /* ---- 推文详情页（DBox 内预览推文 + 评论区） ---- */
