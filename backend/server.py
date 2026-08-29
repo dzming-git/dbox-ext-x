@@ -794,8 +794,25 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
-        return jsonify({'success': True, 'items': items,
-                        'next_cursor': next_cursor})
+
+        # 服务端为唯一真相源：拉取结果先并入服务端缓存（union_by_id 去重、封顶 400），
+        # 首次加载（无 cursor）时返回「服务端合并后的完整列表」，使任何设备打开
+        # 刷新看到的都是同一份，而不是各自 localStorage 里分叉的那份。
+        # 翻页（带 cursor）时只回本次新拉取的一页，避免每次回传 400 条。
+        canonical = None
+        try:
+            merged = host.state.put('cache', items, strategy='union_by_id', cap=400)
+            if isinstance(merged, dict) and isinstance(merged.get('value'), list):
+                canonical = merged['value']
+            if next_cursor:
+                host.state.put('cursor', next_cursor, strategy='max')
+        except Exception:
+            canonical = None   # 状态服务不可用时退化为只返回本次结果
+
+        return jsonify({'success': True,
+                        'items': canonical if (canonical is not None and not cursor) else items,
+                        'next_cursor': next_cursor,
+                        'canonical': canonical is not None and not cursor})
 
     @bp.route('/check', methods=['GET'])
     def check():

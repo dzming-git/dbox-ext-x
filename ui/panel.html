@@ -1102,15 +1102,20 @@
   if (XSTATE) {
     XSTATE.pull().then(() => {
       try {
+        // 服务端为唯一真相源：用服务端快照「整体替换」本地缓存后再渲染。
+        // 此前只做增量合并（仅补本地没有的），导致各设备保留自己的旧条目、
+        // 永远收敛不到同一份——手机与电脑显示不一致的根因。
+        // 这里直接写 localStorage 而非调 saveBrowseCache，避免把刚拉下来的
+        // 服务端数据又回推一次（它本就来自服务端）。
         const cache = XSTATE.get('cache');
         if (Array.isArray(cache) && cache.length) {
-          const local = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
-          const seen = new Set((local.items || []).map((it) => String(it.tweet_id || it.id)));
-          const incoming = cache.filter((it) => !seen.has(String(it.tweet_id || it.id)));
-          if (incoming.length) {
-            saveBrowseCache(incoming, true);
-            if (activeView === 'browse') renderCachedBrowse();
-          }
+          try {
+            localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({
+              ts: Date.now(), items: cache,
+              cursor: XSTATE.get('cursor') || null
+            }));
+          } catch (_) {}
+          if (activeView === 'browse') renderCachedBrowse();
         }
         const v = XSTATE.get('active_view');
         const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'];
