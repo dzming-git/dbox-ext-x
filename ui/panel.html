@@ -76,7 +76,7 @@
   .log .err { color: #f56c6c; }
 
   /* ---- Lightbox（点击图片放大 + 左右切换） ---- */
-  .lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; cursor: pointer; }
+  .lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; cursor: pointer; touch-action: none; overscroll-behavior: contain; }
   .lightbox.active { display: flex; }
   .lightbox img, .lightbox video { max-width: 92vw; max-height: 85vh; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
   .lightbox .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; cursor: pointer; border: none; border-radius: 50%; background: rgba(0,0,0,.4); color: #fff; font-size: 28px; opacity: 0; transition: opacity .2s; user-select: none; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
@@ -839,22 +839,52 @@
       dtEl.classList.remove('active');
     }
   });
-  // 触摸左右滑动切换（图片/视频）；竖向滑动或点按不触发，避免误关/误触
+  // 触摸左右滑动切换（图片/视频）；竖向滑动或点按不触发，避免误关/误触。
+  // 关键：在 touchmove 阶段对横向滑动 e.preventDefault()，阻止浏览器将滑动
+  // 识别为「系统/浏览器的后退手势」（否则松手前浏览器已发起后退，切图失败）。
   let _lbSwiped = false;
-  let _lbTx = 0, _lbTy = 0;
+  let _lbSX = 0, _lbSY = 0, _lbSwiping = false, _lbLocked = false;
+  function _lbMediaEl() {
+    if (lbImg.style.display !== 'none') return lbImg;
+    const v = lbEl.querySelector('video');
+    return v || lbImg;
+  }
   lbEl.addEventListener('touchstart', (e) => {
     if (_lbItems.length <= 1) return;
-    const t = e.changedTouches[0];
-    _lbTx = t.clientX; _lbTy = t.clientY;
+    const t = e.touches[0];
+    _lbSX = t.clientX; _lbSY = t.clientY;
+    _lbSwiping = true; _lbLocked = false;
   }, { passive: true });
+  lbEl.addEventListener('touchmove', (e) => {
+    if (!_lbSwiping || _lbItems.length <= 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - _lbSX, dy = t.clientY - _lbSY;
+    // 一旦判定为横向滑动，即锁定并吞掉浏览器默认手势（核心防后退手段）
+    if (!_lbLocked && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 6) _lbLocked = true;
+    if (_lbLocked) {
+      e.preventDefault();
+      e.stopPropagation();
+      const m = _lbMediaEl();
+      m.style.transition = 'none';
+      m.style.transform = `translateX(${dx}px)`;   // 实时跟手指，反馈更跟手
+    }
+  }, { passive: false });
   lbEl.addEventListener('touchend', (e) => {
-    if (_lbItems.length <= 1) return;
+    if (!_lbSwiping || _lbItems.length <= 1) { _lbSwiping = false; return; }
+    _lbSwiping = false;
     const t = e.changedTouches[0];
-    const dx = t.clientX - _lbTx, dy = t.clientY - _lbTy;
-    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
-      e.preventDefault();        // 阻止随后合成的 click 关闭灯箱
+    const dx = t.clientX - _lbSX, dy = t.clientY - _lbSY;
+    const m = _lbMediaEl();
+    if (_lbLocked && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      e.preventDefault();          // 阻止随后合成的 click 关闭灯箱
       _lbSwiped = true;
+      m.style.transition = ''; m.style.transform = '';
       lbStep(dx < 0 ? 1 : -1);
+    } else {
+      // 未达阈值：回弹归位
+      m.style.transition = 'transform .2s ease';
+      m.style.transform = '';
+      setTimeout(() => { m.style.transition = ''; }, 220);
     }
   }, { passive: false });
   lbEl.addEventListener('click', () => {
