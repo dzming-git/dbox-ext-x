@@ -1232,8 +1232,11 @@ def _normalize_media(tweet_legacy):
                 media.append({'type': 'photo', 'url': url})
         elif kind in ('video', 'animated_gif'):
             variants = m.get('video_info', {}).get('variants') or []
-            mp4 = next((v.get('url') for v in variants
-                        if v.get('content_type') == 'video/mp4'), None)
+            # 取最高码率 mp4 直链，保证预览/全屏清晰度（而非第一个低清变体）
+            mp4s = [v for v in variants
+                    if v.get('content_type') == 'video/mp4' and v.get('url')]
+            best = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
+            mp4 = best.get('url') if best else None
             cover = m.get('media_url_https') or m.get('media_url')
             media.append({'type': 'video', 'cover': cover, 'url': mp4})
     return media
