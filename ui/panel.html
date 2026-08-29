@@ -1629,7 +1629,7 @@
         return;
       }
       prependNewTweets(d.items || []);
-      brCursor = d.next_cursor || null;      } catch (_) {}
+      brCursor = d.next_cursor || null;
     } catch (e) {
       if (!brList.querySelector('.bm-card'))
         brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
@@ -1670,8 +1670,6 @@
       if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
-      if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
-    }    } else {
       if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
     }
     try {
