@@ -206,7 +206,6 @@
     pointer-events: none;
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
-  .ptr-indicator.ptr-bottom { top: auto; bottom: 0; transform: translateY(48px); }
   .bm-card .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
   .bm-card .bm-media.playing { background: #000; }
   .bm-card .bm-media.playing video { object-fit: contain; }
@@ -1047,7 +1046,7 @@
     if (!tbRefresh || tbRefresh.classList.contains('spinning')) return;
     tbRefresh.classList.add('spinning');
     try {
-      if (activeView === 'browse') { brOpenMode = false; await loadBrowse(true); }
+      if (activeView === 'browse') { await refreshBrowseKeepPos(); }
       else if (activeView === 'search') { await doSearch(); }
       else if (activeView === 'bookmarks') { loadXBookmarks(); }
     } catch (e) { /* 忽略刷新异常 */ } finally {
@@ -1593,6 +1592,29 @@
     showOpenNewBanner(inserted);
   }
 
+  // 下拉刷新 / 桌面刷新按钮：拉取最新一页并「顶部插入、保持查看位置」（不回到顶部），
+  // 新内容出现在上方，用户继续向下滑动即可看到；与面板打开时的静默刷新行为一致。
+  async function refreshBrowseKeepPos() {
+    if (brLoading) return;
+    brLoading = true;
+    try {
+      const r = await req(`${API}/timeline?count=50`);
+      const d = await r.json();
+      if (!d.success) {
+        if (!brList.querySelector('.bm-card'))
+          brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
+        return;
+      }
+      prependNewTweets(d.items || []);
+      brCursor = d.next_cursor || null;
+    } catch (e) {
+      if (!brList.querySelector('.bm-card'))
+        brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    } finally {
+      brLoading = false;
+    }
+  }
+
   // 顶部「正在后台加载」提示（不打断查看）
   function showBgLoading(on) {
     let el = $('br-bgload');
@@ -1988,87 +2010,14 @@
     });
   }
 
-  // 首页（关注流）下拉刷新：整体刷新并回到顶部（显式手势，符合下拉刷新语义）
-  if (brScroll) attachPullToRefresh(brScroll, async () => { brOpenMode = false; await loadBrowse(true); });
+  // 首页（关注流）下拉刷新：拉取最新并「顶部插入、保持当前查看位置」，新内容在上方，不跳顶
+  if (brScroll) attachPullToRefresh(brScroll, async () => { await refreshBrowseKeepPos(); });
   // 搜索视图同样支持下拉刷新
   if (srchScroll) attachPullToRefresh(srchScroll, async () => { await doSearch(); });
 
-  // 上拉加载更多：在滚动容器底部上拉（触摸）触发 onLoad，加载更旧的内容。
-  // 与顶部下拉刷新对称：内容整体向上平移，指示器在底部露出的空隙里同步出现（资源上方），
-  // 松手超过阈值即加载，加载中显示「加载中…」。仅当已滚到底部且向上拉时生效。
-  function attachPullToLoadMore(scrollEl, onLoad, opts) {
-    opts = opts || {};
-    const threshold = opts.threshold || 56;
-    const maxPull = opts.maxPull || 84;
-    const ind = document.createElement('div');
-    ind.className = 'ptr-indicator ptr-bottom';
-    ind.innerHTML = '<span class="ptr-icon">↑</span><span class="ptr-text">上拉加载更多</span>';
-    scrollEl.appendChild(ind);
-    const txtEl = ind.querySelector('.ptr-text');
-    const iconEl = ind.querySelector('.ptr-icon');
-    let active = false, pulling = false, loading = false, startY = 0, dist = 0, kids = [];
-    const atBottom = () => scrollEl.scrollTop + scrollEl.clientHeight >= scrollEl.scrollHeight - 2;
+  // 上拉加载已移除：更旧的推文改为「滚动触底（或距底 400px）自动加载/预加载」，
+  // 由上方 #view-browse / #view-search 的无限滚动监听器负责，无需独立手势，也避免无动画的突兀感。
 
-    function contentTransform(y) { for (const c of kids) c.style.transform = `translateY(${y}px)`; }
-    function setInd(d) {
-      const e = Math.max(0, Math.min(d, maxPull));
-      ind.style.transform = `translateY(${ind.offsetHeight - Math.min(e, ind.offsetHeight)}px)`;
-      ind.style.opacity = Math.min(1, e / threshold);
-      if (loading) { txtEl.textContent = '加载中…'; return; }
-      if (e >= threshold) { txtEl.textContent = '释放加载'; iconEl.textContent = '↓'; }
-      else { txtEl.textContent = '上拉加载更多'; iconEl.textContent = '↑'; }
-    }
-    function resetAll() {
-      ind.style.transition = 'transform .3s, opacity .3s';
-      contentTransform(0);
-      ind.style.transform = `translateY(${ind.offsetHeight}px)`;
-      ind.style.opacity = 0;
-      setTimeout(() => { if (!loading) ind.style.transition = ''; }, 300);
-    }
-    function startLoad() {
-      loading = true;
-      ind.style.transition = 'transform .2s, opacity .2s';
-      contentTransform(-threshold);
-      ind.style.transform = 'translateY(0)';
-      ind.style.opacity = 1;
-      txtEl.textContent = '加载中…';
-      iconEl.innerHTML = '<span class="spinner" style="width:15px;height:15px;border-width:2px;display:inline-block;vertical-align:middle"></span>';
-      Promise.resolve().then(() => onLoad()).then(finishLoad).catch(finishLoad);
-    }
-    function finishLoad() { loading = false; resetAll(); }
-
-    scrollEl.addEventListener('touchstart', (e) => {
-      if (loading || !atBottom()) { active = false; return; }
-      active = true; pulling = false; dist = 0; startY = e.touches[0].clientY;
-      kids = Array.from(scrollEl.children).filter(c => !c.classList || !c.classList.contains('ptr-indicator'));
-    }, { passive: true });
-    scrollEl.addEventListener('touchmove', (e) => {
-      if (!active || loading) return;
-      const delta = e.touches[0].clientY - startY;
-      if (!pulling) {
-        if (delta < 0 && atBottom()) pulling = true;
-        else if (delta >= 0) { active = false; return; }
-        else return;
-      }
-      if (delta < 0 && atBottom()) {
-        if (e.cancelable) e.preventDefault();
-        dist = Math.min(-delta * 0.5, maxPull);
-        contentTransform(-dist);
-        setInd(dist);
-      }
-    }, { passive: false });
-    scrollEl.addEventListener('touchend', () => {
-      if (!active || loading) { active = false; return; }
-      active = false;
-      if (pulling && dist >= threshold) startLoad();
-      else resetAll();
-      pulling = false; dist = 0;
-    });
-  }
-
-  // 首页/搜索底部上拉加载更旧内容（与顶部下拉刷新对称）
-  if (brScroll) attachPullToLoadMore(brScroll, async () => { if (!brLoading) await loadBrowse(false); });
-  if (srchScroll) attachPullToLoadMore(srchScroll, async () => { if (!srchLoading) await loadSearch(false); });
 
   // P2-11 定时刷新关注流：每 3 分钟静默拉一次最新推文，插入到顶部并保持当前查看位置，
   // 不弹「点击加载」、直接复用 prependNewTweets（顺便显示「N 条新推文」提示）。
