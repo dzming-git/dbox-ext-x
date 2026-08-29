@@ -1567,7 +1567,7 @@
     loadBrowse(true);
   }
 
-  // 后台刷新成功后：把新推文插到列表顶部（保留当前查看位置），并提示「N 条新推文」。
+  // 后台刷新成功后：把新推文静默插到列表顶部（保留当前查看位置），用户上滑即可看到。
   function prependNewTweets(items) {
     const cont = viewBrowse;
     if (!cont) return;
@@ -1589,7 +1589,7 @@
       const delta = brList.scrollHeight - prevHeight;
       if (delta > 0) cont.scrollTop += delta;
     }
-    showOpenNewBanner(inserted);
+    // 新推文已静默插到顶部；不弹「点击查看」横幅——用户向上滑即可看到，下拉刷新亦可主动获取。
   }
 
   // 下拉刷新 / 桌面刷新按钮：拉取最新一页并「顶部插入、保持查看位置」（不回到顶部），
@@ -1633,20 +1633,6 @@
     }
   }
 
-  // 顶部「N 条新推文，点击查看」提示：点击平滑滚回顶部
-  function showOpenNewBanner(count) {
-    let el = $('br-open-new');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'br-open-new';
-      el.className = 'bm-newbar';
-      brList.parentNode.insertBefore(el, brList);
-      el.addEventListener('click', () => { viewBrowse.scrollTo({ top: 0, behavior: 'smooth' }); });
-    }
-    el.style.display = '';
-    el.innerHTML = `<button style="width:100%;padding:9px;border:none;border-radius:9px;font-size:13px;background:#fff5d6;color:#b58900;cursor:pointer">🔔 有 <b>${count}</b> 条新推文，点击查看</button>`;
-  }
-
   async function loadBrowse(reset = true) {
     if (brLoading) return;
     brLoading = true;
@@ -1664,7 +1650,6 @@
         brSeenIds.clear();
         const preview = renderCachedBrowse();
         if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
-        const ob = $('br-open-new'); if (ob) ob.remove();   // 手动刷新清除上次的「新推文」提示
       }
     } else {
       if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
@@ -1720,7 +1705,7 @@
   // 这里一次上拉连续翻多页（每页 50 条，最多 MAX_PAGES 页），直到攒够 BATCH_TARGET
   // 条真正新的推文，或者没有更多页为止——让用户等一次、看一大段，等待远小于浏览时间。
   async function loadOlderBatch() {
-    const BATCH_TARGET = 40;   // 一次上拉至少攒够这么多条新推文
+    const BATCH_TARGET = 40;   // 一次预加载至少攒够这么多条新推文
     const MAX_PAGES = 6;       // 最多翻几页，避免单次等待过久
     let appendedTotal = 0, pages = 0, allItems = [];
     while (brCursor && pages < MAX_PAGES) {
@@ -2020,7 +2005,7 @@
 
 
   // P2-11 定时刷新关注流：每 3 分钟静默拉一次最新推文，插入到顶部并保持当前查看位置，
-  // 不弹「点击加载」、直接复用 prependNewTweets（顺便显示「N 条新推文」提示）。
+  // 不弹任何提示横幅，直接复用 prependNewTweets（新推文已置顶，用户上滑即见）。
   async function pollNewTweets() {
     if (brLoading) return;
     try {
