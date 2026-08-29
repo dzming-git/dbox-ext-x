@@ -797,6 +797,10 @@ def create_blueprint(host):
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
 
+    @bp.route('/check', methods=['GET'])
+    def check():
+        return jsonify({'success': True, **_check_x_session()})
+
     def _check_x_session():
         """实时校验 X 登录态：缺/残缺 Cookie 直接判否；字段齐全再拉 1 条关注流确认真实有效。
 
