@@ -218,9 +218,9 @@
   @keyframes xd-spin { to { transform: rotate(360deg); } }
   /* 通用 spinner：让下拉刷新/上拉加载里内联创建的指示器转起来（.bm-loadmore 之外也能转） */
   .spinner { display: inline-block; width: 15px; height: 15px; box-sizing: border-box; border: 2px solid #cfd9e0; border-top-color: #1d9bf0; border-radius: 50%; animation: xd-spin .7s linear infinite; vertical-align: -2px; }
-  /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感 */
-  @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-  .bm-card.card-enter { animation: cardIn .34s ease both; }
+  /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感（带轻微缩放，更明显） */
+  @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .bm-card.card-enter { animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both; }
 </style>
 </head>
 <body>
@@ -1549,16 +1549,16 @@
       if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
     }
     try {
-      const url = `${API}/timeline?count=30${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
-      const r = await req(url);
-      const d = await r.json();
-      if (!d.success) {
-        if (reset && !brList.querySelector('.bm-card'))
-          brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
-        return;
-      }
-      const items = d.items || [];
       if (reset) {
+        const url = `${API}/timeline?count=50${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
+        const r = await req(url);
+        const d = await r.json();
+        if (!d.success) {
+          if (reset && !brList.querySelector('.bm-card'))
+            brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
+          return;
+        }
+        const items = d.items || [];
         if (openMode) {
           prependNewTweets(items);            // 顶部插入新推文，保持查看位置
           saveBrowseCache(items, false);      // 以服务端最新时间线作为下次打开的缓存
@@ -1578,21 +1578,9 @@
         brCursor = d.next_cursor || null;
         brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
       } else {
-        if (!items.length) return;           // 加载更多无新内容
-        let appended = 0;
-        sortItemsByTime(items).forEach((it) => {
-          const id = it.tweet_id || it.id;
-          if (!id || brSeenIds.has(String(id))) return;
-          brSeenIds.add(String(id));
-          const card = renderBrowseCard(it);
-          card.classList.add('card-enter');
-          card.style.animationDelay = Math.min(appended * 28, 420) + 'ms';
-          brList.appendChild(card);
-          appended++;
-        });
-        brCursor = d.next_cursor || null;
-        brLoadmore.style.display = 'none';
-        if (appended) saveBrowseCache(items, true);
+        // 上拉加载更旧：X 关注流游标会返回大量重叠内容，单次只多出 2-3 条。
+        // 一次上拉连续翻多页，攒够一批真正新的推文再结束，做到「等一次、看很多」。
+        await loadOlderBatch();
       }
     } catch (e) {
       if (reset && !brList.querySelector('.bm-card'))
@@ -1604,6 +1592,46 @@
       // 无脑上滑：内容不足一屏（还无法触发滚动）时自动续加载，直到填满或没有更多
       setTimeout(brAutoFill, 200);
     }
+  }
+
+  // 上拉加载更旧（批量）：X 关注流 GraphQL 的 Bottom 游标往往返回大量与已加载内容
+  // 重叠的推文，单次请求去重后只剩 2-3 条新的，导致「看两条、又要等几秒」。
+  // 这里一次上拉连续翻多页（每页 50 条，最多 MAX_PAGES 页），直到攒够 BATCH_TARGET
+  // 条真正新的推文，或者没有更多页为止——让用户等一次、看一大段，等待远小于浏览时间。
+  async function loadOlderBatch() {
+    const BATCH_TARGET = 40;   // 一次上拉至少攒够这么多条新推文
+    const MAX_PAGES = 6;       // 最多翻几页，避免单次等待过久
+    let appendedTotal = 0, pages = 0, allItems = [];
+    while (brCursor && pages < MAX_PAGES) {
+      pages++;
+      const url = `${API}/timeline?count=50${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
+      const r = await req(url);
+      const d = await r.json();
+      if (!d.success) break;
+      const items = d.items || [];
+      if (!items.length) { brCursor = null; break; }
+      allItems = allItems.concat(items);
+      let appended = 0;
+      sortItemsByTime(items).forEach((it) => {
+        const id = it.tweet_id || it.id;
+        if (!id || brSeenIds.has(String(id))) return;
+        brSeenIds.add(String(id));
+        const card = renderBrowseCard(it);
+        card.classList.add('card-enter');
+        card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
+        brList.appendChild(card);
+        appended++; appendedTotal++;
+      });
+      brCursor = d.next_cursor || null;
+      if (appended === 0) {
+        // 整页都是已见过的（X 游标重叠），继续翻下一页；若已无下一页则停止
+        if (!brCursor) break;
+        continue;
+      }
+      if (appendedTotal >= BATCH_TARGET) break;
+    }
+    brLoadmore.style.display = 'none';
+    if (appendedTotal && allItems.length) saveBrowseCache(allItems, true);
   }
 
   // 无脑上滑：若关注流尚未填满可视区（scrollHeight<=clientHeight 无法滚动触发
@@ -1653,35 +1681,36 @@
       srchMoreBtn.innerHTML = '<span class="spinner"></span>加载中…';
     }
     try {
-      let url = `${API}/search?q=${encodeURIComponent(q)}&count=20&product=${encodeURIComponent(srchProduct)}`;
-      if (!reset && srchCursor) url += `&cursor=${encodeURIComponent(srchCursor)}`;
-      const r = await req(url);
-      const d = await r.json();
-      if (!d.success) {
-        if (reset && !srchList.querySelector('.bm-card'))
-          srchList.innerHTML = `<div class="bm-empty err">搜索失败: ${esc2(d.message || '未知错误')}</div>`;
-        return;
-      }
-      const items = d.items || [];
       if (reset) {
+        let url = `${API}/search?q=${encodeURIComponent(q)}&count=50&product=${encodeURIComponent(srchProduct)}`;
+        const r = await req(url);
+        const d = await r.json();
+        if (!d.success) {
+          if (reset && !srchList.querySelector('.bm-card'))
+            srchList.innerHTML = `<div class="bm-empty err">搜索失败: ${esc2(d.message || '未知错误')}</div>`;
+          return;
+        }
+        const items = d.items || [];
         srchList.innerHTML = '';
         srchSeenIds.clear();
         srchCursor = null;
+        if (!items.length) srchList.innerHTML = '<div class="bm-empty">没有搜到相关推文。</div>';
+        let i = 0;
+        sortItemsByTime(items).forEach((it) => {
+          const id = it.tweet_id || it.id;
+          if (!id || srchSeenIds.has(String(id))) return;
+          srchSeenIds.add(String(id));
+          const card = renderBrowseCard(it);
+          card.classList.add('card-enter');
+          card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
+          srchList.appendChild(card);
+          i++;
+        });
+        srchCursor = d.next_cursor || null;
+        srchLoadmore.style.display = srchCursor ? '' : 'none';
+      } else {
+        await loadSearchOlderBatch();
       }
-      if (!items.length && reset) srchList.innerHTML = '<div class="bm-empty">没有搜到相关推文。</div>';
-      let appended = 0;
-      sortItemsByTime(items).forEach((it) => {
-        const id = it.tweet_id || it.id;
-        if (!id || srchSeenIds.has(String(id))) return;
-        srchSeenIds.add(String(id));
-        const card = renderBrowseCard(it);
-        card.classList.add('card-enter');
-        card.style.animationDelay = Math.min(appended * 28, 420) + 'ms';
-        srchList.appendChild(card);
-        appended++;
-      });
-      srchCursor = d.next_cursor || null;
-      srchLoadmore.style.display = srchCursor ? '' : 'none';
     } catch (e) {
       if (reset && !srchList.querySelector('.bm-card'))
         srchList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
@@ -1689,6 +1718,42 @@
       srchLoading = false;
       if (srchMoreBtn) { srchMoreBtn.disabled = false; srchMoreBtn.innerHTML = '加载更多'; }
     }
+  }
+
+  // 搜索上拉加载更旧结果（批量）：与 loadOlderBatch 同理，一次上拉翻多页攒够一批，
+  // 避免 X 游标重叠导致每次只多出 2-3 条、频繁等待。
+  async function loadSearchOlderBatch() {
+    const BATCH_TARGET = 40;
+    const MAX_PAGES = 6;
+    let appendedTotal = 0, pages = 0, allItems = [];
+    while (srchCursor && pages < MAX_PAGES) {
+      pages++;
+      const url = `${API}/search?q=${encodeURIComponent(srchQuery)}&count=50&product=${encodeURIComponent(srchProduct)}&cursor=${encodeURIComponent(srchCursor)}`;
+      const r = await req(url);
+      const d = await r.json();
+      if (!d.success) break;
+      const items = d.items || [];
+      if (!items.length) { srchCursor = null; break; }
+      allItems = allItems.concat(items);
+      let appended = 0;
+      sortItemsByTime(items).forEach((it) => {
+        const id = it.tweet_id || it.id;
+        if (!id || srchSeenIds.has(String(id))) return;
+        srchSeenIds.add(String(id));
+        const card = renderBrowseCard(it);
+        card.classList.add('card-enter');
+        card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
+        srchList.appendChild(card);
+        appended++; appendedTotal++;
+      });
+      srchCursor = d.next_cursor || null;
+      if (appended === 0) {
+        if (!srchCursor) break;
+        continue;
+      }
+      if (appendedTotal >= BATCH_TARGET) break;
+    }
+    srchLoadmore.style.display = srchCursor ? '' : 'none';
   }
 
   function doSearch() {
