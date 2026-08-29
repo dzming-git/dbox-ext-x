@@ -1537,46 +1537,36 @@
   // ---- 浏览位置记忆：记住上次看到的推文，重进时定位回去，往上滑看更新 ----
   const BROWSE_POS_KEY = 'xd_browse_pos';
   let brOpenMode = false;   // 「打开即秒开」模式：渲染缓存+恢复位置+后台静默刷新，不打断查看位置
+  let posSaveTimer = null;
   function saveBrowsePos() {
     const cont = viewBrowse;
-    if (!cont) return;
-    if (activeView !== 'browse') return;   // 仅当浏览视图可见时才记录，避免隐藏容器/其它视图的滚动污染位置记忆
-    if (cont.style.display === 'none' || getComputedStyle(cont).display === 'none') return;
-    const contRect = cont.getBoundingClientRect();
+    if (!cont || activeView !== 'browse') return;
+    if (getComputedStyle(cont).display === 'none') return;
+    const cr = cont.getBoundingClientRect();
     const cards = brList.querySelectorAll('.bm-card');
+    let target = null;
     for (const c of cards) {
       const r = c.getBoundingClientRect();
-      // 找视口内（或顶部刚露出）的第一张卡片
-      if (r.bottom > contRect.top) {
-        const absTop = r.top - contRect.top + cont.scrollTop;
-        const tid = c.dataset.tid;
-        if (tid) {
-          try { localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid, top: absTop })); } catch (_) {}
-        }
-        break;
-      }
+      if (r.bottom > cr.top + 4) { target = c; break; }
     }
+    if (!target) return;
+    const tid = target.dataset.tid;
+    if (tid) { try { localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid })); } catch (_) {} }
   }
-  function restoreBrowsePos() {
-    if (!brOpenMode) return;
-    let pos = null;
-    try { pos = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); } catch (_) {}
-    brOpenMode = false;
-    if (!pos || !pos.tid) { viewBrowse.scrollTop = 0; return; }   // 无记忆 → 回到最新（顶部）
-    const card = Array.from(brList.querySelectorAll('.bm-card')).find((c) => c.dataset.tid === pos.tid);
-    if (!card) { viewBrowse.scrollTop = 0; return; }   // 该推文已不在当前缓存 → 回到最新，而不是落在别处
-    const contRect = viewBrowse.getBoundingClientRect();
+  function scheduleSavePos() {
+    if (posSaveTimer) return;
+    posSaveTimer = setTimeout(() => { posSaveTimer = null; saveBrowsePos(); }, 200);
+  }
+  function scrollCardToTop(tid, offset) {
+    const cont = viewBrowse;
+    if (!cont || !tid) return false;
+    const card = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`);
+    if (!card) return false;
     const r = card.getBoundingClientRect();
-    const absTop = r.top - contRect.top + viewBrowse.scrollTop;
-    viewBrowse.scrollTop = Math.max(0, absTop - 8);
-    // 媒体图可能晚于布局加载导致卡片高度变化，下一帧再校正一次，避免「跳到别的帖子」。
-    requestAnimationFrame(() => {
-      const c2 = brList.querySelector(`.bm-card[data-tid="${CSS.escape(pos.tid)}]`);
-      if (!c2) return;
-      const rr = c2.getBoundingClientRect();
-      const at = rr.top - viewBrowse.getBoundingClientRect().top + viewBrowse.scrollTop;
-      viewBrowse.scrollTop = Math.max(0, at - 8);
-    });
+    const cr = cont.getBoundingClientRect();
+    const curAbs = r.top - cr.top + cont.scrollTop;
+    cont.scrollTop = Math.max(0, curAbs - (offset || 0));
+    return true;
   }
 
   // 打开即秒开：先渲染上次缓存、恢复到上次查看位置，随后后台静默拉取最新（见 loadBrowse 的 open 模式）。
@@ -1586,51 +1576,47 @@
   }
 
   // 后台刷新成功后：把新推文静默插到列表顶部（保留当前查看位置），用户上滑即可看到。
-  function prependNewTweets(items) {
+  // opts.toTop=true 时（如打开面板）直接滚到最新；否则（后台轮询/手动刷新）保持当前阅读卡片不动。
+  function prependNewTweets(items, opts) {
+    opts = opts || {};
     const cont = viewBrowse;
     if (!cont) return;
+    const beforeTopTid = (() => {
+      const cr = cont.getBoundingClientRect();
+      for (const c of brList.querySelectorAll('.bm-card')) {
+        const r = c.getBoundingClientRect();
+        if (r.bottom > cr.top + 4) return c.dataset.tid || null;
+      }
+      return null;
+    })();
+    const em = brList.querySelector('.bm-empty');
+    if (em) em.remove();
     const frag = document.createDocumentFragment();
-    const newCards = [];
     let inserted = 0;
     sortItemsByTime(items).forEach((it) => {
       const id = it.tweet_id || it.id;
-      if (!id || brSeenIds.has(String(id))) return;   // 跳过已缓存/已渲染的，避免重复爬取展示
+      if (!id || brSeenIds.has(String(id))) return;
       brSeenIds.add(String(id));
-      const node = renderBrowseCard(it);
-      frag.appendChild(node);
-      newCards.push(node);
+      frag.appendChild(renderBrowseCard(it));
       inserted++;
     });
-    if (!inserted) return;                         // 没有新推文 → 查看位置完全不变
-    // 锚定当前最顶部卡片（A）：插入新内容(B)后仍让它停在原视口位置，新内容出现在它上方，
-    // 用户继续上滑即可查看；无论是否原本在顶部，都不会被甩到新内容(B)那里。
-    const anchor = brList.firstChild;
-    const rectTop = () => cont.getBoundingClientRect().top;
-    const anchorAbs = () => anchor
-      ? (anchor.getBoundingClientRect().top - rectTop() + cont.scrollTop)
-      : cont.scrollTop;
-    const anchorBefore = anchorAbs();
-    brList.insertBefore(frag, anchor || null);
+    if (!inserted) return;
+    brList.insertBefore(frag, brList.firstChild);
     const reanchor = () => {
-      if (!anchor || !anchor.isConnected) return;
-      const d = anchorAbs() - anchorBefore;          // A 的实际位移（由上方 B 的高度变化引起）
-      if (Math.abs(d) > 0.5) cont.scrollTop = Math.max(0, cont.scrollTop + d);
+      if (opts.toTop) { cont.scrollTop = 0; return; }
+      if (beforeTopTid) scrollCardToTop(beforeTopTid);
     };
-    reanchor();                                      // 立即校正一次
-    requestAnimationFrame(reanchor);                 // 下一帧（布局稳定后）再校正
-    // 媒体（图片/视频）晚加载会让上方卡片变高 → 每次尺寸变化时重新锚定，避免最终停在 B 或旧帖
+    reanchor();
+    requestAnimationFrame(reanchor);
     if (typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(reanchor);
       ro.observe(brList);
-      setTimeout(() => ro.disconnect(), 4000);       // 4s 后媒体基本加载完，停止监听
+      setTimeout(() => ro.disconnect(), 4000);
     }
-    newCards.forEach((c) => c.querySelectorAll('img').forEach((img) => {
+    frag.querySelectorAll('img').forEach((img) => {
       if (!img.complete) img.addEventListener('load', reanchor, { once: true });
-    }));
+    });
   }
-
-  // 下拉刷新 / 桌面刷新按钮：拉取最新一页并「顶部插入、保持查看位置」（不回到顶部），
-  // 新内容出现在上方，用户继续向下滑动即可看到；与面板打开时的静默刷新行为一致。
   async function refreshBrowseKeepPos() {
     if (brLoading) return;
     brLoading = true;
@@ -1643,13 +1629,7 @@
         return;
       }
       prependNewTweets(d.items || []);
-      brCursor = d.next_cursor || null;
-      // 主动刷新＝已「追到最新」：把记忆位置重置为最新（顶部），下次打开/重开直接看到刚刷到的已读帖子，
-      // 而不是又跳回之前深翻到的旧帖。
-      try {
-        const firstCard = brList.querySelector('.bm-card');
-        if (firstCard) localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid: firstCard.dataset.tid, top: 0 }));
-      } catch (_) {}
+      brCursor = d.next_cursor || null;      } catch (_) {}
     } catch (e) {
       if (!brList.querySelector('.bm-card'))
         brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
@@ -1680,21 +1660,18 @@
     if (brLoading) return;
     brLoading = true;
     const openMode = !!(reset && brOpenMode);
+    brOpenMode = false;
+    let preview = false;
     if (reset) {
+      brLoadmore.style.display = 'none';
+      preview = renderCachedBrowse();
       brCursor = null;
-      brLoadmore.style.display = 'none';   // 改为自动加载，不再显示手动按钮
-      if (openMode) {
-        // 打开即秒开：先渲染上次缓存（不清除）、恢复到上次查看位置；随后后台静默刷新
-        renderCachedBrowse();
-        brCursor = null;                   // 后台拉取从最新一页开始，而非缓存游标
-        restoreBrowsePos();
-        showBgLoading(true);
-      } else {
-        brSeenIds.clear();
-        const preview = renderCachedBrowse();
-        if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
-      }
+      viewBrowse.scrollTop = 0;
+      if (openMode) showBgLoading(true);
+      else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
+      if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
+    }    } else {
       if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
     }
     try {
@@ -1708,21 +1685,11 @@
           return;
         }
         const items = d.items || [];
-        if (openMode) {
-          prependNewTweets(items);            // 顶部插入新推文，保持查看位置
-          saveBrowseCache(items, false);      // 以服务端最新时间线作为下次打开的缓存
-        } else {
-          brList.innerHTML = '';
-          brSeenIds.clear();
-          brCursor = null;
-          if (!items.length) brList.innerHTML = '<div class="bm-empty">关注流暂时没有新推文。</div>';
-          sortItemsByTime(items).forEach((it) => {
-            const id = it.tweet_id || it.id;
-            if (!id || brSeenIds.has(String(id))) return;
-            brSeenIds.add(String(id));
-            brList.appendChild(renderBrowseCard(it));
-          });
-          saveBrowseCache(items, false);
+        if (openMode || preview) {
+          // 列表里已有内容（缓存或上次）：顶部并入新推文，保持阅读位置；缓存做合并而非覆盖
+          prependNewTweets(items, { toTop: openMode || preview });
+          saveBrowseCache(items, true);
+        } else {          saveBrowseCache(items, true);
         }
         brCursor = d.next_cursor || null;
         brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
@@ -1954,7 +1921,7 @@
   if (brScroll) {
     let brScrollTimer = null;
     brScroll.addEventListener('scroll', () => {
-      saveBrowsePos();
+      scheduleSavePos();
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
         brScrollTimer = null;
