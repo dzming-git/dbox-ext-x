@@ -216,6 +216,11 @@
   .bm-loadmore button:disabled { color: #8899a6; cursor: default; opacity: .7; }
   .bm-loadmore .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #e3e6eb; border-top-color: #1d9bf0; border-radius: 50%; animation: xd-spin .7s linear infinite; margin-right: 6px; vertical-align: -1px; }
   @keyframes xd-spin { to { transform: rotate(360deg); } }
+  /* 通用 spinner：让下拉刷新/上拉加载里内联创建的指示器转起来（.bm-loadmore 之外也能转） */
+  .spinner { display: inline-block; width: 15px; height: 15px; box-sizing: border-box; border: 2px solid #cfd9e0; border-top-color: #1d9bf0; border-radius: 50%; animation: xd-spin .7s linear infinite; vertical-align: -2px; }
+  /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感 */
+  @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+  .bm-card.card-enter { animation: cardIn .34s ease both; }
 </style>
 </head>
 <body>
@@ -1578,7 +1583,10 @@
           const id = it.tweet_id || it.id;
           if (!id || brSeenIds.has(String(id))) return;
           brSeenIds.add(String(id));
-          brList.appendChild(renderBrowseCard(it));
+          const card = renderBrowseCard(it);
+          card.classList.add('card-enter');
+          card.style.animationDelay = Math.min(appended * 28, 420) + 'ms';
+          brList.appendChild(card);
           appended++;
         });
         brCursor = d.next_cursor || null;
@@ -1665,7 +1673,10 @@
         const id = it.tweet_id || it.id;
         if (!id || srchSeenIds.has(String(id))) return;
         srchSeenIds.add(String(id));
-        srchList.appendChild(renderBrowseCard(it));
+        const card = renderBrowseCard(it);
+        card.classList.add('card-enter');
+        card.style.animationDelay = Math.min(appended * 28, 420) + 'ms';
+        srchList.appendChild(card);
         appended++;
       });
       srchCursor = d.next_cursor || null;
