@@ -700,7 +700,7 @@
       // 优先 m3u8（hls.js：自适应码率，全屏自动升最高清）；其次直链 mp4；都没有才回退封面 + 下载
       if (m3u8 && window.Hls && window.Hls.isSupported()) {
         const v = document.createElement('video');
-        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true;
+        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
         v.preload = 'metadata';
         v.addEventListener('click', (e) => e.stopPropagation());
         lbEl.insertBefore(v, lbCounter);
@@ -722,7 +722,7 @@
       } else if (mp4) {
         const v = document.createElement('video');
         v.src = mp4;
-        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true;
+        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
         v.preload = 'metadata';
         v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
         v.addEventListener('click', (e) => e.stopPropagation());
@@ -782,7 +782,7 @@
     if (mediaEl._thumbHtml === undefined) mediaEl._thumbHtml = mediaEl.innerHTML;
     mediaEl.classList.add('playing');
     const v = document.createElement('video');
-    v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true; v.preload = 'metadata';
+    v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false; v.preload = 'metadata';
     v.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block';
     const close = document.createElement('button');
     close.className = 'bm-vclose'; close.textContent = '✕';
@@ -790,6 +790,7 @@
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
     mediaEl.appendChild(close);
+    v.play().catch(() => {});   // 在点击激活内启动带声音自动播放
     if (m3u8 && window.Hls && window.Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
       hls.loadSource(m3u8); hls.attachMedia(v);
@@ -1980,7 +1981,7 @@
     const mediaHtml = (t.media || []).map((m) => {
       if (m.type === 'video') {
         const src = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
-        return src ? `<video src="${esc2(src)}" controls preload="metadata" muted></video>` : '';
+        return src ? `<video src="${esc2(src)}" controls preload="metadata" muted="false"></video>` : '';
       }
       return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" />` : '';
     }).join('');
