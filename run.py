@@ -1371,6 +1371,12 @@ def _extract_bookmark_tweets(data):
                 user_legacy = user.get('legacy') or user
                 user_core = (user.get('core') or {})
                 author = _author_dict(user_legacy, user_core, user)
+            # 防止「A 转发 A」：当转发者恰好等于原推作者时（X 把转推直接展开成原推、
+            # 不再携带转发者信息的表示法），不要显示错误的「由 @A 转发」自循环提示。
+            if (retweeted_by and author and retweeted_by.get('screen_name')
+                    and author.get('screen_name')
+                    and retweeted_by['screen_name'].lower() == author['screen_name'].lower()):
+                retweeted_by = None
             media = _normalize_media(legacy)
             out.append({
                 'tweet_id': result.get('rest_id'),
@@ -1499,6 +1505,17 @@ def _extract_tweet_obj(r):
             and (_rt.get('rest_id') and _rt.get('rest_id') != r.get('rest_id'))):
         r = _rt
         retweeted_by = rt_by
+    else:
+        # 扁平化 RT：正文形如 “RT @handle: ...” 但无嵌套原推（详情接口常这样）。
+        # 去掉前缀，并把转发者降为 retweeted_by 的小字提示。
+        _leg = r.get('legacy') or {}
+        m = re.match(r'^\s*RT\s+@([A-Za-z0-9_]+)\b\s*:?\s*', _leg.get('full_text', '') or '')
+        if m:
+            retweeted_by = rt_by
+            _leg = dict(_leg)
+            _leg['full_text'] = (_leg.get('full_text', ''))[m.end():]
+            r = dict(r)
+            r['legacy'] = _leg
     legacy = r.get('legacy') or {}
     user = ((r.get('core') or {})
             .get('user_results', {})
@@ -1510,6 +1527,17 @@ def _extract_tweet_obj(r):
     u_avatar = (user_legacy.get('profile_image_url_https')
                 or (user.get('avatar') or {}).get('image_url')
                 or (user_core.get('avatar') or {}).get('image_url'))
+    author = {
+        'name': u_name,
+        'screen_name': u_screen,
+        'avatar': u_avatar,
+        'verified': user_legacy.get('verified', False),
+    }
+    # 防止「A 转发 A」：转发者与原推作者相同时（X 把转推展开成原推、丢失转发者信息的表示法），
+    # 丢弃错误的自循环提示。
+    if (retweeted_by and author.get('screen_name') and retweeted_by.get('screen_name')
+            and retweeted_by['screen_name'].lower() == author['screen_name'].lower()):
+        retweeted_by = None
     return {
         'tweet_id': r.get('rest_id'),
         'text': legacy.get('full_text', ''),
@@ -1520,12 +1548,7 @@ def _extract_tweet_obj(r):
         'quote_count': legacy.get('quote_count'),
         'bookmark_count': legacy.get('bookmark_count'),
         'view_count': (r.get('views') or {}).get('count'),
-        'author': {
-            'name': u_name,
-            'screen_name': u_screen,
-            'avatar': u_avatar,
-            'verified': user_legacy.get('verified', False),
-        },
+        'author': author,
         'retweeted_by': retweeted_by,
         'media': _normalize_media(legacy),
         'url': 'https://x.com/{}/status/{}'.format(u_screen or 'unknown', r.get('rest_id')),
