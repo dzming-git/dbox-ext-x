@@ -1589,25 +1589,44 @@
   function prependNewTweets(items) {
     const cont = viewBrowse;
     if (!cont) return;
-    const atTop = cont.scrollTop <= 4;            // 用户正停在顶部（看最新）→ 插入后仍在顶部
-    const prevHeight = brList.scrollHeight;
     const frag = document.createDocumentFragment();
+    const newCards = [];
     let inserted = 0;
     sortItemsByTime(items).forEach((it) => {
       const id = it.tweet_id || it.id;
       if (!id || brSeenIds.has(String(id))) return;   // 跳过已缓存/已渲染的，避免重复爬取展示
       brSeenIds.add(String(id));
-      frag.appendChild(renderBrowseCard(it));
+      const node = renderBrowseCard(it);
+      frag.appendChild(node);
+      newCards.push(node);
       inserted++;
     });
     if (!inserted) return;                         // 没有新推文 → 查看位置完全不变
-    brList.insertBefore(frag, brList.firstChild);
-    if (!atTop) {
-      // 用户停在历史位置：新内容插在顶部，把多出的高度补偿回滚动量，原本看到的卡片原地不动
-      const delta = brList.scrollHeight - prevHeight;
-      if (delta > 0) cont.scrollTop += delta;
+    // 锚定当前最顶部卡片（A）：插入新内容(B)后仍让它停在原视口位置，新内容出现在它上方，
+    // 用户继续上滑即可查看；无论是否原本在顶部，都不会被甩到新内容(B)那里。
+    const anchor = brList.firstChild;
+    const rectTop = () => cont.getBoundingClientRect().top;
+    const anchorAbs = () => anchor
+      ? (anchor.getBoundingClientRect().top - rectTop() + cont.scrollTop)
+      : cont.scrollTop;
+    const anchorBefore = anchorAbs();
+    brList.insertBefore(frag, anchor || null);
+    const reanchor = () => {
+      if (!anchor || !anchor.isConnected) return;
+      const d = anchorAbs() - anchorBefore;          // A 的实际位移（由上方 B 的高度变化引起）
+      if (Math.abs(d) > 0.5) cont.scrollTop = Math.max(0, cont.scrollTop + d);
+    };
+    reanchor();                                      // 立即校正一次
+    requestAnimationFrame(reanchor);                 // 下一帧（布局稳定后）再校正
+    // 媒体（图片/视频）晚加载会让上方卡片变高 → 每次尺寸变化时重新锚定，避免最终停在 B 或旧帖
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(reanchor);
+      ro.observe(brList);
+      setTimeout(() => ro.disconnect(), 4000);       // 4s 后媒体基本加载完，停止监听
     }
-    // 新推文已静默插到顶部；不弹「点击查看」横幅——用户向上滑即可看到，下拉刷新亦可主动获取。
+    newCards.forEach((c) => c.querySelectorAll('img').forEach((img) => {
+      if (!img.complete) img.addEventListener('load', reanchor, { once: true });
+    }));
   }
 
   // 下拉刷新 / 桌面刷新按钮：拉取最新一页并「顶部插入、保持查看位置」（不回到顶部），
