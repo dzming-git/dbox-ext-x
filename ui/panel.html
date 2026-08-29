@@ -7,6 +7,9 @@
 <!-- HLS 播放支持：X 视频为 m3u8 流，原生 <video> 无法直接播放，需 hls.js。
      若 CDN 不可达（离线环境），会静默失败，下方逻辑自动退化为“打开详情预览”。 -->
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" onerror="window.__HLS_FAILED=true"></script>
+<!-- 框架下发的统一状态 SDK：跨设备同步「浏览缓存 / 已读边界 / 当前标签页」。
+     本地优先读取（首屏不等待网络）、脏键防抖上报、卸载时 keepalive 落盘。 -->
+<script src="/api/ext-sdk/state.js"></script>
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -383,6 +386,18 @@
   let _lbIdx = 0;
   const API = '/api/ext/x';
   const JOB_KEY = 'xd_job';  // localStorage key for active job
+
+  // ── 统一跨设备状态（框架 SDK，命名空间自动隔离为 x）──────────────────
+  // 各状态的合并语义不同，必须按键声明，否则会互相覆盖/回退：
+  //   read_at    max          已读边界只前进，不被其它设备的旧值回退
+  //   cache      union_by_id  多设备各自拉到的帖子取并集，而非整份覆盖
+  //   cursor     max          游标只前进
+  //   active_view lww         以后一次点击为准
+  //   scroll_tid lww + device 滚动位置按设备隔离，不串台
+  const XSTATE = (window.DBoxState && window.DBoxState.init({ ns: 'x' })) || null;
+  function xSet(key, value, opts) { if (XSTATE) try { XSTATE.set(key, value, opts); } catch (_) {} }
+  // 用户是否已手动切换过视图：若是，后台对账不再覆盖他的选择（避免"被拉走"）
+  let userSwitchedView = false;
   window.addEventListener('message', (e) => {
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
@@ -1021,10 +1036,12 @@
   // ---- hash 路由（刷新保持视图 / 可深链 / 全屏返回）----
   let activeView = 'browse';
   function switchView(v, { silent = false } = {}) {
+    if (!silent) userSwitchedView = true;
     activeView = v;
     // 记忆当前所在视图：迷你窗关闭/重开（iframe 可能被重载或 hash 被框架改写）后，
     // 用 localStorage 而非 URL hash 作为权威来源，保证重开回到上次停留的标签页。
     try { localStorage.setItem('xd_active_view', v); } catch (_) {}
+    xSet('active_view', v, { strategy: 'lww' });   // 跨设备同步当前标签页
     tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
     viewDownload.style.display = v === 'download' ? '' : 'none';
     viewBrowse.style.display = v === 'browse' ? '' : 'none';
@@ -1074,9 +1091,35 @@
   // 延迟到脚本末尾再执行，避免 switchView 内引用的 bmXList/bmShowingFolder 等 const 尚未初始化的 TDZ 问题。
   let initialView;
   try { initialView = localStorage.getItem('xd_active_view'); } catch (_) {}
+  // 本地优先：先用本地快照瞬时渲染（不等网络），再由后台对账补齐服务端状态
+  if (XSTATE) initialView = XSTATE.get('active_view', initialView) || initialView;
   if (!initialView) initialView = parseHash();
   if (!initialView || !['download', 'browse', 'history', 'cache', 'bookmarks', 'search'].includes(initialView)) initialView = 'browse';
   setTimeout(() => switchView(initialView, { silent: true }), 0);
+
+  // 后台与服务端对账：把其它设备拉到的缓存并进本地（新设备秒开），
+  // 但用户一旦自己动过视图就绝不再改（避免"被拉走"）。
+  if (XSTATE) {
+    XSTATE.pull().then(() => {
+      try {
+        const cache = XSTATE.get('cache');
+        if (Array.isArray(cache) && cache.length) {
+          const local = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
+          const seen = new Set((local.items || []).map((it) => String(it.tweet_id || it.id)));
+          const incoming = cache.filter((it) => !seen.has(String(it.tweet_id || it.id)));
+          if (incoming.length) {
+            saveBrowseCache(incoming, true);
+            if (activeView === 'browse') renderCachedBrowse();
+          }
+        }
+        const v = XSTATE.get('active_view');
+        const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'];
+        if (v && !userSwitchedView && v !== activeView && VALID.includes(v)) {
+          switchView(v, { silent: true });
+        }
+      } catch (_) {}
+    });
+  }
 
   window.addEventListener('hashchange', () => {
     const v = parseHash();
@@ -1512,12 +1555,16 @@
   function saveBrowseCache(items, append) {
     try {
       const MAX_CACHE = 400;   // 限制缓存规模，避免每次打开都把最新一页 concat 进去做成无限增长、排序重排后位置记忆错位
-      if (!append) localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: sortItemsByTime(items).slice(0, MAX_CACHE), cursor: brCursor }));
+      let finalItems;
+      if (!append) finalItems = sortItemsByTime(items).slice(0, MAX_CACHE);
       else {
         const old = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
-        const merged = sortItemsByTime((old.items || []).concat(items)).slice(0, MAX_CACHE);
-        localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: merged, cursor: brCursor }));
+        finalItems = sortItemsByTime((old.items || []).concat(items)).slice(0, MAX_CACHE);
       }
+      localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: finalItems, cursor: brCursor }));
+      // 跨设备同步：cache 与其它设备的条目取并集（不是整份覆盖），cursor 只前进
+      xSet('cache', finalItems, { strategy: 'union_by_id', cap: MAX_CACHE });
+      xSet('cursor', brCursor, { strategy: 'max' });
     } catch (_) {}
   }
   function renderCachedBrowse() {
@@ -1559,7 +1606,18 @@
     }
     if (!target) return;
     const tid = target.dataset.tid;
-    if (tid) { try { localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid })); } catch (_) {} }
+    if (tid) {
+      try { localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid })); } catch (_) {}
+      // 跨设备已读边界：用边界推文的 created_at（而非 tid）作比较基准，
+      // max 策略保证只前进不回退——即使另一台设备往回看也不会拉低进度。
+      try {
+        const c = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
+        const hit = (c.items || []).find((it) => String(it.tweet_id || it.id) === String(tid));
+        if (hit && hit.created_at) xSet('read_at', hit.created_at, { strategy: 'max' });
+      } catch (_) {}
+      // 滚动锚点按设备隔离：换设备不应被别人的滚动位置带跑
+      xSet('scroll_tid', tid, { strategy: 'lww', scope: 'device' });
+    }
   }
   function scheduleSavePos() {
     if (posSaveTimer) return;

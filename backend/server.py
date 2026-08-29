@@ -23,6 +23,7 @@ import concurrent.futures as _cf
 import subprocess
 import urllib.request
 import urllib.error
+import urllib.parse
 from collections import OrderedDict
 
 from flask import Blueprint, request, g, jsonify, Response
@@ -130,6 +131,7 @@ class _ProgressStore:
 
     def mark_cancelled(self, resource_key, message='已取消'):
         self.update(resource_key, status='cancelled', percent=0, message=message)
+
 
 
 def create_blueprint(host):
@@ -850,11 +852,6 @@ def create_blueprint(host):
         return {'ok': True, 'reason': 'ok', 'message': 'X 登录态有效',
                 'has_auth_token': True, 'has_ct0': True, 'newest_time': newest}
 
-    @bp.route('/check', methods=['GET'])
-    @host.login_required
-    def check():
-        """前端打开 X 面板时调用，自检登录态并在失效时给出明确告警。"""
-        return jsonify({'success': True, **_check_x_session()})
 
     @bp.route('/search', methods=['GET'])
     @host.login_required
