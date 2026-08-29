@@ -1324,55 +1324,53 @@ def _extract_bookmark_tweets(data):
             rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
 
             # 1) 纯转发（RT @某人）：原推放在 retweeted_status_results.result。
-            #    卡片主体用原推（含其媒体），但保留「A 转发了」的上下文。
+            #    卡片主体用原推（含其媒体），转发者降为 retweeted_by 的小字提示。
+            retweeted_by = None
+            quoted = None
             _rt = (((outer.get('retweeted_status_results') or {}).get('result')) or {})
             if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
                     and (_rt.get('rest_id') and _rt.get('rest_id') != outer.get('rest_id'))):
                 result = _rt
                 retweeted_by = rt_by
-                quoted = None
             else:
-                retweeted_by = None
                 # 2) 引用转发（引用某推）：被引原推放在 quoted_status_results.result，
                 #    其图片/视频之前未被解析，这里提取出来做嵌套展示。
                 _q = (((outer.get('quoted_status_results') or {}).get('result')) or {})
                 if (isinstance(_q, dict) and _q.get('__typename') == 'Tweet'
                         and (_q.get('rest_id') and _q.get('rest_id') != outer.get('rest_id'))):
                     quoted = _extract_quoted(_q)
-                else:
-                    quoted = None
-
-            # 3) 扁平化 RT：full_text 形如 “RT @handle: ...” 但无嵌套 retweeted_status
-            #    （老接口 / 部分响应会这样）。此时上面的 author 其实是转发者，
-            #    需要纠正为「原推作者为主、转发者为次要上下文」。
-            if retweeted_by is None:
-                m = re.match(r'^\s*RT\s+@([A-Za-z0-9_]+)\b\s*:?\s*', (result.get('legacy') or {}).get('full_text', '') or '')
-                if m:
-                    rt_handle = m.group(1)
-                    retweeted_by = rt_by  # 外层作者 = 转发者
-                    author = {
-                        'name': rt_handle,
-                        'screen_name': rt_handle,
-                        'avatar': None,
-                        'verified': False,
-                    }
-                    # 去掉文本里的 “RT @x:” 前缀，避免与转推提示重复
-                    _leg = dict(result.get('legacy') or {})
-                    _leg['full_text'] = (result.get('legacy') or {}).get('full_text', '')[m.end():]
-                    result = dict(result)
-                    result['legacy'] = _leg
 
             legacy = result.get('legacy') or {}
-            user = ((result.get('core') or {})
-                    .get('user_results', {})
-                    .get('result', {}) or {})
-            # 兼容多种 user 结构：
-            # - 旧结构：user.legacy（name/screen_name/profile_image_url_https）
-            # - 新结构：user.core（name/screen_name）+ user.avatar.image_url
-            # - 扁平结构：user 直接含 name/screen_name
-            user_legacy = user.get('legacy') or user
-            user_core = (user.get('core') or {})
-            author = _author_dict(user_legacy, user_core, user)
+            # 3) 扁平化 RT：full_text 形如 “RT @handle: ...” 但无嵌套 retweeted_status
+            #    （老接口 / 部分响应会这样）。此时 result 仍是转发者本人，需要把主作者
+            #    纠正为「原推作者」，转发者降为 retweeted_by 的小字提示。
+            flat_rt_handle = None
+            if retweeted_by is None:
+                m = re.match(r'^\s*RT\s+@([A-Za-z0-9_]+)\b\s*:?\s*', legacy.get('full_text', '') or '')
+                if m:
+                    flat_rt_handle = m.group(1)
+                    retweeted_by = rt_by  # 外层作者 = 转发者
+                    # 去掉文本里的 “RT @x:” 前缀，避免与转推提示重复
+                    _leg = dict(legacy)
+                    _leg['full_text'] = (legacy.get('full_text', ''))[m.end():]
+                    legacy = _leg
+
+            # 主作者：扁平化 RT 用解析出的原推 handle（无头像/显示名）；其余从原推 user 推导。
+            # 注意：必须在扁平化分支之后、且不可被下面的赋值覆盖，否则会回到「显示转发者」。
+            if flat_rt_handle is not None:
+                author = {
+                    'name': flat_rt_handle,
+                    'screen_name': flat_rt_handle,
+                    'avatar': None,
+                    'verified': False,
+                }
+            else:
+                user = ((result.get('core') or {})
+                        .get('user_results', {})
+                        .get('result', {}) or {})
+                user_legacy = user.get('legacy') or user
+                user_core = (user.get('core') or {})
+                author = _author_dict(user_legacy, user_core, user)
             media = _normalize_media(legacy)
             out.append({
                 'tweet_id': result.get('rest_id'),
@@ -1492,6 +1490,15 @@ def _extract_tweet_obj(r):
         r = r.get('tweet') or r
     if r.get('__typename') != 'Tweet':
         return None
+    # 纯转发：用嵌套原推作为主体，转发者降为 retweeted_by 的小字提示。
+    retweeted_by = None
+    _ou = (((r.get('core') or {}).get('user_results') or {}).get('result')) or {}
+    rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
+    _rt = (((r.get('retweeted_status_results') or {}).get('result')) or {})
+    if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
+            and (_rt.get('rest_id') and _rt.get('rest_id') != r.get('rest_id'))):
+        r = _rt
+        retweeted_by = rt_by
     legacy = r.get('legacy') or {}
     user = ((r.get('core') or {})
             .get('user_results', {})
@@ -1519,6 +1526,7 @@ def _extract_tweet_obj(r):
             'avatar': u_avatar,
             'verified': user_legacy.get('verified', False),
         },
+        'retweeted_by': retweeted_by,
         'media': _normalize_media(legacy),
         'url': 'https://x.com/{}/status/{}'.format(u_screen or 'unknown', r.get('rest_id')),
     }
