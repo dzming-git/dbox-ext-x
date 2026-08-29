@@ -19,6 +19,12 @@
   .toolbar .title { font-weight: 600; font-size: 14px; }
   .toolbar #fullscreen { background: none; border: 1px solid #d0d4dc; color: #555; border-radius: 8px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
   .toolbar #fullscreen:hover { color: #1d9bf0; border-color: #1d9bf0; }
+  /* 桌面端刷新按钮：仅精确指针（鼠标）设备显示，触摸端用下拉刷新，避免按钮膨胀 */
+  .tb-refresh { display: none; margin-left: auto; width: 34px; height: 34px; border: 1px solid #d0d4dc; background: #fff; color: #1d9bf0; border-radius: 8px; font-size: 17px; line-height: 1; cursor: pointer; transition: transform .2s, color .15s, border-color .15s; }
+  .tb-refresh:hover { color: #1d9bf0; border-color: #1d9bf0; }
+  .tb-refresh:active { transform: scale(.92); }
+  .tb-refresh.spinning { animation: xd-spin 0.8s linear infinite; pointer-events: none; color: #8ec9f3; }
+  @media (hover: hover) and (pointer: fine) { .tb-refresh { display: inline-flex; align-items: center; justify-content: center; } }
 
   /* ---- 表单区（始终可见） ---- */
   .form { padding: 10px 12px; border-bottom: 1px solid #e3e6eb; background: #fff; flex-shrink: 0; }
@@ -227,6 +233,7 @@
 <div class="wrap">
   <div class="toolbar">
     <span class="title">🐦 X</span>
+    <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新">↻</button>
   </div>
 
   <!-- 标签切换：首页（浏览）为主，下载是辅助功能放最后 -->
@@ -968,7 +975,9 @@
   }
 
   // ---- hash 路由（刷新保持视图 / 可深链 / 全屏返回）----
+  let activeView = 'browse';
   function switchView(v, { silent = false } = {}) {
+    activeView = v;
     tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
     viewDownload.style.display = v === 'download' ? '' : 'none';
     viewBrowse.style.display = v === 'browse' ? '' : 'none';
@@ -985,7 +994,7 @@
     } else if (v === 'cache') {
       loadCache();
     } else if (v === 'bookmarks') {
-      if (!bmXList.querySelector('.bm-card') && !bmShowingFolder) loadBookmarks();
+      if (!bmXList.querySelector('.bm-card') && !bmShowingFolder) loadXBookmarks();
     }
   }
 
@@ -993,6 +1002,21 @@
     const m = (location.hash || '').match(/^#\/view\/(\w+)/);
     return m ? m[1] : null;
   }
+
+  // 桌面端刷新按钮：刷新当前列表视图（触摸端用下拉刷新，此按钮仅鼠标设备显示）
+  const tbRefresh = $('tb-refresh');
+  async function refreshActive() {
+    if (!tbRefresh || tbRefresh.classList.contains('spinning')) return;
+    tbRefresh.classList.add('spinning');
+    try {
+      if (activeView === 'browse') { brOpenMode = false; await loadBrowse(true); }
+      else if (activeView === 'search') { await doSearch(); }
+      else if (activeView === 'bookmarks') { loadXBookmarks(); }
+    } catch (e) { /* 忽略刷新异常 */ } finally {
+      tbRefresh.classList.remove('spinning');
+    }
+  }
+  if (tbRefresh) tbRefresh.addEventListener('click', refreshActive);
 
   tabsEl.querySelectorAll('.tab').forEach((t) => {
     t.addEventListener('click', () => switchView(t.dataset.view));
