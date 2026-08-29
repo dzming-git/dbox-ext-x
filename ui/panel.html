@@ -134,6 +134,10 @@
   .dt-reply .dt-reply-media img { width: 100%; height: auto; max-height: 240px; object-fit: contain; border-radius: 8px; }
   .bm-newbar { text-align: center; margin-bottom: 10px; }
   .bm-newbar button { width: 100%; padding: 9px; border: none; background: #fff5d6; color: #b58900; border-radius: 9px; font-size: 13px; cursor: pointer; font-weight: 500; }
+  /* X 登录态失效告警条：置顶、跨视图常驻，直到自检通过 */
+  .xd-session-alert { position: sticky; top: 0; z-index: 30; margin: 6px 8px 0; }
+  .xd-session-alert .xa-inner { background: #fdecec; color: #c0392b; border: 1px solid #f5c6c6; border-radius: 9px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; font-weight: 500; }
+  .xd-session-alert .xa-sub { color: #a33; font-size: 11.5px; font-weight: 400; }
   .bm-folderbar { display: flex; gap: 6px; margin-bottom: 10px; }
   .bm-folderbar select, .bm-folderbar input { flex: 1; border: 1px solid #e3e6eb; border-radius: 8px; padding: 7px 8px; font-size: 12px; color: #0f1419; background: #fff; }
   .bm-folderbar button { border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; color: #536471; }
@@ -247,6 +251,9 @@
     <button class="tab" data-view="cache">📦 缓存</button>
     <button class="tab" data-view="download">⬇ 下载</button>
   </div>
+
+  <!-- X 登录态自检告警：Cookie 失效/残缺时整条横幅置顶，不打断浏览但必须可见 -->
+  <div id="xd-session-alert" class="xd-session-alert" style="display:none"></div>
 
   <!-- 下载表单视图 -->
   <div class="view" id="view-download" style="display:none">
@@ -1029,6 +1036,7 @@
     if (v === 'browse') {
       syncFavFromServer();
       openBrowse();   // 渲染缓存+恢复位置+后台静默刷新（不打断查看位置）
+      checkXSession(); // 每次进入首页都自检一次 X 登录态
     } else if (v === 'history') {
       loadHistory();
     } else if (v === 'cache') {
@@ -1639,6 +1647,25 @@
     let t = 0;
     (items || []).forEach((it) => { const v = it.created_at ? Date.parse(it.created_at) : 0; if (v > t) t = v; });
     return t ? fmtCdTime(new Date(t).toISOString()) : '';
+  }
+
+  // X 登录态自检：打开面板时调一次 /check，Cookie 缺失/残缺/过期则置顶红条告警，
+  // 避免像之前那样「静默停在旧帖」让人误以为卡死。成功则隐藏告警条。
+  let _sessionCheckT = null;
+  async function checkXSession() {
+    const el = $('xd-session-alert');
+    if (!el) return;
+    try {
+      const r = await req(`${API}/check`);
+      const d = await r.json();
+      if (d && d.ok) { el.style.display = 'none'; el.innerHTML = ''; return; }
+      const reason = (d && d.message) || 'X 登录态异常';
+      el.style.display = '';
+      el.innerHTML = `<div class="xa-inner">⚠️ X 登录态失效：${esc2(reason)}<br><span class="xa-sub">请到「凭证库」中重新注册有效的 x.com Cookie（需含 auth_token 与 ct0），再刷新本面板。</span></div>`;
+    } catch (_) {
+      // 自检请求本身失败不弹（避免干扰），由刷新/加载失败提示兜底。
+      el.style.display = 'none';
+    }
   }
   async function refreshBrowseKeepPos() {
     if (brLoading) return;

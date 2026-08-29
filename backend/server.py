@@ -19,6 +19,7 @@ import mimetypes
 import sqlite3
 import uuid
 import threading
+import concurrent.futures as _cf
 import subprocess
 import urllib.request
 import urllib.error
@@ -793,6 +794,67 @@ def create_blueprint(host):
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
+
+    def _check_x_session():
+        """实时校验 X 登录态：缺/残缺 Cookie 直接判否；字段齐全再拉 1 条关注流确认真实有效。
+
+        返回 dict：{ok, reason, message, has_auth_token, has_ct0, newest_time?}
+          - no_cookie    : 凭证库无 x.com Cookie
+          - incomplete   : 有 Cookie 但缺 auth_token 或 ct0（X 必 401）
+          - expired      : 字段齐全但实时请求被判为鉴权失败（会话过期）
+          - error        : 实时请求抛其他异常
+          - ok_empty     : 字段齐全且接口可达，但本次未返回内容（可能无新动态）
+          - ok           : 登录态有效，附最新一条推文时间
+        """
+        rec = host.vault._vault.get_by_domain('x.com', kind='cookie')
+        if not rec:
+            return {'ok': False, 'reason': 'no_cookie',
+                    'message': '未配置 x.com 登录 Cookie，请在凭证库注册后再用',
+                    'has_auth_token': False, 'has_ct0': False}
+        cookies = rec.get('cookies') or []
+        header = '; '.join(
+            f"{c.get('name')}={c.get('value')}" for c in cookies
+            if c.get('name') and c.get('value') is not None)
+        if not header:
+            return {'ok': False, 'reason': 'no_cookie',
+                    'message': 'x.com Cookie 为空，请在凭证库重新注册',
+                    'has_auth_token': False, 'has_ct0': False}
+        has_at = bool(xrun._has_auth_token(header))
+        has_ct0 = bool(xrun._extract_ct0(header))
+        if not (has_at and has_ct0):
+            missing = []
+            if not has_at:
+                missing.append('auth_token')
+            if not has_ct0:
+                missing.append('ct0')
+            return {'ok': False, 'reason': 'incomplete',
+                    'message': 'X Cookie 残缺（缺少 ' + '/'.join(missing)
+                               + '），登录态无效，请从浏览器复制完整 Cookie 重新覆盖到凭证库',
+                    'has_auth_token': has_at, 'has_ct0': has_ct0}
+        # 字段齐全 → 真实探测一次关注流
+        try:
+            items, _ = xrun.list_following_timeline(header, 1)
+        except Exception as e:
+            s = str(e)
+            if '401' in s or '403' in s or 'Authorization' in s or 'auth' in s.lower():
+                return {'ok': False, 'reason': 'expired',
+                        'message': 'X 登录态已过期（Cookie 字段齐全但会话失效），请重新登录 x.com 并覆盖凭证库',
+                        'has_auth_token': True, 'has_ct0': True}
+            return {'ok': False, 'reason': 'error', 'message': '探测 X 失败: ' + s,
+                    'has_auth_token': True, 'has_ct0': True}
+        if not items:
+            return {'ok': True, 'reason': 'ok_empty',
+                    'message': 'X Cookie 字段齐全且接口可达，本次未返回内容（可能无新动态）',
+                    'has_auth_token': True, 'has_ct0': True}
+        newest = items[0].get('created_at')
+        return {'ok': True, 'reason': 'ok', 'message': 'X 登录态有效',
+                'has_auth_token': True, 'has_ct0': True, 'newest_time': newest}
+
+    @bp.route('/check', methods=['GET'])
+    @host.login_required
+    def check():
+        """前端打开 X 面板时调用，自检登录态并在失效时给出明确告警。"""
+        return jsonify({'success': True, **_check_x_session()})
 
     @bp.route('/search', methods=['GET'])
     @host.login_required
