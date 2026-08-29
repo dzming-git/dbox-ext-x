@@ -198,6 +198,9 @@
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
   .bm-card .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
+  .bm-card .bm-media.playing { background: #000; }
+  .bm-card .bm-media.playing video { object-fit: contain; }
+  .bm-card .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
   .bm-card .actions { display: flex; gap: 6px; margin-top: 4px; }
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
   .bm-card .actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -622,19 +625,22 @@
       });
     });
 
-    // 收集 lightbox 可切换序列（图片 + 视频）
+    // 收集 lightbox 可切换序列（图片 + 视频）。视频同时携带 mp4 直链与 m3u8 流，
+    // 灯箱优先用 hls.js 播 m3u8（自适应码率 + 全屏最高清），其次直链 mp4。
     _lbItems = [];
     media.forEach((m, i) => {
       if (m.type === 'video') {
-        // 能直接播的直链 mp4（非 m3u8）；否则只能下载后播放
-        const direct = (m.mp4 && !m.mp4.includes('.m3u8')) ? m.mp4 : '';
+        const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
+        const mp4 = (m.mp4 && !m.mp4.includes('.m3u8')) ? mediaUrl(m.mp4, 'video') : '';
+        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
         _lbItems.push({
           type: 'video',
           mi: i,                       // 原始媒体索引，用于单独下载
-          src: direct,                 // 空字符串表示无法直接播放
+          src: mp4,                    // 直链 mp4（高清，经 /media 缓存）；空则回退 m3u8
+          m3u8: m3u8,                  // HLS 流（经 /media 代理），hls.js 播放
           cover: m.cover || '',
           label: m.label || '视频',
-          playable: !!direct,
+          playable: !!(mp4 || m3u8),
         });
       } else if (m.type !== 'document') {
         if (m.url) _lbItems.push({ type: 'image', src: m.url, label: m.label || '图片' });
@@ -668,41 +674,70 @@
   function showLightbox(idx) {
     _lbIdx = idx;
     renderLightbox();
+    if (!lbEl.classList.contains('active')) enterDrill('lb');   // 拦截浏览器后退
     lbEl.classList.add('active');
   }
   function renderLightbox() {
     const item = _lbItems[_lbIdx];
     if (!item) return;
-    // 清理上一项（避免多个 video 同时播放）
+    // 清理上一项（停止播放、销毁 hls 实例，避免多个视频同时播放/内存泄漏）
     const oldVid = lbEl.querySelector('video');
-    if (oldVid) { oldVid.pause(); oldVid.remove(); }
+    if (oldVid) { try { oldVid._hls && oldVid._hls.destroy(); } catch (e) {} oldVid.pause(); oldVid.remove(); }
     const oldNote = lbEl.querySelector('.lb-note');
     if (oldNote) oldNote.remove();
+    lbImg.style.display = 'none';
+    lbImg.removeAttribute('src');
+
     if (item.type === 'video') {
-      lbImg.style.display = 'none';
-      if (item.playable) {
+      const m3u8 = item.m3u8 || '';
+      const mp4 = item.src || '';
+      // 优先 m3u8（hls.js：自适应码率，全屏自动升最高清）；其次直链 mp4；都没有才回退封面 + 下载
+      if (m3u8 && window.Hls && window.Hls.isSupported()) {
         const v = document.createElement('video');
-        v.src = item.src;
-        v.controls = true; v.autoplay = true; v.playsInline = true;
+        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true;
         v.preload = 'metadata';
-        v.muted = true;  // 现代浏览器要求 autoplay 必须静音
+        v.addEventListener('click', (e) => e.stopPropagation());
+        lbEl.insertBefore(v, lbCounter);
+        const hls = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: false });
+        hls.loadSource(m3u8);
+        hls.attachMedia(v);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
+        // 全屏强制最高 level 保证清晰度（hls.js 小窗下会选低码率，全屏不升档导致糊）
+        const syncLevel = () => {
+          if (hls.levels && hls.levels.length) {
+            hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
+              ? hls.levels.length - 1 : -1; // 全屏最高清，退出恢复 ABR 自动
+          }
+        };
+        v.addEventListener('fullscreenchange', syncLevel);
+        v.addEventListener('webkitbeginfullscreen', syncLevel);
+        v.addEventListener('webkitendfullscreen', syncLevel);
+        v._hls = hls;
+      } else if (mp4) {
+        const v = document.createElement('video');
+        v.src = mp4;
+        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true;
+        v.preload = 'metadata';
+        v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
         v.addEventListener('click', (e) => e.stopPropagation());
         lbEl.insertBefore(v, lbCounter);
       } else {
-        // 无法直接播放（m3u8 或后端未取到直链）：显示封面 + 下载提示
+        // 既无 m3u8 也无直链：显示封面 + 下载提示
         lbImg.style.display = '';
         lbImg.src = item.cover || '';
         const note = document.createElement('div');
         note.className = 'lb-note';
-        note.innerHTML = `<div class="lb-note-tip">该视频为加密流（m3u8），浏览器无法直接播放，需下载后查看。</div>
-          <button class="lb-dl" id="lb-dl-video">⬇ 下载此视频</button>`;
+        note.innerHTML = `<div class="lb-note-tip">该视频暂无法在线预览，可下载后查看。</div>`
+          + (item.mi !== undefined ? `<button class="lb-dl" id="lb-dl-video">⬇ 下载此视频</button>` : '');
         lbEl.appendChild(note);
-        $('lb-dl-video').addEventListener('click', (e) => {
-          e.stopPropagation();
-          showStatus();
-          setProgress(0, '开始下载视频…');
-          postInput({ action: 'download', items: [item.mi] });
-        });
+        if (item.mi !== undefined) {
+          $('lb-dl-video').addEventListener('click', (e) => {
+            e.stopPropagation();
+            showStatus();
+            setProgress(0, '开始下载视频…');
+            postInput({ action: 'download', items: [item.mi] });
+          });
+        }
       }
     } else {
       lbImg.style.display = '';
@@ -723,19 +758,109 @@
   $('lb-next').addEventListener('click', (e) => { e.stopPropagation(); lbStep(1); });
   lbImg.addEventListener('click', (e) => e.stopPropagation());
   lbCounter.addEventListener('click', (e) => e.stopPropagation());
-  lbEl.addEventListener('click', () => lbEl.classList.remove('active'));
+
+  /* ---- 视频原地点播：点击视频缩略图直接在卡片内播放，不再弹出单独窗口 ---- */
+  let _inlineVid = null;
+  function stopInlineVideo(rec) {
+    if (!rec) return;
+    try { rec.hls && rec.hls.destroy(); } catch (e) {}
+    try { rec.v.pause(); } catch (e) {}
+    if (rec.el && rec.el._thumbHtml !== undefined) {
+      rec.el.innerHTML = rec.el._thumbHtml;
+      rec.el.classList.remove('playing');
+    }
+    if (_inlineVid && _inlineVid.el === rec.el) _inlineVid = null;
+  }
+  function playInlineVideo(mediaEl, mp4, m3u8) {
+    if (_inlineVid) stopInlineVideo(_inlineVid);   // 同时只播一个
+    if (mediaEl._thumbHtml === undefined) mediaEl._thumbHtml = mediaEl.innerHTML;
+    mediaEl.classList.add('playing');
+    const v = document.createElement('video');
+    v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true; v.preload = 'metadata';
+    v.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block';
+    const close = document.createElement('button');
+    close.className = 'bm-vclose'; close.textContent = '✕';
+    close.addEventListener('click', (e) => { e.stopPropagation(); stopInlineVideo(_inlineVid); });
+    mediaEl.innerHTML = '';
+    mediaEl.appendChild(v);
+    mediaEl.appendChild(close);
+    if (m3u8 && window.Hls && window.Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
+      hls.loadSource(m3u8); hls.attachMedia(v);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+      const sync = () => {  // 全屏强制最高清晰度
+        if (hls.levels && hls.levels.length) {
+          hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
+            ? hls.levels.length - 1 : -1;
+        }
+      };
+      v.addEventListener('fullscreenchange', sync);
+      v.addEventListener('webkitbeginfullscreen', sync);
+      v.addEventListener('webkitendfullscreen', sync);
+      v._hls = hls;
+      _inlineVid = { el: mediaEl, v, hls, close };
+    } else if (mp4) {
+      v.src = mp4;
+      v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
+      _inlineVid = { el: mediaEl, v, hls: null, close };
+    } else {
+      mediaEl.innerHTML = mediaEl._thumbHtml; mediaEl.classList.remove('playing');  // 无可用源：还原缩略图
+    }
+  }
+
+  /* ---- 拦截浏览器后退：打开灯箱/详情时压入历史，后退即关闭而非离开页面 ---- */
+  let _drillStack = [];
+  function enterDrill(kind) {
+    try { history.pushState({ dboxDrill: kind }, ''); } catch (e) { return; }
+    _drillStack.push(kind);
+  }
+  function closeDrillViaApp(kind) {
+    if (_drillStack.length) { history.back(); }                 // 由 popstate 统一关闭
+    else if (kind === 'lb') lbEl.classList.remove('active');
+    else if (kind === 'detail') dtEl.classList.remove('active');
+  }
+  window.addEventListener('popstate', () => {
+    const kind = _drillStack.pop();
+    if (kind === 'lb') {
+      const v = lbEl.querySelector('video'); if (v) { try { v._hls && v._hls.destroy(); } catch (e) {} v.pause(); }
+      lbEl.classList.remove('active');
+    } else if (kind === 'detail') {
+      dtEl.classList.remove('active');
+    }
+  });
+  // 触摸左右滑动切换（图片/视频）；竖向滑动或点按不触发，避免误关/误触
+  let _lbSwiped = false;
+  let _lbTx = 0, _lbTy = 0;
+  lbEl.addEventListener('touchstart', (e) => {
+    if (_lbItems.length <= 1) return;
+    const t = e.changedTouches[0];
+    _lbTx = t.clientX; _lbTy = t.clientY;
+  }, { passive: true });
+  lbEl.addEventListener('touchend', (e) => {
+    if (_lbItems.length <= 1) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - _lbTx, dy = t.clientY - _lbTy;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      e.preventDefault();        // 阻止随后合成的 click 关闭灯箱
+      _lbSwiped = true;
+      lbStep(dx < 0 ? 1 : -1);
+    }
+  }, { passive: false });
+  lbEl.addEventListener('click', () => {
+    if (_lbSwiped) { _lbSwiped = false; return; }   // 横向滑动的误触 click 直接吞掉
+    closeDrillViaApp('lb');
+  });
   // 关闭时停止视频播放
   document.addEventListener('keydown', (e) => {
     if (!lbEl.classList.contains('active')) return;
     if (e.key === 'Escape') {
-      const v = lbEl.querySelector('video'); if (v) v.pause();
-      lbEl.classList.remove('active');
+      closeDrillViaApp('lb');
     }
     else if (e.key === 'ArrowLeft') { lbStep(-1); }
     else if (e.key === 'ArrowRight') { lbStep(1); }
   });
   // 点击背景关闭并停止视频
-  lbEl.addEventListener('click', () => { const v = lbEl.querySelector('video'); if (v) v.pause(); });
+  // 注：背景点击关闭与停止视频已在上方统一处理，此处不再重复绑定。
 
   /* ---- 备选选择 ---- */
   function renderPick(input) {
@@ -905,54 +1030,6 @@
     return `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}`;
   }
 
-  // 在卡片内就地播放视频：有 mp4 直链用原生 video；仅有 m3u8 流用 hls.js（经 /media 代理）。
-  // 返回 true 表示已处理（调用方勿再走其它分支）。
-  function playVideoEl(el) {
-    const v = el.querySelector('video');
-    if (!v) return false;
-    const src = el.dataset.src, m3u8 = el.dataset.m3u8;
-    if (src && !v.src) {
-      v.src = src; v.controls = true; v.muted = true;
-      v.play().catch(() => {});
-      return true;
-    }
-    if (m3u8) {
-      if (v.src) { v.paused ? v.play().catch(()=>{}) : v.pause(); return true; }
-      const Hls = window.Hls;
-      if (Hls && Hls.isSupported()) {
-        // capLevelToPlayerSize:false —— 不按缩略图小尺寸锁低清；
-        // 全屏时强制最高 level 保证清晰度（hls.js 在小窗下会自动选低码率，全屏不升档导致糊）。
-        const hls = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: false });
-        hls.loadSource(m3u8);
-        hls.attachMedia(v);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          v.controls = true; v.muted = true;
-          if (document.fullscreenElement === v && hls.levels && hls.levels.length) {
-            hls.currentLevel = hls.levels.length - 1;
-          }
-          v.play().catch(()=>{});
-        });
-        const syncLevel = () => {
-          if (hls.levels && hls.levels.length) {
-            hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
-              ? hls.levels.length - 1 : -1; // 全屏强制最高清，退出恢复 ABR 自动
-          }
-        };
-        v.addEventListener('fullscreenchange', syncLevel);
-        v.addEventListener('webkitbeginfullscreen', syncLevel);
-        v.addEventListener('webkitendfullscreen', syncLevel);
-        v._hls = hls;
-        return true;
-      }
-      // hls.js 不可用（离线/未加载）：退化为打开详情预览（详情页能播 mp4/原生）
-      const openBtn = el.closest('.bm-card')?.querySelector('.open');
-      if (openBtn) { openBtn.click(); return true; }
-    }
-    // 仅有空 video：尝试播放/暂停
-    if (v) { v.paused ? v.play().catch(()=>{}) : v.pause(); return true; }
-    return false;
-  }
-
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
@@ -960,10 +1037,9 @@
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
-        // X 视频常见为 m3u8 流：有 mp4 直链优先 data-src 原生播放；仅有 m3u8 则保留 data-m3u8 供 hls.js 播放
-        const direct = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
+        const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video"${direct ? ` data-src="${esc2(direct)}"` : ''}${m3u8 ? ` data-m3u8="${esc2(m3u8)}"` : ''}><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
@@ -989,21 +1065,17 @@
              <button class="add" data-tid="${esc2(tid)}">加入收藏夹</button>`}
       </div>`;
     // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
-    // 复用下载预览的 lightbox（lb），临时把收藏媒体的 URL 序列填进 _lbItems。
-    // 视频项 m.url 通常是 twimg 的 mp4 直链，可真实播放；无直链时才回退封面。
-    const bmLBItems = medias.filter((m) => m.url || m.cover).map((m) => {
-      if (m.type === 'video') {
-        // mp4 直链走本地代理缓存接口（点开即缓存）；m3u8 无法直接代理，回退封面
-        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
-        return { type: 'video', src: direct, cover: mediaUrl(m.cover || m.url || '', 'image'), label: '视频', playable: !!direct };
-      }
+    // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
+    const bmLBItems = medias.filter((m) => m.type !== 'video' && (m.url || m.cover)).map((m) => {
       return { type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' };
     });
     card.querySelectorAll('.bm-media').forEach((el) => {
-      el.addEventListener('click', () => {
-        // 视频缩略图 → 就地播放（不弹 lightbox）
-        if (el.dataset.type === 'video') { playVideoEl(el); return; }
-        // 图片缩略图 → lightbox 大图
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (el.dataset.type === 'video') {
+          playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);   // 视频原地点播，不弹窗
+          return;
+        }
         const idx = Number(el.dataset.idx || 0);
         if (!bmLBItems.length) return;
         _lbItems = bmLBItems;
@@ -1176,8 +1248,10 @@
     const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
-        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video"${direct ? ` data-src="${esc2(direct)}"` : ''}><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
+        const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
+        const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
+        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
     }).join('');
@@ -1207,20 +1281,17 @@
     // 作者名/头像点击跳作者 profile（仍走外链，因 dbox 暂无用户资料页）。
     const tweetUrl = item.url || `https://x.com/${a.screen_name || 'unknown'}/status/${tid}`;
     const openDetail = (e) => { e.stopPropagation(); openTweetDetail(tid, item); };
-    // 媒体缩略图 → lightbox 预览
-    const bmLBItems = medias.filter((m) => m.url || m.cover).map((m) => {
-      if (m.type === 'video') {
-        const direct = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
-        return { type: 'video', src: direct, cover: mediaUrl(m.cover || m.url || '', 'image'), label: '视频', playable: !!direct };
-      }
+    // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
+    const bmLBItems = medias.filter((m) => m.type !== 'video' && (m.url || m.cover)).map((m) => {
       return { type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' };
     });
     card.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        // 视频缩略图 → 就地播放（不弹 lightbox），想全屏点播放器全屏按钮
-        if (el.dataset.type === 'video') { playVideoEl(el); return; }
-        // 图片缩略图 → lightbox 大图
+        if (el.dataset.type === 'video') {
+          playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);   // 视频原地点播，不弹窗
+          return;
+        }
         const idx = Number(el.dataset.idx || 0);
         if (!bmLBItems.length) return;
         _lbItems = bmLBItems;
@@ -1913,7 +1984,8 @@
   }
 
   async function openTweetDetail(tweetId, seed) {
-    // 打开详情层
+    // 打开详情层（压入历史以拦截浏览器后退）
+    if (!dtEl.classList.contains('active')) enterDrill('detail');
     dtEl.classList.add('active');
     dtBody.innerHTML = '<div class="bm-empty">加载中…</div>';
     dtReplies.innerHTML = '';
@@ -1965,7 +2037,7 @@
     }
   }
 
-  $('dt-back').addEventListener('click', () => { dtEl.classList.remove('active'); });
+  $('dt-back').addEventListener('click', () => { closeDrillViaApp('detail'); });
   $('dt-more').addEventListener('click', loadMoreReplies);
 
   /* ---- 本地浏览历史（P1-7） ---- */
