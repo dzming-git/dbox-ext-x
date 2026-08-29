@@ -1600,7 +1600,7 @@
       frag.appendChild(renderBrowseCard(it));
       inserted++;
     });
-    if (!inserted) return;
+    if (!inserted) return 0;
     brList.insertBefore(frag, brList.firstChild);
     const reanchor = () => {
       if (opts.toTop) { cont.scrollTop = 0; return; }
@@ -1616,6 +1616,29 @@
     frag.querySelectorAll('img').forEach((img) => {
       if (!img.complete) img.addEventListener('load', reanchor, { once: true });
     });
+    return inserted;
+  }
+  function fmtCdTime(iso) {
+    try { return new Date(iso).toLocaleString(); } catch (_) { return ''; }
+  }
+  // 刷新/打开后的状态条：让"后端到底给了什么"可见，避免静默保留旧缓存让人误以为卡死
+  function showBrowseStatus(msg, kind) {
+    let el = $('br-status');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'br-status';
+      el.className = 'bm-newbar';
+      brList.parentNode.insertBefore(el, brList);
+    }
+    el.style.display = '';
+    el.innerHTML = `<button disabled style="width:100%;padding:8px;border:none;border-radius:9px;font-size:12.5px;cursor:default;${kind === 'err' ? 'background:#fdecec;color:#c0392b' : 'background:#eef5fd;color:#1d9bf0'}">${esc2(msg)}</button>`;
+    clearTimeout(el._t);
+    if (kind !== 'err') el._t = setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+  function newestTimeOf(items) {
+    let t = 0;
+    (items || []).forEach((it) => { const v = it.created_at ? Date.parse(it.created_at) : 0; if (v > t) t = v; });
+    return t ? fmtCdTime(new Date(t).toISOString()) : '';
   }
   async function refreshBrowseKeepPos() {
     if (brLoading) return;
@@ -1626,13 +1649,18 @@
       if (!d.success) {
         if (!brList.querySelector('.bm-card'))
           brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
+        else showBrowseStatus('刷新失败: ' + (d.message || '未知错误'), 'err');
         return;
       }
-      prependNewTweets(d.items || []);
+      const ins = prependNewTweets(d.items || []);
       brCursor = d.next_cursor || null;
+      const nt = newestTimeOf(d.items || []);
+      if (!ins) showBrowseStatus('已是最新' + (nt ? ' · 后端最新 ' + nt : ''), 'ok');
+      else showBrowseStatus('已更新' + (nt ? ' · 最新 ' + nt : ''), 'ok');
     } catch (e) {
       if (!brList.querySelector('.bm-card'))
         brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+      else showBrowseStatus('刷新异常: ' + esc2(e.message), 'err');
     } finally {
       brLoading = false;
     }
@@ -1680,6 +1708,7 @@
         if (!d.success) {
           if (reset && !brList.querySelector('.bm-card'))
             brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
+          else if (reset) showBrowseStatus('加载失败: ' + (d.message || '未知错误'), 'err');
           return;
         }
         const items = d.items || [];
