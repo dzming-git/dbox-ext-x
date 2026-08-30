@@ -838,7 +838,8 @@
   }
   $('lb-prev').addEventListener('click', (e) => { e.stopPropagation(); lbStep(-1); });
   $('lb-next').addEventListener('click', (e) => { e.stopPropagation(); lbStep(1); });
-  lbImg.addEventListener('click', (e) => e.stopPropagation());
+  // 点击大图（lb-img）不再拦截：事件冒泡到 lbEl 的统一 click 处理，与点击空白处一样收起灯箱。
+  // 视频(v)仍保留 stopPropagation（见上方插入逻辑），避免点击播放控件时误关。
   lbCounter.addEventListener('click', (e) => e.stopPropagation());
 
   /* ---- 视频原地点播：点击视频缩略图直接在卡片内播放，不再弹出单独窗口 ---- */
