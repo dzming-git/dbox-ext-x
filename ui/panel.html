@@ -403,7 +403,7 @@
   //   cache      union_by_id  多设备各自拉到的帖子取并集，而非整份覆盖
   //   cursor     max          游标只前进
   //   active_view lww         以后一次点击为准
-  //   scroll_tid lww + device 滚动位置按设备隔离，不串台
+  //   scroll_tid lww          浏览滚动锚点（最后看到的那条 tid），同步跨设备：在任一台看到的位置，其它设备打开即定位过去
   const XSTATE = (window.DBoxState && window.DBoxState.init({ ns: 'x' })) || null;
   function xSet(key, value, opts) { if (XSTATE) try { XSTATE.set(key, value, opts); } catch (_) {} }
 
@@ -1167,7 +1167,7 @@
               cursor: XSTATE.get('cursor') || null
             }));
           } catch (_) {}
-          if (activeView === 'browse') renderCachedBrowse();
+          if (activeView === 'browse') { renderCachedBrowse(); restoreBrowseScroll(); }
         }
         // 服务端 read_at 此刻才到：对已渲染的卡片补一次已读标记
         markReadFromServer();
@@ -1686,7 +1686,7 @@
         if (hit && hit.created_at) xSet('read_at', hit.created_at, { strategy: 'max' });
       } catch (_) {}
       // 滚动锚点按设备隔离：换设备不应被别人的滚动位置带跑
-      xSet('scroll_tid', tid, { strategy: 'lww', scope: 'device' });
+      xSet('scroll_tid', tid, { strategy: 'lww' });   // 同步跨设备：在哪台设备看到哪，其它设备打开即定位过去
     }
   }
   function scheduleSavePos() {
@@ -1705,6 +1705,28 @@
     while (el && el !== cont) { top += el.offsetTop; el = el.offsetParent; }
     cont.scrollTop = Math.max(0, top - (offset || 0));
     return true;
+  }
+
+  // 浏览位置锚点：优先用服务端同步的 scroll_tid（lww，跨设备），
+  // 回退到本机 BROWSE_POS_KEY（瞬间可用，未与服务端对账前也能恢复同设备位置）。
+  function getBrowseAnchor() {
+    let tid = null;
+    try { const st = XSTATE && XSTATE.get('scroll_tid'); if (st) tid = st; } catch (_) {}
+    if (!tid) { try { const sp = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); if (sp && sp.tid) tid = sp.tid; } catch (_) {} }
+    return tid;
+  }
+  // 恢复到上次浏览位置：锚点卡片已在列表内则直接定位；否则（位置较深、或跨设备刚同步
+  // 列表还在加载更旧推文）轮询重试，直到卡片出现再定位，约 5s 后放弃，避免长时间占定时器。
+  let _restoreIv = null;
+  function restoreBrowseScroll() {
+    const tid = getBrowseAnchor();
+    if (!tid) return;
+    if (scrollCardToTop(tid)) return;
+    if (_restoreIv) clearInterval(_restoreIv);
+    let tries = 0;
+    _restoreIv = setInterval(() => {
+      if (scrollCardToTop(tid) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; }
+    }, 320);
   }
 
   // 打开即秒开：先渲染上次缓存、恢复到上次查看位置，随后后台静默拉取最新（见 loadBrowse 的 open 模式）。
@@ -1874,12 +1896,11 @@
           return;
         }
         const items = d.items || [];
+        const anchorTid = getBrowseAnchor();
         if (openMode || preview) {
           // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
           // 但恢复上次查看位置（scroll_tid 锚定到原卡片），不跳到顶部——
           // 新推文在上方，用户停在原来的位置，上滑即见更新。
-          let anchorTid = null;
-          try { const sp = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); anchorTid = sp && sp.tid; } catch (_) {}
           prependNewTweets(items, { toTop: false, anchorTid });
           saveBrowseCache(items, true);
         } else {
@@ -1887,6 +1908,7 @@
           saveBrowseCache(items, true);
           viewBrowse.scrollTop = 0;
         }
+        restoreBrowseScroll();   // 跨设备（scroll_tid 已同步）或卡片延后出现时兜底定位回去
         brCursor = d.next_cursor || null;
         brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
       } else {
