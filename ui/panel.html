@@ -433,14 +433,24 @@
       XLEDGER.refresh().then(updateMasterLight);
     });
   }
-  function acquireMaster() {
+  function acquireMaster(opts) {
+    opts = opts || {};
     if (!XLEDGER) return Promise.resolve(false);
     // 丢弃接管前遗留的旧锚点脏键（键名由框架 feed() 决定），避免用它覆盖服务端较新位置
     const p = XLEDGER.acquire({ drop: XFEED ? [XFEED.keys.anchor] : [] });
     updateMasterLight();   // 乐观置位后先给一次即时反馈，不等网络
     return p.then((mine) => {
       updateMasterLight();
-      if (!brUserScrolled) restoreBrowseScroll();   // 用户已自己滚动则不动，避免拽回
+      if (!brUserScrolled) {
+        // 对账后本地缓存已是服务端快照，但 DOM 仍是本设备旧的卡片集合。若服务端锚点
+        // 指向的推文不在这批 DOM 里，restore() 只能失败并退回本机旧位置——而本设备此时
+        // 已是新主控，随后一滚动就会把陈旧位置推回服务端、覆盖真正的进度。
+        // 故接管（resync）必须按服务端快照重建列表再定位，与启动对账同一范式。
+        if (opts.resync && activeView === 'browse' && XFEED && XFEED.items().length) {
+          renderCachedBrowse();
+        }
+        restoreBrowseScroll();   // 用户已自己滚动则不动，避免拽回
+      }
       return mine;
     });
   }
@@ -475,7 +485,9 @@
       }, 60);
     }
     if (e.data.type === 'DBOX_LIGHT_CLICK') {
-      acquireMaster();   // 点击面板状态灯＝用户要求本设备接管主控
+      // 点击面板状态灯＝用户要求本设备接管主控：必须按服务端快照重建列表后再定位，
+      // 否则本机旧进度会作为新主控回写服务端（见 acquireMaster 的 resync 说明）
+      acquireMaster({ resync: true });
     }
   });
   window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x' }, '*');
