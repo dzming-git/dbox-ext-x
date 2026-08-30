@@ -1899,9 +1899,13 @@
     const openMode = !!(reset && brOpenMode);
     brOpenMode = false;
     let preview = false;
+    let syncP = null;
     if (reset) {
       brUserScrolled = false;
-      acquireMaster();   // 打开/刷新浏览视图＝刻意使用本设备 → 抢占主控权（内含强制对账）
+      // 打开/刷新浏览视图＝刻意使用本设备 → 抢占主控权（内含强制对账 pull）。
+      // 故意不 await：先让「打开即秒开」用本地缓存把首屏渲染出来，缩短白屏；
+      // 但取锚点定位前必须等它落地（见下方 await syncP），否则用的是本机旧锚点。
+      syncP = acquireMaster();
       brLoadmore.style.display = 'none';
       preview = renderCachedBrowse();
       brCursor = null;
@@ -1923,6 +1927,9 @@
           return;
         }
         const items = d.items || [];
+        // 定位前先等对账落地：锚点必须取服务端真相。否则本机旧锚点会被当成"当前位置"，
+        // 而本设备刚抢占为主控，随后一滚动就把陈旧位置推回服务端、覆盖真正进度。
+        if (syncP) { try { await syncP; } catch (_) {} }
         const anchorTid = getBrowseAnchor();
         if (openMode || preview) {
           // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
