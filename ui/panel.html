@@ -438,6 +438,12 @@
       standaloneRoute = e.data.standalone_route;
     }
     if (e.data.type === 'DBOX_MODE') {
+      if (e.data.hidden) {
+        // 面板被收起/最小化（小窗或全屏→hidden，DOM 变为 display:none）：显式暂停内联视频，
+        // 否则 display:none 不会自动停掉媒体，声音会继续播（同时销毁 hls 实例避免泄漏）。
+        if (_inlineVid) stopInlineVideo(_inlineVid);
+        return;
+      }
       // 形态切换（小窗<->全屏）后 iframe 视口尺寸变化：重铺当前视图内容，
       // 例如浏览流用 brAutoFill 补满变高后的视口；并派发 resize 让内部尺寸依赖重新计算。
       setTimeout(() => {
@@ -848,6 +854,9 @@
     if (_inlineVid && _inlineVid.el === rec.el) _inlineVid = null;
   }
   function playInlineVideo(mediaEl, mp4, m3u8) {
+    // 已在该卡片内播放：交给原生 controls 处理暂停/继续；直接返回，避免点击视频中央或
+    // 原生控件时又被重建为新的 <video>+hls 实例（旧实例未停干净 → 残留声音 / 多实例）。
+    if (mediaEl.classList.contains('playing')) return;
     if (_inlineVid) stopInlineVideo(_inlineVid);   // 同时只播一个
     if (mediaEl._thumbHtml === undefined) mediaEl._thumbHtml = mediaEl.innerHTML;
     mediaEl.classList.add('playing');
