@@ -427,10 +427,25 @@
       }, '*');
     } catch (_) {}
   }
+  // 抢占主控权。acquire 内部会先强制 pull 与服务端对账，避免用本设备陈旧状态覆盖服务端；
+  // 对账完成后刷新指示灯，并按「服务端真相」重新定位（此时本地已是服务端快照）。
+  // 硬栅栏反馈：位置写入因主控权已被其它设备抢占而被服务端拒绝 →
+  // 与服务端对账后刷新指示灯（此时本设备已非主控，应显示「已让出」）。
+  if (XSTATE && XLEDGER) {
+    XSTATE.onStale((key) => {
+      if (key !== 'scroll_tid') return;
+      XLEDGER.refresh().then(updateMasterLight);
+    });
+  }
   function acquireMaster() {
-    if (!XLEDGER) return;
-    XLEDGER.acquire();
-    updateMasterLight();
+    if (!XLEDGER) return Promise.resolve(false);
+    const p = XLEDGER.acquire({ drop: ['scroll_tid'] });   // 丢弃接管前遗留的旧位置脏键
+    updateMasterLight();   // 乐观置位后先给一次即时反馈，不等网络
+    return p.then((mine) => {
+      updateMasterLight();
+      if (!brUserScrolled) restoreBrowseScroll();   // 用户已自己滚动则不动，避免拽回
+      return mine;
+    });
   }
 
   // 跨设备已读置灰：把「时间不晚于服务端已读边界 read_at」的条目标为已读。
@@ -1719,7 +1734,14 @@
       } catch (_) {}
       // 同步跨设备：在哪台设备看到哪，其它设备打开即定位过去。
       // 仅主控设备推送——非主控推送会与其它设备交替覆盖锚点（抖动）或把陈旧位置推回。
-      if (isMaster()) xSet('scroll_tid', tid, { strategy: 'lww' });
+      // 附带租约版本：服务端据此做硬栅栏，主控权若已被其它设备抢占则本次写入被拒（stale）。
+      if (isMaster()) {
+        xSet('scroll_tid', tid, {
+          strategy: 'lww',
+          leaseKey: XLEDGER.key,
+          leaseRev: XSTATE.rev(XLEDGER.key)
+        });
+      }
     }
   }
   function scheduleSavePos() {
@@ -1751,6 +1773,7 @@
   // 恢复到上次浏览位置：锚点卡片已在列表内则直接定位；否则（位置较深、或跨设备刚同步
   // 列表还在加载更旧推文）轮询重试，直到卡片出现再定位，约 5s 后放弃，避免长时间占定时器。
   let _restoreIv = null;
+  let brUserScrolled = false;   // 用户是否已自己滚动：恢复/接管定位期间一旦为真立即让位，绝不把用户拽回去
   function restoreBrowseScroll() {
     const tid = getBrowseAnchor();
     if (!tid) return;
@@ -1758,6 +1781,7 @@
     if (_restoreIv) clearInterval(_restoreIv);
     let tries = 0;
     _restoreIv = setInterval(() => {
+      if (brUserScrolled) { clearInterval(_restoreIv); _restoreIv = null; return; }
       if (scrollCardToTop(tid) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; }
     }, 320);
   }
@@ -1908,7 +1932,8 @@
     brOpenMode = false;
     let preview = false;
     if (reset) {
-      acquireMaster();   // 打开/刷新浏览视图＝刻意使用本设备 → 抢占主控权
+      brUserScrolled = false;
+      acquireMaster();   // 打开/刷新浏览视图＝刻意使用本设备 → 抢占主控权（内含强制对账）
       brLoadmore.style.display = 'none';
       preview = renderCachedBrowse();
       brCursor = null;
@@ -2173,6 +2198,7 @@
   if (brScroll) {
     let brScrollTimer = null;
     brScroll.addEventListener('scroll', () => {
+      brUserScrolled = true;
       scheduleSavePos();
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
