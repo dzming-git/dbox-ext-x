@@ -208,8 +208,10 @@
   .ptr-indicator {
     position: absolute; top: 12px; left: 0; right: 0; height: 48px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
-    background: transparent; color: #536471; font-size: 13px;
-    transform: translateY(-48px); opacity: 0; z-index: 5;
+    background: rgba(255,255,255,.94); border: 1px solid #e3e6eb; border-radius: 12px;
+    margin: 0 12px; color: #536471; font-size: 13px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.06);
+    transform: translateY(-100%); opacity: 0; z-index: 5;
     pointer-events: none;
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
@@ -452,7 +454,7 @@
   // 页面加载时检查是否有未完成任务，自动恢复轮询
   window.addEventListener('load', () => {
     const saved = restoreJob();
-    if (saved && TOKEN) {
+    if (saved && latestToken()) {
       jobId = saved;
       startPolling();
     }
@@ -469,7 +471,9 @@
   // panel 自身不再维护独立全屏按钮。
 
 
-  const AUTH = () => ({ 'Authorization': 'Bearer ' + TOKEN });
+  // 用 latestToken() 而非仅 TOKEN 变量：后者依赖父窗口 postMessage 推送，
+  // 初始化时序上可能尚未到达，导致请求以空 token 发出被判「未授权」。
+  const AUTH = () => ({ 'Authorization': 'Bearer ' + latestToken() });
 
   // 读取当前最可能有效的 token（主站 axios 刷新后会写回 localStorage，iframe 同源可共享）。
   function latestToken() {
@@ -529,13 +533,17 @@
     return latestToken();
   }
 
-  // 带鉴权 + 401 自动重试的请求：token 过期时重新获取并重试一次。
+  // 带鉴权 + 401 自动重试的请求：优先用最新可用 token（localStorage / sessionStorage /
+  // 父窗口推送的 TOKEN），过期时再尝试从父窗口获取或刷新 refresh_token 后重试一次。
   async function req(path, opts = {}) {
     const _do = (token) => fetch(path, { ...opts, headers: { ...(opts.headers || {}), 'Authorization': 'Bearer ' + token } });
-    let r = await _do(TOKEN);
+    // 首次请求用 latestToken()（读 localStorage/sessionStorage/TOKEN），而非仅依赖
+    // 父窗口 postMessage 推送的 TOKEN 变量——后者在 iframe 初始化时序上可能尚未到达，
+    // 导致首次请求以空 token 发出、被扩展宿主 login_required 拦截返回「未授权」。
+    let r = await _do(latestToken());
     if (r.status === 401) {
       const fresh = await requestToken();
-      if (fresh && fresh !== TOKEN) {
+      if (fresh && fresh !== latestToken()) {
         TOKEN = fresh;
         r = await _do(fresh);
       }
@@ -546,7 +554,7 @@
   // 加载资源库列表
   async function loadLibraries() {
     if (librariesLoaded) return;
-    if (!TOKEN) return;
+    if (!latestToken()) return;
     librariesLoaded = true;
     try {
       const r = await fetch('/api/my-libraries', { headers: AUTH() });
@@ -985,7 +993,7 @@
     const library_id = $('library').value;
     if (!url) { alert('请填写推文链接'); return; }
     if (!library_id) { alert('请选择目标资源库'); return; }
-    if (!TOKEN) { alert('尚未获取到 token'); return; }
+    if (!latestToken()) { alert('尚未获取到 token'); return; }
     jobId = null; seenLogs.clear();
     $('log').textContent = ''; $('pick').innerHTML = ''; $('status-msg').textContent = ''; progEl.style.display = 'none';
     previewEl.dataset.for = '';
@@ -1026,7 +1034,7 @@
   let loadRetries = 0;
   (function ensureLibraries() {
     if (librariesLoaded) return;
-    if (TOKEN) { loadLibraries(); return; }
+    if (latestToken()) { loadLibraries(); return; }
     if (loadRetries++ < 20) setTimeout(ensureLibraries, 300);
   })();
 
@@ -1594,8 +1602,16 @@
         finalItems = sortItemsByTime((old.items || []).concat(items)).slice(0, MAX_CACHE);
       }
       localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: finalItems, cursor: brCursor }));
-      // 跨设备同步：cache 与其它设备的条目取并集（不是整份覆盖），cursor 只前进
-      xSet('cache', finalItems, { strategy: 'union_by_id', cap: MAX_CACHE });
+      // 跨设备同步：cache 与其它设备的条目取并集（不是整份覆盖），cursor 只前进。
+      // union_by_id 现要求规范记录 { id, order, ...载荷 }，故在入口把 X 的领域字段
+      // (tweet_id / created_at) 映射成 id / order；领域字段原样保留，渲染照常读取。
+      const toSync = finalItems.map(function (t) {
+        return Object.assign({}, t, {
+          id: String(t.tweet_id != null ? t.tweet_id : ''),
+          order: t.created_at
+        });
+      });
+      xSet('cache', toSync, { strategy: 'union_by_id', cap: MAX_CACHE });
       xSet('cursor', brCursor, { strategy: 'max' });
     } catch (_) {}
   }
@@ -1661,10 +1677,12 @@
     if (!cont || !tid) return false;
     const card = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`);
     if (!card) return false;
-    const r = card.getBoundingClientRect();
-    const cr = cont.getBoundingClientRect();
-    const curAbs = r.top - cr.top + cont.scrollTop;
-    cont.scrollTop = Math.max(0, curAbs - (offset || 0));
+    // 用布局 offsetTop（CSS transform 不影响它）求卡片在滚动内容中的位置。
+    // 若用 getBoundingClientRect，下拉刷新期间 brList 正被 translateY 平移，
+    // 算出的 scrollTop 会多一个位移量，松手后内容整体多滚、正在看的卡/视频被顶飞。
+    let top = 0, el = card;
+    while (el && el !== cont) { top += el.offsetTop; el = el.offsetParent; }
+    cont.scrollTop = Math.max(0, top - (offset || 0));
     return true;
   }
 
@@ -2094,7 +2112,19 @@
     const iconEl = ind.querySelector('.ptr-icon');
     let active = false, pulling = false, refreshing = false, startY = 0, dist = 0, kids = [];
 
-    function contentTransform(y) { for (const c of kids) c.style.transform = `translateY(${y}px)`; }
+    // 下拉时若列表中有「正在播放」的视频，不要对内容做任何 transform：
+    // WebView 里给正在播放的 <video> 祖先加/改 transform 会导致视频从片头重新播放
+    // （「瞬移到初始位置」）。除 _inlineVid 外，直接查 DOM 中正在播放的 <video>，
+    // 避免 _inlineVid 状态与真实播放不同步时漏判（视频仍在播、变量却已清空）。
+    function contentHasPlayingVideo() {
+      if (_inlineVid && _inlineVid.v && !_inlineVid.v.paused && !_inlineVid.v.ended) return true;
+      const v = scrollEl.querySelector('video');
+      return !!(v && !v.paused && !v.ended);
+    }
+    function contentTransform(y) {
+      if (y && contentHasPlayingVideo()) y = 0;
+      for (const c of kids) c.style.transform = y ? `translateY(${y}px)` : '';
+    }
     function setInd(d) {
       const e = Math.max(0, Math.min(d, maxPull));
       ind.style.transform = `translateY(${-ind.offsetHeight + Math.min(e, ind.offsetHeight)}px)`;
@@ -2424,16 +2454,16 @@
 
   /* ---- 初始化：默认 tab 是浏览，打开即自动加载关注流（无需点刷新） ---- */
   (function initAutoBrowse() {
-    const waitToken = () => {
-      if (!TOKEN) { setTimeout(waitToken, 200); return; }
-      // 若默认 tab 为浏览且尚未加载，自动拉取关注流
+    // 不再等待父窗口推送 TOKEN（postMessage 时序不可靠，可能导致首次请求以空 token 发出）。
+    // req() 内部已改用 latestToken()（读 localStorage/sessionStorage），可直接发起。
+    // 延迟一帧确保 DOM 就绪（tabsEl / brList 等已初始化）。
+    setTimeout(() => {
       const activeTab = tabsEl.querySelector('.tab.active');
       if (activeTab && activeTab.dataset.view === 'browse' &&
           brList && !brList.querySelector('.bm-card')) {
         loadBrowse(true);
       }
-    };
-    waitToken();
+    }, 0);
   })();
 </script>
 </body>
