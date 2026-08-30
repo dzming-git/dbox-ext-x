@@ -961,6 +961,9 @@
     const t = e.touches[0];
     _lbSX = t.clientX; _lbSY = t.clientY;
     _lbSwiping = true; _lbLocked = false;
+    // 复位上一轮滑动残留的 _lbSwiped：touchend 的 preventDefault 会抑制合成 click，
+    // 若上次滑动后没有 click 来消费该标志，下个真实点击会被误吞导致「点一次关不掉」。
+    _lbSwiped = false;
   }, { passive: true });
   lbEl.addEventListener('touchmove', (e) => {
     if (!_lbSwiping || _lbItems.length <= 1) return;
