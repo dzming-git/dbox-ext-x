@@ -2441,6 +2441,10 @@
   }
 
   async function openTweetDetail(tweetId, seed) {
+    // 列表里若有正在原地点播的视频，进详情前必须先停掉并销毁 hls 实例：
+    // 详情层会盖住整个面板，视频虽被遮住但解码与声音仍在继续（被遮挡不会自动
+    // 暂停），表现为「推文都点开了，视频还在响」。
+    if (_inlineVid) stopInlineVideo(_inlineVid);
     // 打开详情层（压入历史以拦截浏览器后退）
     if (!dtEl.classList.contains('active')) enterDrill('detail');
     dtEl.classList.add('active');
