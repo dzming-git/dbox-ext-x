@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 from collections import OrderedDict
 
-from flask import Blueprint, request, g, jsonify, Response
+from flask import Blueprint, request, g, jsonify, Response, stream_with_context
 import importlib.util as _ilu
 
 # run.py 仅依赖标准库（无重型副作用），可直接 import 复用其 X API 能力。
@@ -269,8 +269,14 @@ def create_blueprint(host):
                 return None
             return path, val.get('ext', '')
 
-    def _cache_put(url, data, ext):
-        """写入缓存字节，返回磁盘路径；按需淘汰最久未用。"""
+    def _cache_put_file(url, tmp_path, ext):
+        """把已落盘的临时文件登记进 LRU 缓存（流式代理用）。
+
+        与 _cache_put 的区别：不要求整份字节已在内存里。视频动辄几十上百 MB，先
+        read() 到内存再返回，前端就要等整个文件下载完才出画面（表现为「一直加载」），
+        且整份字节驻留内存容易把进程撑爆。流式代理先写 .part，完整读完后原子改名
+        登记；中途失败只留临时文件，不会被当成有效缓存。
+        """
         nonlocal _lru_total
         key = _cache_key(url)
         path = os.path.join(_CACHE_LRU_DIR, key + ext)
@@ -278,9 +284,15 @@ def create_blueprint(host):
             if key in _lru_meta:
                 _lru_total -= _lru_meta[key].get('size', 0)
                 del _lru_meta[key]
-            with open(path, 'wb') as f:
-                f.write(data)
-            sz = len(data)
+            try:
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                return None
+            sz = os.path.getsize(path)
             _lru_meta[key] = {'ext': ext, 'size': sz}
             _lru_total += sz
             _cache_evict()
@@ -1052,46 +1064,86 @@ def create_blueprint(host):
         if hit is not None:
             path, ext = hit
             if os.path.isfile(path):
+                # m3u8 不在 mimetypes 默认表里，必须显式兜底：否则缓存命中时会被
+                # 当成 image/jpeg 返回，hls.js 拿不到播放列表。
                 ct = mimetypes.guess_type(path)[0] or (
-                    'video/mp4' if ext == '.mp4' else 'image/jpeg')
+                    'application/vnd.apple.mpegurl' if ext == '.m3u8'
+                    else 'video/mp4' if ext == '.mp4' else 'image/jpeg')
                 resp = send_file(path, mimetype=ct, conditional=True,
                                  max_age=86400)
                 resp.headers['Cache-Control'] = 'private, max-age=86400'
                 return resp
 
-        # 未命中：带 X cookie 请求上游，写缓存后返回
+        # 未命中：流式转发上游并顺带落缓存。
+        # 关键：不能先把整个文件读进内存再返回——大视频要等几十秒才出第一个字节，
+        # 前端就一直转圈，且整份字节驻留内存容易把进程撑爆。改为边收边发，浏览器
+        # 拿到前几片就能起播；完整读完后登记缓存，之后走 send_file（支持 Range）。
         cookie = _x_cookie_header()
         try:
             headers = xrun.build_headers(cookie, with_bearer=True)
             opener = xrun.make_opener(None)
-            data = xrun.fetch_bytes(url, opener, headers, timeout=90)
+            # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket，
+            # 避免长时间占用全局状态影响并发的其它请求（流式传输会持续一段时间）。
+            xrun._apply_socks()
+            try:
+                up = opener.open(urllib.request.Request(url, headers=headers), timeout=90)
+            finally:
+                xrun._restore_socks()
         except Exception as e:
             return jsonify({'success': False, 'message': '代理失败: ' + str(e)}), 502
 
-        # 判断扩展名
+        # 判断扩展名：URL 后缀 / 显式 type 优先，其次上游 Content-Type
+        #（无法再按 magic bytes 探测——数据不再整体读入内存）。
+        # m3u8 必须最先判定：它是文本播放列表而非 mp4，误存成 .mp4 后命中时会按
+        # video/mp4 返回，hls.js 解析不出分片。
+        up_ct = ((up.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+                 if hasattr(up, 'headers') else '')
         path_ext = os.path.splitext(urlparse(url).path)[1].lower()
-        if mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
+        if path_ext == '.m3u8' or 'mpegurl' in up_ct:
+            ext = '.m3u8'
+        elif mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
             ext = path_ext if path_ext else '.mp4'
         elif mtype == 'image' or path_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
             ext = path_ext if path_ext else '.jpg'
+        elif up_ct.startswith('image/'):
+            ext = mimetypes.guess_extension(up_ct) or '.jpg'
+        elif 'mp4' in up_ct or up_ct.startswith('video/'):
+            ext = '.mp4'
         else:
-            # 按 magic bytes 探测
-            if data[:4] in (b'\xff\xd8\xff\xe0', b'\xff\xd8\xff\xe1'):
-                ext = '.jpg'
-            elif data[:8] == b'\x89PNG\r\n\x1a\n':
-                ext = '.png'
-            elif data[:4] == b'RIFF' and data[8:12] == b'WEBP':
-                ext = '.webp'
-            elif data[4:12] == b'ftyp':
-                ext = '.mp4'
-            else:
-                ext = '.jpg'
-
-        # 数据已在内存，直接返回字节（并已写入缓存）；命中缓存走上方 send_file 支持 Range
-        _cache_put(url, data, ext)
-        ct = mimetypes.guess_type(url)[0] or (
+            ext = '.jpg'
+        ct = up_ct or mimetypes.guess_type(url)[0] or (
             'video/mp4' if ext == '.mp4' else 'image/jpeg')
-        resp = Response(data, mimetype=ct)
+
+        tmp_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext + '.part')
+
+        def _iter_and_cache():
+            total = 0
+            try:
+                with open(tmp_path, 'wb') as f:
+                    while True:
+                        chunk = up.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        total += len(chunk)
+                        yield chunk
+            except Exception:
+                # 传输中断（含客户端提前断开）：丢弃半成品，别让 .part 污染缓存
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                return
+            finally:
+                try:
+                    up.close()
+                except Exception:
+                    pass
+            # 只有完整读完才登记缓存，保证缓存里不会是半截文件
+            if total:
+                _cache_put_file(url, tmp_path, ext)
+
+        resp = Response(stream_with_context(_iter_and_cache()), mimetype=ct)
         resp.headers['Cache-Control'] = 'private, max-age=86400'
         resp.headers['Content-Disposition'] = 'inline'
         return resp

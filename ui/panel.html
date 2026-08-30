@@ -120,6 +120,14 @@
   .dt-media { border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
   .dt-media img { width: 100%; display: block; }
   .dt-media video { width: 100%; border-radius: 12px; }
+  /* 详情页视频：与浏览卡片同构（封面 + ▶，点按原地点播走 hls.js）。
+     .bm-media / .bm-play / .bm-vclose 的样式都定义在 .bm-card 作用域下，详情页
+     够不着，必须自带一份，否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
+  .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; }
+  .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
+  .dt-media .dt-video .bm-play { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; font-size: 18px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
+  .dt-media .dt-video.playing .bm-play { display: none; }
+  .dt-media .dt-video .bm-vclose { position: absolute; top: 8px; right: 8px; z-index: 3; width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
   .dt-counts { display: flex; gap: 16px; padding: 10px 0; border-top: 1px solid #eef0f2; border-bottom: 1px solid #eef0f2; margin-bottom: 12px; color: #536471; font-size: 13px; }
   .dt-counts b { color: #0f1419; }
   .dt-actions { display: flex; gap: 8px; }
@@ -943,6 +951,9 @@
     // 直接关闭浮层，确保「返回」按钮始终有效（不再依赖 popstate 时序）
     if (kind === 'lb') lbEl.classList.remove('active');
     else if (kind === 'detail') dtEl.classList.remove('active');
+    // 退出详情：停掉详情页内原地点播的视频——元素虽随浮层关闭而不可见，但解码与
+    // 声音不会自动停止，hls 实例不销毁还会继续拉流。
+    if (kind === 'detail' && _inlineVid) stopInlineVideo(_inlineVid);
     // 同步历史栈：仅当本浮层是当前最上层（最近压入的 drill）时，回退一次以消费
     // 对应历史项；出栈与再次关闭交由 popstate 统一处理（幂等，重复移除 active 无副作用）
     if (_drillStack.length && _drillStack[_drillStack.length - 1] === kind) {
@@ -956,6 +967,7 @@
       lbEl.classList.remove('active');
     } else if (kind === 'detail') {
       dtEl.classList.remove('active');
+      if (_inlineVid) stopInlineVideo(_inlineVid);
     }
   });
   // 触摸左右滑动切换（图片/视频）；竖向滑动或点按不触发，避免误关/误触。
@@ -2313,8 +2325,22 @@
     const a = t.author || {};
     const mediaHtml = (t.media || []).map((m) => {
       if (m.type === 'video') {
-        const src = (m.url && !m.url.includes('.m3u8')) ? mediaUrl(m.url, 'video') : '';
-        return src ? `<video src="${esc2(src)}" controls preload="metadata" muted="false"></video>` : '';
+        // 媒体对象有两个生产者，字段并不统一，两种都要认：
+        //   时间线 GraphQL：url = m3u8，mp4 = 直链
+        //   详情 _normalize_media：url = mp4，且没有 mp4 键
+        // 优先 m3u8（hls.js 分片小、可边下边播），否则退回直链 mp4。
+        // 此前只认「非 m3u8 的 url」：m3u8 媒体被渲染成空，直链 mp4 又要等代理
+        // 把整个文件下完才出第一个字节，首次播放表现为一直转圈。
+        const isM3u8 = !!(m.url && String(m.url).includes('.m3u8'));
+        const mp4 = (m.mp4 && !String(m.mp4).includes('.m3u8'))
+          ? mediaUrl(m.mp4, 'video')
+          : ((!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '');
+        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
+        if (!mp4 && !m3u8) return '';
+        const poster = mediaUrl(m.cover || '', 'image');
+        return `<div class="bm-media dt-video" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}">`
+          + `<video src=""${poster ? ` poster="${esc2(poster)}"` : ''} muted playsinline></video>`
+          + `<span class="bm-play">▶</span></div>`;
       }
       return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" />` : '';
     }).join('');
@@ -2346,6 +2372,13 @@
         <button class="dl" data-url="${esc2(t.url || '')}">⬇ 下载</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
       </div>`;
+    // 视频：点按原地点播，复用浏览卡片那套 hls.js 播放逻辑（封面 + ▶）
+    card.querySelectorAll('.dt-video').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);
+      });
+    });
     // 作者名跳 profile
     card.querySelectorAll('[data-link]').forEach((el) => {
       el.addEventListener('click', () => { const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
