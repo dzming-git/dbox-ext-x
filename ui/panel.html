@@ -407,6 +407,32 @@
   const XSTATE = (window.DBoxState && window.DBoxState.init({ ns: 'x' })) || null;
   function xSet(key, value, opts) { if (XSTATE) try { XSTATE.set(key, value, opts); } catch (_) {} }
 
+  // 主控租约：多设备同时滚动时，只有主控设备把「精确浏览位置」推到服务端，
+  // 避免锚点被交替覆盖（抖动）或空闲设备把陈旧位置推回覆盖正在看的那台。
+  // acquire 只在「刻意使用」的时机调用（打开/刷新浏览视图、面板重新显示、点击状态灯接管）。
+  const XLEDGER = XSTATE ? XSTATE.lease('main') : null;
+  function isMaster() { return XLEDGER ? XLEDGER.mine() : true; }
+  function updateMasterLight() {
+    if (!XLEDGER) return;
+    const mine = XLEDGER.mine();
+    try {
+      window.parent.postMessage({
+        type: 'DBOX_LIGHT', extId: 'x',
+        state: mine ? 'ok' : 'warn',
+        text: mine ? '主控' : '已让出',
+        title: mine
+          ? '本设备为主控：浏览位置会同步到其它设备'
+          : '已被其它设备接管：本设备仅本地记忆，点击可接管',
+        clickable: true
+      }, '*');
+    } catch (_) {}
+  }
+  function acquireMaster() {
+    if (!XLEDGER) return;
+    XLEDGER.acquire();
+    updateMasterLight();
+  }
+
   // 跨设备已读置灰：把「时间不晚于服务端已读边界 read_at」的条目标为已读。
   // read_at 由 saveBrowsePos 以 max 策略写入服务端（只前进、不被旧值回退），
   // 因此在电脑上看过的内容，手机刷新后同样呈已读态——只读标记，不自动跳转。
@@ -444,12 +470,17 @@
         if (_inlineVid) stopInlineVideo(_inlineVid);
         return;
       }
+      // 面板重新显示：与服务端对账主控权（可能已被其它设备接管），刷新状态灯
+      if (XLEDGER) XLEDGER.refresh().then(updateMasterLight);
       // 形态切换（小窗<->全屏）后 iframe 视口尺寸变化：重铺当前视图内容，
       // 例如浏览流用 brAutoFill 补满变高后的视口；并派发 resize 让内部尺寸依赖重新计算。
       setTimeout(() => {
         if (activeView === 'browse') brAutoFill();
         window.dispatchEvent(new Event('resize'));
       }, 60);
+    }
+    if (e.data.type === 'DBOX_LIGHT_CLICK') {
+      acquireMaster();   // 点击面板状态灯＝用户要求本设备接管主控
     }
   });
   window.parent.postMessage({ type: 'DBOX_REQUEST_TOKEN', extId: 'x' }, '*');
@@ -1171,6 +1202,7 @@
         }
         // 服务端 read_at 此刻才到：对已渲染的卡片补一次已读标记
         markReadFromServer();
+        updateMasterLight();   // 对账后刷新主控状态灯（可能已被其它设备接管）
         const v = XSTATE.get('active_view');
         const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'];
         if (v && !userSwitchedView && v !== activeView && VALID.includes(v)) {
@@ -1685,8 +1717,9 @@
         const hit = (c.items || []).find((it) => String(it.tweet_id || it.id) === String(tid));
         if (hit && hit.created_at) xSet('read_at', hit.created_at, { strategy: 'max' });
       } catch (_) {}
-      // 滚动锚点按设备隔离：换设备不应被别人的滚动位置带跑
-      xSet('scroll_tid', tid, { strategy: 'lww' });   // 同步跨设备：在哪台设备看到哪，其它设备打开即定位过去
+      // 同步跨设备：在哪台设备看到哪，其它设备打开即定位过去。
+      // 仅主控设备推送——非主控推送会与其它设备交替覆盖锚点（抖动）或把陈旧位置推回。
+      if (isMaster()) xSet('scroll_tid', tid, { strategy: 'lww' });
     }
   }
   function scheduleSavePos() {
@@ -1875,6 +1908,7 @@
     brOpenMode = false;
     let preview = false;
     if (reset) {
+      acquireMaster();   // 打开/刷新浏览视图＝刻意使用本设备 → 抢占主控权
       brLoadmore.style.display = 'none';
       preview = renderCachedBrowse();
       brCursor = null;
