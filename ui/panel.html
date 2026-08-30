@@ -1693,7 +1693,9 @@
   }
 
   // 后台刷新成功后：把新推文静默插到列表顶部（保留当前查看位置），用户上滑即可看到。
-  // opts.toTop=true 时（如打开面板）直接滚到最新；否则（后台轮询/手动刷新）保持当前阅读卡片不动。
+  // opts.toTop=true 时直接滚到最新（首次加载无缓存时）；否则保持当前阅读卡片不动。
+  // opts.anchorTid 指定重锚定目标（如重进时恢复的上次查看卡片 tid），优先于自动探测的 beforeTopTid，
+  // 避免打开面板时跳到顶部——新推文在上方，用户停在原来的位置，上滑即见更新。
   function prependNewTweets(items, opts) {
     opts = opts || {};
     const cont = viewBrowse;
@@ -1721,7 +1723,9 @@
     brList.insertBefore(frag, brList.firstChild);
     const reanchor = () => {
       if (opts.toTop) { cont.scrollTop = 0; return; }
-      if (beforeTopTid) scrollCardToTop(beforeTopTid);
+      // anchorTid（如恢复的上次位置）优先；否则用插入前视口顶部的卡片稳住当前位置
+      const anchor = opts.anchorTid || beforeTopTid;
+      if (anchor) scrollCardToTop(anchor);
     };
     reanchor();
     requestAnimationFrame(reanchor);
@@ -1850,10 +1854,17 @@
         }
         const items = d.items || [];
         if (openMode || preview) {
-          // 列表里已有内容（缓存或上次）：顶部并入新推文，保持阅读位置；缓存做合并而非覆盖
-          prependNewTweets(items, { toTop: openMode || preview });
+          // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
+          // 但恢复上次查看位置（scroll_tid 锚定到原卡片），不跳到顶部——
+          // 新推文在上方，用户停在原来的位置，上滑即见更新。
+          let anchorTid = null;
+          try { const sp = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); anchorTid = sp && sp.tid; } catch (_) {}
+          prependNewTweets(items, { toTop: false, anchorTid });
           saveBrowseCache(items, true);
-        } else {          saveBrowseCache(items, true);
+        } else {
+          // 首次加载且无缓存：直接展示最新，滚到顶部
+          saveBrowseCache(items, true);
+          viewBrowse.scrollTop = 0;
         }
         brCursor = d.next_cursor || null;
         brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
