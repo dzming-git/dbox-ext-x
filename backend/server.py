@@ -799,13 +799,26 @@ def create_blueprint(host):
         # 首次加载（无 cursor）时返回「服务端合并后的完整列表」，使任何设备打开
         # 刷新看到的都是同一份，而不是各自 localStorage 里分叉的那份。
         # 翻页（带 cursor）时只回本次新拉取的一页，避免每次回传 400 条。
+        # union_by_id 只认规范记录 { id, order, ...载荷 }（通用状态层字段名无关），
+        # 故在入口把 X 领域字段映射成 id / order；领域字段原样保留，渲染照常读取。
+        # 键位与前端 DBoxState.feed('main') 对齐（feed:main:items / :cursor），
+        # 前后端共用同一份服务端真相，不另存一份 cache。
+        norm = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            rec = dict(it)
+            tid = it.get('tweet_id')
+            rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
+            rec['order'] = it.get('created_at')
+            norm.append(rec)
         canonical = None
         try:
-            merged = host.state.put('cache', items, strategy='union_by_id', cap=400)
+            merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=400)
             if isinstance(merged, dict) and isinstance(merged.get('value'), list):
                 canonical = merged['value']
             if next_cursor:
-                host.state.put('cursor', next_cursor, strategy='max')
+                host.state.put('feed:main:cursor', next_cursor, strategy='max')
         except Exception:
             canonical = None   # 状态服务不可用时退化为只返回本次结果
 

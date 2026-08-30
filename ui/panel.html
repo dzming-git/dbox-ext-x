@@ -403,7 +403,7 @@
   //   cache      union_by_id  多设备各自拉到的帖子取并集，而非整份覆盖
   //   cursor     max          游标只前进
   //   active_view lww         以后一次点击为准
-  //   scroll_tid lww          浏览滚动锚点（最后看到的那条 tid），同步跨设备：在任一台看到的位置，其它设备打开即定位过去
+  //   feed:main:anchor lww    浏览滚动锚点（条目 id + 卡内偏移），由框架 feed() 管理，同步跨设备
   const XSTATE = (window.DBoxState && window.DBoxState.init({ ns: 'x' })) || null;
   function xSet(key, value, opts) { if (XSTATE) try { XSTATE.set(key, value, opts); } catch (_) {} }
 
@@ -411,7 +411,7 @@
   // 避免锚点被交替覆盖（抖动）或空闲设备把陈旧位置推回覆盖正在看的那台。
   // acquire 只在「刻意使用」的时机调用（打开/刷新浏览视图、面板重新显示、点击状态灯接管）。
   const XLEDGER = XSTATE ? XSTATE.lease('main') : null;
-  function isMaster() { return XLEDGER ? XLEDGER.mine() : true; }
+
   function updateMasterLight() {
     if (!XLEDGER) return;
     const mine = XLEDGER.mine();
@@ -433,13 +433,14 @@
   // 与服务端对账后刷新指示灯（此时本设备已非主控，应显示「已让出」）。
   if (XSTATE && XLEDGER) {
     XSTATE.onStale((key) => {
-      if (key !== 'scroll_tid') return;
+      if (XFEED && key !== XFEED.keys.anchor) return;
       XLEDGER.refresh().then(updateMasterLight);
     });
   }
   function acquireMaster() {
     if (!XLEDGER) return Promise.resolve(false);
-    const p = XLEDGER.acquire({ drop: ['scroll_tid'] });   // 丢弃接管前遗留的旧位置脏键
+    // 丢弃接管前遗留的旧锚点脏键（键名由框架 feed() 决定），避免用它覆盖服务端较新位置
+    const p = XLEDGER.acquire({ drop: XFEED ? [XFEED.keys.anchor] : [] });
     updateMasterLight();   // 乐观置位后先给一次即时反馈，不等网络
     return p.then((mine) => {
       updateMasterLight();
@@ -453,7 +454,7 @@
   // 因此在电脑上看过的内容，手机刷新后同样呈已读态——只读标记，不自动跳转。
   function markReadFromServer() {
     if (!XSTATE) return;
-    const boundary = XSTATE.get('read_at');
+    const boundary = XFEED ? XFEED.readAt() : (XSTATE ? XSTATE.get('read_at') : null);
     if (!boundary) return;
     const bt = Date.parse(boundary);
     if (!bt) return;
@@ -1205,15 +1206,11 @@
         // 永远收敛不到同一份——手机与电脑显示不一致的根因。
         // 这里直接写 localStorage 而非调 saveBrowseCache，避免把刚拉下来的
         // 服务端数据又回推一次（它本就来自服务端）。
-        const cache = XSTATE.get('cache');
-        if (Array.isArray(cache) && cache.length) {
-          try {
-            localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({
-              ts: Date.now(), items: cache,
-              cursor: XSTATE.get('cursor') || null
-            }));
-          } catch (_) {}
-          if (activeView === 'browse') { renderCachedBrowse(); restoreBrowseScroll(); }
+        // 内容缓存与游标已由框架 feed() 统一管理（feed:main:items / :cursor），
+        // pull() 后 XFEED.items() 即为服务端快照，直接重渲染，不再另存一份本地缓存。
+        if (activeView === 'browse' && XFEED && XFEED.items().length) {
+          renderCachedBrowse();
+          restoreBrowseScroll();
         }
         // 服务端 read_at 此刻才到：对已渲染的卡片补一次已读标记
         markReadFromServer();
@@ -1462,7 +1459,8 @@
   const brSeenIds = new Set();   // 浏览去重：同一 tweet_id 只渲染一次
   const downloadedTweetIds = new Set();  // 避免重复下载
   const favSet = new Set();              // 已收藏 tweet_id（用于浏览卡按钮态）
-  const BROWSE_CACHE_KEY = 'xd_browse_cache';  // localStorage：浏览数据跨视图共享
+  // 浏览内容缓存已交由框架 DBoxState.feed() 统一管理（服务端权威，见 XFEED），
+  // 不再自存 localStorage 缓存，避免与服务端真相分叉。
   const BROWSE_FAV_KEY = 'xd_browse_favs';      // localStorage：已收藏 tweet_id 列表
   // 从 localStorage 恢复已收藏集合（小屏全屏共享）
   try { (JSON.parse(localStorage.getItem(BROWSE_FAV_KEY) || '[]') || []).forEach((t) => favSet.add(t)); } catch (_) {}
@@ -1660,43 +1658,54 @@
       return tb - ta;
     });
   }
+
+  // 信息流续读改用框架原语 DBoxState.feed()：内容缓存(union_by_id) / 视口锚点(lww) /
+  // 已读边界(max) / 分页游标(max) 全部交给框架，插件不再自写一套，避免与框架分叉。
+  // 键位 feed:main:items / :anchor / :read_at / :cursor——后端 /timeline 写入同一组键，
+  // 与前端共用同一份服务端真相。
+  const XFEED = XSTATE ? XSTATE.feed('main', {
+    container: viewBrowse,
+    itemSelector: '.bm-card',
+    idAttr: 'data-tid',
+    idKeys: ['tweet_id', 'id'],
+    orderKey: 'created_at',
+    cap: 400,
+    throttle: 200,
+    anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
+    lease: true,           // 锚点写入受主控租约门控，并由服务端硬栅栏校验
+    autoBind: false,       // 滚动由本面板统一处理（还要兼顾自动加载）
+    // 已读边界取推文时间：直接从卡片 data-ct 读，无需再翻缓存
+    timeOf: (id) => {
+      // 必须限定 .bm-card：卡片内的收藏/下载按钮也带 data-tid，不限定会取到子元素
+      const el = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(id))}"]`);
+      return el ? (el.dataset.ct || null) : null;
+    },
+    onStale: () => { if (XLEDGER) XLEDGER.refresh().then(updateMasterLight); }
+  }) : null;
+
   function saveBrowseCache(items, append) {
     try {
-      const MAX_CACHE = 400;   // 限制缓存规模，避免每次打开都把最新一页 concat 进去做成无限增长、排序重排后位置记忆错位
-      let finalItems;
-      if (!append) finalItems = sortItemsByTime(items).slice(0, MAX_CACHE);
-      else {
-        const old = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
-        finalItems = sortItemsByTime((old.items || []).concat(items)).slice(0, MAX_CACHE);
+      // 内容缓存交给框架 feed()（union_by_id，服务端权威），不再自写 localStorage 缓存
+      if (XFEED) {
+        XFEED.merge(sortItemsByTime(items || []), !!append);
+        if (brCursor) XFEED.setCursor(brCursor);
       }
-      localStorage.setItem(BROWSE_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: finalItems, cursor: brCursor }));
-      // 跨设备同步：cache 与其它设备的条目取并集（不是整份覆盖），cursor 只前进。
-      // union_by_id 现要求规范记录 { id, order, ...载荷 }，故在入口把 X 的领域字段
-      // (tweet_id / created_at) 映射成 id / order；领域字段原样保留，渲染照常读取。
-      const toSync = finalItems.map(function (t) {
-        return Object.assign({}, t, {
-          id: String(t.tweet_id != null ? t.tweet_id : ''),
-          order: t.created_at
-        });
-      });
-      xSet('cache', toSync, { strategy: 'union_by_id', cap: MAX_CACHE });
-      xSet('cursor', brCursor, { strategy: 'max' });
     } catch (_) {}
   }
   function renderCachedBrowse() {
     try {
-      const c = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null');
-      // 打开即秒开：只要有过缓存（无论多久）都先渲染，随后后台静默刷新，避免白屏等"加载中"
-      if (!c || !c.items || !c.items.length) return false;
+      // 打开即秒开：用框架 feed 的内容缓存先渲染，随后后台静默刷新，避免白屏等"加载中"
+      const list = XFEED ? XFEED.items() : [];
+      if (!list.length) return false;
       brList.innerHTML = '';
       brSeenIds.clear();
-      sortItemsByTime(c.items).forEach((it) => {
+      sortItemsByTime(list).forEach((it) => {
         const id = it.tweet_id || it.id;
         if (!id || brSeenIds.has(String(id))) return;
         brSeenIds.add(String(id));
         brList.appendChild(renderBrowseCard(it));
       });
-      brCursor = c.cursor || null;
+      brCursor = (XFEED && XFEED.cursor()) || null;
       brLoadmore.style.display = 'none';
       markReadFromServer();   // 渲染完按服务端已读边界置灰
       return true;
@@ -1706,43 +1715,17 @@
     try { localStorage.setItem(BROWSE_FAV_KEY, JSON.stringify(Array.from(favSet))); } catch (_) {}
   }
 
-  // ---- 浏览位置记忆：记住上次看到的推文，重进时定位回去，往上滑看更新 ----
-  const BROWSE_POS_KEY = 'xd_browse_pos';
+  // ---- 浏览位置记忆：交给框架 feed()，记住上次看到的推文，重进时定位回去 ----
   let brOpenMode = false;   // 「打开即秒开」模式：渲染缓存+恢复位置+后台静默刷新，不打断查看位置
   let posSaveTimer = null;
+  // 交给框架 feed()：捕获「条目 id + 卡内偏移」而非 scrollTop（不同设备屏宽/卡片高度
+  // 不同，像素偏移跨设备无意义）；锚点写入受主控租约门控并携带租约版本由服务端硬栅栏
+  // 校验；已读边界同步推进（max，只前进，另一台设备往回看也不会拉低）。
   function saveBrowsePos() {
+    if (!XFEED || activeView !== 'browse') return;
     const cont = viewBrowse;
-    if (!cont || activeView !== 'browse') return;
-    if (getComputedStyle(cont).display === 'none') return;
-    const cr = cont.getBoundingClientRect();
-    const cards = brList.querySelectorAll('.bm-card');
-    let target = null;
-    for (const c of cards) {
-      const r = c.getBoundingClientRect();
-      if (r.bottom > cr.top + 4) { target = c; break; }
-    }
-    if (!target) return;
-    const tid = target.dataset.tid;
-    if (tid) {
-      try { localStorage.setItem(BROWSE_POS_KEY, JSON.stringify({ tid })); } catch (_) {}
-      // 跨设备已读边界：用边界推文的 created_at（而非 tid）作比较基准，
-      // max 策略保证只前进不回退——即使另一台设备往回看也不会拉低进度。
-      try {
-        const c = JSON.parse(localStorage.getItem(BROWSE_CACHE_KEY) || 'null') || {};
-        const hit = (c.items || []).find((it) => String(it.tweet_id || it.id) === String(tid));
-        if (hit && hit.created_at) xSet('read_at', hit.created_at, { strategy: 'max' });
-      } catch (_) {}
-      // 同步跨设备：在哪台设备看到哪，其它设备打开即定位过去。
-      // 仅主控设备推送——非主控推送会与其它设备交替覆盖锚点（抖动）或把陈旧位置推回。
-      // 附带租约版本：服务端据此做硬栅栏，主控权若已被其它设备抢占则本次写入被拒（stale）。
-      if (isMaster()) {
-        xSet('scroll_tid', tid, {
-          strategy: 'lww',
-          leaseKey: XLEDGER.key,
-          leaseRev: XSTATE.rev(XLEDGER.key)
-        });
-      }
-    }
+    if (!cont || getComputedStyle(cont).display === 'none') return;
+    XFEED.saveAnchor();
   }
   function scheduleSavePos() {
     if (posSaveTimer) return;
@@ -1762,27 +1745,24 @@
     return true;
   }
 
-  // 浏览位置锚点：优先用服务端同步的 scroll_tid（lww，跨设备），
-  // 回退到本机 BROWSE_POS_KEY（瞬间可用，未与服务端对账前也能恢复同设备位置）。
+  // 浏览位置锚点（跨设备同步，由框架 feed() 管理）
   function getBrowseAnchor() {
-    let tid = null;
-    try { const st = XSTATE && XSTATE.get('scroll_tid'); if (st) tid = st; } catch (_) {}
-    if (!tid) { try { const sp = JSON.parse(localStorage.getItem(BROWSE_POS_KEY) || 'null'); if (sp && sp.tid) tid = sp.tid; } catch (_) {} }
-    return tid;
+    const a = XFEED && XFEED.anchor();
+    return a && a.id ? String(a.id) : null;
   }
-  // 恢复到上次浏览位置：锚点卡片已在列表内则直接定位；否则（位置较深、或跨设备刚同步
-  // 列表还在加载更旧推文）轮询重试，直到卡片出现再定位，约 5s 后放弃，避免长时间占定时器。
+  // 恢复到上次浏览位置：交给框架 feed()（按 id 定位 + 卡内偏移，并带补偿重定位）。
+  // 锚点卡片若尚未渲染（位置较深 / 跨设备刚同步、列表还在加载更旧推文）则短暂重试，
+  // 约 5s 后放弃；用户一旦自己滚动立即让位，绝不把正在看的用户拽回去。
   let _restoreIv = null;
-  let brUserScrolled = false;   // 用户是否已自己滚动：恢复/接管定位期间一旦为真立即让位，绝不把用户拽回去
+  let brUserScrolled = false;
   function restoreBrowseScroll() {
-    const tid = getBrowseAnchor();
-    if (!tid) return;
-    if (scrollCardToTop(tid)) return;
+    if (!XFEED || brUserScrolled) return;
+    if (XFEED.restore()) return;
     if (_restoreIv) clearInterval(_restoreIv);
     let tries = 0;
     _restoreIv = setInterval(() => {
       if (brUserScrolled) { clearInterval(_restoreIv); _restoreIv = null; return; }
-      if (scrollCardToTop(tid) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; }
+      if ((XFEED && XFEED.restore()) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; }
     }, 320);
   }
 
@@ -1825,7 +1805,10 @@
       if (opts.toTop) { cont.scrollTop = 0; return; }
       // anchorTid（如恢复的上次位置）优先；否则用插入前视口顶部的卡片稳住当前位置
       const anchor = opts.anchorTid || beforeTopTid;
-      if (anchor) scrollCardToTop(anchor);
+      if (!anchor) return;
+      // 交给框架 feed()：按 id 定位并保留卡内偏移（跨设备一致）
+      if (XFEED) XFEED.restore({ id: String(anchor), offset: 0 });
+      else scrollCardToTop(anchor);
     };
     reanchor();
     requestAnimationFrame(reanchor);
@@ -1958,7 +1941,7 @@
         const anchorTid = getBrowseAnchor();
         if (openMode || preview) {
           // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
-          // 但恢复上次查看位置（scroll_tid 锚定到原卡片），不跳到顶部——
+          // 但恢复上次查看位置（框架 feed 锚点，按 id 定位），不跳到顶部——
           // 新推文在上方，用户停在原来的位置，上滑即见更新。
           prependNewTweets(items, { toTop: false, anchorTid });
           saveBrowseCache(items, true);
@@ -1967,7 +1950,7 @@
           saveBrowseCache(items, true);
           viewBrowse.scrollTop = 0;
         }
-        restoreBrowseScroll();   // 跨设备（scroll_tid 已同步）或卡片延后出现时兜底定位回去
+        restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
         brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
       } else {
