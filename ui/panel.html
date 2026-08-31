@@ -113,8 +113,10 @@
   .dt-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
   .dt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .dt-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #e9eef2; }
-  /* 转推：一行小字带过，主头像/名字始终是原推作者 */
-  .rt-note { font-size: 12px; color: #6b7785; padding: 4px 2px 6px; display: flex; align-items: center; gap: 4px; }
+  /* 转推提示：转发人的头像 + @id 都要可见，主头像/名字仍是原推作者 */
+  .rt-note { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #6b7785; padding: 2px 2px 6px; }
+  .rt-note .rt-icon { color: #00ba7c; font-size: 13px; line-height: 1; }
+  .rt-note .rt-avatar { width: 16px; height: 16px; border-radius: 50%; object-fit: cover; background: #e9eef2; flex: 0 0 auto; }
   .rt-note b { color: #536471; font-weight: 600; }
   .dt-name { font-weight: 600; font-size: 15px; color: #0f1419; }
   .dt-handle { color: #536471; font-size: 13px; }
@@ -221,6 +223,24 @@
   .bm-card .media.m3 img, .bm-card .media.m3 video,
   .bm-card .media.m4 img, .bm-card .media.m4 video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .bm-card .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
+  /* 引用转发（转发 + 评论）：被转发的原推以嵌套卡片整体呈现，
+     引用者与被引用者的头像、@id 都要看得见，避免只看得到评论看不到原贴 */
+  .quoted { margin: 2px 0 6px; border: 1px solid #e3e6eb; border-radius: 10px; padding: 8px 10px; background: #fafbfc; cursor: pointer; }
+  .quoted:hover { background: #f5f7f9; }
+  .quoted .q-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .quoted .q-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; background: #e9eef2; flex: 0 0 auto; }
+  .quoted .q-name { font-weight: 600; font-size: 12.5px; color: #0f1419; cursor: pointer; }
+  .quoted .q-name:hover { text-decoration: underline; }
+  .quoted .q-handle { color: #536471; font-size: 11.5px; }
+  .quoted .q-text { font-size: 12.5px; line-height: 1.4; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; }
+  .quoted .media { display: grid; gap: 4px; border-radius: 10px; overflow: hidden; margin-bottom: 0; }
+  .quoted .media.m1 { grid-template-columns: 1fr; }
+  .quoted .media.m1 .bm-media { max-height: 220px; background: #f3f5f7; }
+  .quoted .media.m1 .bm-media img, .quoted .media.m1 .bm-media video { width: auto; max-width: 100%; max-height: 220px; object-fit: contain; display: block; margin: 0 auto; }
+  .quoted .media.m2, .quoted .media.m3, .quoted .media.m4 { grid-template-columns: 1fr 1fr; }
+  .quoted .media.m2 .bm-media, .quoted .media.m3 .bm-media, .quoted .media.m4 .bm-media { aspect-ratio: 16/10; }
+  .quoted .media.m2 img, .quoted .media.m2 video, .quoted .media.m3 img, .quoted .media.m3 video, .quoted .media.m4 img, .quoted .media.m4 video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .quoted .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
 
   /* 下拉刷新指示器：贴在滚动容器顶部内侧，默认隐藏在内容上沿之上；
      下拉时资源整体向下平移，指示器同步在露出的空隙里出现，与资源一起往下走 */
@@ -235,10 +255,10 @@
     pointer-events: none;
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
-  .bm-card .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
-  .bm-card .bm-media.playing { background: #000; }
-  .bm-card .bm-media.playing video { object-fit: contain; }
-  .bm-card .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
+  .bm-card .bm-play, .quoted .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
+  .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #000; }
+  .bm-card .bm-media.playing video, .quoted .bm-media.playing video { object-fit: contain; }
+  .bm-card .bm-vclose, .quoted .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
   .bm-card .actions { display: flex; gap: 6px; margin-top: 4px; }
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
   .bm-card .actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -1605,6 +1625,15 @@
     });
   }
 
+  // 纯转推提示：转发人的头像 + @id 一并显示；
+  // 卡片主头像/名字仍是「被转发的原推作者」，这样转发人与被转发人都看得见。
+  function rtNoteHtml(u) {
+    const who = esc2((u && (u.screen_name || u.name)) || '某人');
+    const av = (u && u.avatar)
+      ? `<img class="rt-avatar" src="${esc2(u.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : '';
+    return `<div class="rt-note"><span class="rt-icon">↻</span>${av}<b>@${who}</b> 转发</div>`;
+  }
+
   // 引用转发（quote）的嵌套卡片 HTML：含头像/名字/正文/媒体
   function quotedHtml(q) {
     const a = (q && q.author) || {};
@@ -1636,7 +1665,7 @@
     card.className = 'bm-card';
     card.dataset.tid = tid;
     card.innerHTML = `
-      ${item.retweeted_by ? `<div class="rt-note">↻ 由 @${esc2(item.retweeted_by.screen_name || item.retweeted_by.name || '某人')} 转发</div>` : ''}
+      ${item.retweeted_by ? rtNoteHtml(item.retweeted_by) : ''}
       <div class="head">
         ${a.avatar ? `<img class="avatar" data-link="${esc2(profileUrl)}" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
@@ -2587,7 +2616,7 @@
     const card = document.createElement('div');
     card.className = 'dt-card';
     card.innerHTML = `
-      ${t.retweeted_by ? `<div class="rt-note">↻ 由 @${esc2(t.retweeted_by.screen_name || t.retweeted_by.name || '某人')} 转发</div>` : ''}
+      ${t.retweeted_by ? rtNoteHtml(t.retweeted_by) : ''}
       <div class="dt-head">
         ${a.avatar ? `<img class="dt-avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
@@ -2598,6 +2627,7 @@
       </div>
       <div class="dt-text">${esc2(t.text || '')}</div>
       ${mediaHtml ? `<div class="dt-media">${mediaHtml}</div>` : ''}
+      ${t.quoted ? quotedHtml(t.quoted) : ''}
       <div class="dt-counts">
         ${t.reply_count != null ? `<span>💬 <b>${t.reply_count}</b></span>` : ''}
         ${t.retweet_count != null ? `<span>🔁 <b>${t.retweet_count}</b></span>` : ''}
@@ -2617,9 +2647,21 @@
         playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);
       });
     });
+    // 引用转发：原贴也以嵌套卡片呈现（头像/@id/正文/媒体），点卡片打开原贴详情
+    if (t.quoted) {
+      wireMediaBlock(card.querySelector('.quoted'), t.quoted.media || []);
+      const qEl = card.querySelector('.quoted');
+      if (qEl) {
+        qEl.addEventListener('click', (e) => {
+          if (e.target.closest('[data-link]') || e.target.closest('.bm-media')) return;
+          e.stopPropagation();
+          if (qEl.dataset.tid) openTweetDetail(qEl.dataset.tid, t.quoted);
+        });
+      }
+    }
     // 作者名跳 profile
     card.querySelectorAll('[data-link]').forEach((el) => {
-      el.addEventListener('click', () => { const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
+      el.addEventListener('click', (e) => { e.stopPropagation(); const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
     });
     // 收藏/移出
     card.querySelectorAll('.fav').forEach((b) => b.addEventListener('click', () => {

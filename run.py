@@ -1274,6 +1274,23 @@ def _author_dict(user_legacy, user_core, user):
     }
 
 
+def _unwrap_tweet(node):
+    """剥掉 TweetWithVisibilityResults 包装层，返回内部真正的 Tweet 节点。
+
+    时间线/搜索接口常把「被转发 / 被引用」的推文包成 TweetWithVisibilityResults
+    （外层只有 tweet 字段，没有 core / legacy）。此前只在最外层剥过一次，嵌套的
+    被引原推因 __typename 不等于 'Tweet' 而被整条丢弃——表现就是引用转发只看到
+    引用者自己的评论，看不到原贴。
+    """
+    seen = 0
+    while (isinstance(node, dict) and seen < 4
+           and node.get('__typename') == 'TweetWithVisibilityResults'
+           and isinstance(node.get('tweet'), dict)):
+        node = node['tweet']
+        seen += 1
+    return node
+
+
 def _extract_quoted(qtweet):
     """从被引用的原推里提取作者/正文/媒体（用于「引用转发」嵌套展示）。
 
@@ -1332,8 +1349,7 @@ def _extract_bookmark_tweets(data):
             if not isinstance(result, dict):
                 continue
             # TweetWithVisibilityResults / Tweet 都可能出现
-            if result.get('__typename') == 'TweetWithVisibilityResults':
-                result = result.get('tweet') or result
+            result = _unwrap_tweet(result) or result
             if result.get('__typename') != 'Tweet':
                 continue
             # ---- 转发 / 引用关系解析（保留「谁转发/引用了谁」，不再无脑折叠成原推）----
@@ -1357,7 +1373,8 @@ def _extract_bookmark_tweets(data):
             #    仅当原推作者与转发者不同时才算「真正转推」（排除自嵌套）。
             retweeted_by = None
             quoted = None
-            _rt = (((outer.get('retweeted_status_results') or {}).get('result')) or {})
+            _rt = _unwrap_tweet(((outer.get('retweeted_status_results') or {})
+                                 .get('result')) or {})
             if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
                     and _screen_of(_rt) and _screen_of(_rt) != _ou_screen):
                 result = _rt
@@ -1365,10 +1382,26 @@ def _extract_bookmark_tweets(data):
             else:
                 # 2) 引用转发（引用某推）：被引原推放在 quoted_status_results.result，
                 #    其图片/视频之前未被解析，这里提取出来做嵌套展示。
-                _q = (((outer.get('quoted_status_results') or {}).get('result')) or {})
+                #    兼容单数字段名 quoted_status_result，并剥掉可见性包装层——
+                #    否则被引原推会被静默丢弃（用户只看得到引用者自己的评论）。
+                _q = ((((outer.get('quoted_status_results') or {})
+                        .get('result'))
+                       or ((outer.get('quoted_status_result') or {}).get('result'))
+                       or {}))
+                _q = _unwrap_tweet(_q)
                 if (isinstance(_q, dict) and _q.get('__typename') == 'Tweet'
                         and _screen_of(_q) and _screen_of(_q) != _ou_screen):
                     quoted = _extract_quoted(_q)
+
+            # 2.5) 纯转推的原推本身又是引用转发时，同样把它的被引原推带出来，
+            #      否则这类「转发 + 评论」组合仍会丢掉原贴。
+            if quoted is None:
+                _q2 = _unwrap_tweet((((result.get('quoted_status_results') or {})
+                                      .get('result'))
+                                     or ((result.get('quoted_status_result') or {}).get('result'))
+                                     or {}))
+                if isinstance(_q2, dict) and _q2.get('__typename') == 'Tweet':
+                    quoted = _extract_quoted(_q2)
 
             legacy = result.get('legacy') or {}
             # 3) 扁平化 RT：full_text 形如 “RT @handle: ...” 但无嵌套 retweeted_status
@@ -1522,8 +1555,7 @@ def _extract_tweet_obj(r):
     """从单个 tweet result 提取标准推文对象（与 _extract_bookmark_tweets 一致）。"""
     if not isinstance(r, dict):
         return None
-    if r.get('__typename') == 'TweetWithVisibilityResults':
-        r = r.get('tweet') or r
+    r = _unwrap_tweet(r) or r
     if r.get('__typename') != 'Tweet':
         return None
     # 纯转发：用嵌套原推作为主体，转发者降为 retweeted_by 的小字提示。
@@ -1532,7 +1564,7 @@ def _extract_tweet_obj(r):
     _ou = (((r.get('core') or {}).get('user_results') or {}).get('result')) or {}
     rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
     _ou_screen = (_ou.get('legacy') or _ou).get('screen_name')
-    _rt = (((r.get('retweeted_status_results') or {}).get('result')) or {})
+    _rt = _unwrap_tweet(((r.get('retweeted_status_results') or {}).get('result')) or {})
     _rt_screen = None
     if isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet':
         _rtu = (((_rt.get('core') or {}).get('user_results') or {}).get('result')) or {}
@@ -1586,6 +1618,14 @@ def _extract_tweet_obj(r):
     if (retweeted_by and author.get('screen_name') and retweeted_by.get('screen_name')
             and retweeted_by['screen_name'].lower() == author['screen_name'].lower()):
         retweeted_by = None
+    # 引用转发：把被引原推一并带出，详情页才能同时展示「转发人的评论 + 原贴」
+    quoted = None
+    _q = ((((r.get('quoted_status_results') or {}).get('result'))
+           or ((r.get('quoted_status_result') or {}).get('result'))
+           or {}))
+    _q = _unwrap_tweet(_q)
+    if isinstance(_q, dict) and _q.get('__typename') == 'Tweet':
+        quoted = _extract_quoted(_q)
     return {
         'tweet_id': r.get('rest_id'),
         'text': legacy.get('full_text', ''),
@@ -1598,6 +1638,7 @@ def _extract_tweet_obj(r):
         'view_count': (r.get('views') or {}).get('count'),
         'author': author,
         'retweeted_by': retweeted_by,
+        'quoted': quoted,
         'media': _normalize_media(legacy),
         'url': 'https://x.com/{}/status/{}'.format(u_screen or 'unknown', r.get('rest_id')),
     }
