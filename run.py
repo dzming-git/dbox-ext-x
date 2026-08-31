@@ -1376,7 +1376,13 @@ def _nested_tweet(tweet, *keys):
     if not isinstance(tweet, dict):
         return None
     for k in keys:
-        container = tweet.get(k) or {}
+        # 优先在 tweet 顶层找；找不到（包括顶层该键缺失/为 None）再退回 legacy
+        # 内部（部分转发响应把 retweeted_status_result 塞进了 legacy，而非 tweet 顶层）。
+        # 注意：不能写成 `tweet.get(k) or {}` —— 顶层为 None 时 `None or {}` 会变成空
+        # 字典（仍是 dict），导致下面的 isinstance 判断短路、永远不回退到 legacy。
+        container = tweet.get(k)
+        if not isinstance(container, dict):
+            container = (tweet.get('legacy') or {}).get(k)
         if not isinstance(container, dict):
             continue
         node = container.get('result')
@@ -1512,8 +1518,15 @@ def _extract_bookmark_tweets(data):
             retweeted_by = None
             quoted = None
             _rt = _nested_tweet(outer, 'retweeted_status_results', 'retweeted_status_result')
-            if (_rt is not None
-                    and _screen_of(_rt) and _screen_of(_rt) != _ou_screen):
+            _follow_rt = False
+            if _rt is not None:
+                _rt_rid = str(_rt.get('rest_id') or '')
+                _ou_rid = str(outer.get('rest_id') or '')
+                if _rt_rid and _rt_rid != _ou_rid:
+                    _follow_rt = True
+                elif _screen_of(_rt) and _screen_of(_rt) != _ou_screen:
+                    _follow_rt = True
+            if _follow_rt:
                 result = _rt
                 retweeted_by = rt_by
             else:
@@ -1693,7 +1706,8 @@ def _extract_tweet_obj(r):
     """从单个 tweet result 提取标准推文对象（与 _extract_bookmark_tweets 一致）。"""
     if not isinstance(r, dict):
         return None
-    r = _unwrap_tweet(r) or r
+    _outer = _unwrap_tweet(r) or r
+    r = _outer
     if r.get('__typename') != 'Tweet':
         return None
     # 纯转发：用嵌套原推作为主体，转发者降为 retweeted_by 的小字提示。
@@ -1708,7 +1722,18 @@ def _extract_tweet_obj(r):
         _rtu = (((_rt.get('core') or {}).get('user_results') or {}).get('result')) or {}
         _rt_screen = (_rtu.get('legacy') or _rtu).get('screen_name')
     flat_rt_handle = None
-    if _rt_screen and _rt_screen != _ou_screen:
+    # 跟随原推的判定：优先用 rest_id 是否不同（嵌套紧凑对象常缺作者 screen_name，
+    # 不能只靠 screen_name 比较；rest_id 不同即“真正转推”，相同则是 X 把转推展开成
+    # 原推的自嵌套，应跳过避免把主体回退成转发者）。
+    _follow_rt = False
+    if _rt is not None:
+        _rt_rid = str(_rt.get('rest_id') or '')
+        _ou_rid = str(_outer.get('rest_id') or '')
+        if _rt_rid and _rt_rid != _ou_rid:
+            _follow_rt = True
+        elif _rt_screen and _rt_screen != _ou_screen:
+            _follow_rt = True
+    if _follow_rt:
         r = _rt
         retweeted_by = rt_by
     else:
