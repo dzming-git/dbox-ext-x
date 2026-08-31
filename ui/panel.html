@@ -506,6 +506,11 @@
 
   // 用户是否已手动切换过视图：若是，后台对账不再覆盖他的选择（避免"被拉走"）
   let userSwitchedView = false;
+  // 宿主侧 URL：独立全屏页（/ext/x）会把顶层 URL 的 hash 推给面板，面板据此
+  // 深链到对应子页面，并把内部路由变化回写过去（让地址栏/刷新/分享都能用）。
+  let hostHash = '';
+  let urlSyncEnabled = false;   // 仅独立全屏页支持；小窗形态不动宿主 URL
+  let routeInited = false;      // 初始路由是否已应用（宿主后到的 hash 走导航而非初始化）
   window.addEventListener('message', (e) => {
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
@@ -516,6 +521,30 @@
     }
     if (e.data.type === 'DBOX_EXT_INFO' && e.data.standalone_route) {
       standaloneRoute = e.data.standalone_route;
+    }
+    // 宿主（独立全屏页）把顶层 URL 的 hash 推给面板：可能是首次进入的深链，
+    // 也可能是用户在浏览器里前进/后退导致的 URL 变化。
+    if (e.data.type === 'DBOX_ROUTE' && typeof e.data.hash === 'string') {
+      const firstLink = !urlSyncEnabled;
+      urlSyncEnabled = true;
+      if (e.data.hash !== hostHash) {
+        hostHash = e.data.hash;
+        const r = parseRoute(hostHash);
+        if (r && !routeInited) {
+          bootRoute();   // 深链已到：立即落地，不必再等启动超时
+        } else if (r && buildHash(r) !== location.hash) {
+          try { history.replaceState(null, '', buildHash(r)); } catch (_) {}
+          applyRoute(r, { fromUrl: true });
+        }
+      } else if (firstLink && routeInited) {
+        // 首次连上宿主（如小窗切全屏）：把面板当前所在页面补写到顶层 URL，
+        // 否则地址栏停在 /ext/x，用户复制不到当前页。
+        if (dtEl && dtEl.classList.contains('active') && dtCurTweet) {
+          navigate({ name: 'tweet', id: dtCurTweet.tweet_id }, { replace: true, silent: true });
+        } else {
+          navigate(currentListRoute(), { replace: true, silent: true });
+        }
+      }
     }
     if (e.data.type === 'DBOX_MODE') {
       if (e.data.hidden) {
@@ -1051,17 +1080,36 @@
 
   /* ---- 拦截浏览器后退：打开灯箱/详情时压入历史，后退即关闭而非离开页面 ---- */
   let _drillStack = [];
-  function enterDrill(kind) {
-    try { history.pushState({ dboxDrill: kind }, ''); } catch (e) { return; }
+  // pushHistory=false：历史项由路由（navigate 写 URL）负责压入，这里只登记栈，
+  // 避免「打开一条推文」在历史里留下两条记录（后退一次关不掉）。
+  function enterDrill(kind, pushHistory) {
+    if (pushHistory !== false) {
+      try { history.pushState({ dboxDrill: kind }, ''); } catch (e) { return; }
+    }
     _drillStack.push(kind);
   }
+  // 只收起详情层，不碰历史：用于「URL 已经变了、详情层只需跟着收起」的场景
+  // （如用户在浏览器里后退，历史由浏览器消费，这里再 back 一次就会多退一页）。
+  function hideDetailLayer() {
+    if (!dtEl || !dtEl.classList.contains('active')) return;
+    dtEl.classList.remove('active');
+    if (_inlineVid) stopInlineVideo(_inlineVid);
+    if (_drillStack.length && _drillStack[_drillStack.length - 1] === 'detail') _drillStack.pop();
+  }
+
   function closeDrillViaApp(kind) {
     // 直接关闭浮层，确保「返回」按钮始终有效（不再依赖 popstate 时序）
     if (kind === 'lb') lbEl.classList.remove('active');
-    else if (kind === 'detail') dtEl.classList.remove('active');
-    // 退出详情：停掉详情页内原地点播的视频——元素虽随浮层关闭而不可见，但解码与
-    // 声音不会自动停止，hls 实例不销毁还会继续拉流。
-    if (kind === 'detail' && _inlineVid) stopInlineVideo(_inlineVid);
+    else if (kind === 'detail') {
+      hideDetailLayer();
+      // 推文详情是一个 URL（#/tweet/<id>），「返回」＝回到来源列表页。
+      // 这里统一改路由而不是 history.back()：面板与宿主各持有自己的 history，
+      // back 只能消费其中一份，另一份会尴尬地停在推文页 URL 上（表现为地址栏与
+      // 页面内容不符）。用 replace 回到列表，两边 URL 一起对齐且不留多余历史。
+      const back = lastListRoute || { name: 'browse', params: {} };
+      navigate(back, { replace: true });
+      return;
+    }
     // 同步历史栈：仅当本浮层是当前最上层（最近压入的 drill）时，回退一次以消费
     // 对应历史项；出栈与再次关闭交由 popstate 统一处理（幂等，重复移除 active 无副作用）
     if (_drillStack.length && _drillStack[_drillStack.length - 1] === kind) {
@@ -1074,8 +1122,7 @@
       const v = lbEl.querySelector('video'); if (v) { try { v._hls && v._hls.destroy(); } catch (e) {} v.pause(); }
       lbEl.classList.remove('active');
     } else if (kind === 'detail') {
-      dtEl.classList.remove('active');
-      if (_inlineVid) stopInlineVideo(_inlineVid);
+      hideDetailLayer();
     }
   });
   // 触摸左右滑动切换（图片/视频）；竖向滑动或点按不触发，避免误关/误触。
@@ -1255,9 +1302,142 @@
     } catch (_) {}
   }
 
-  // ---- hash 路由（刷新保持视图 / 可深链 / 全屏返回）----
+  /* ---- 面板路由：每个页面都是一个 URL（可复制 / 刷新 / 前进后退）----
+     · #/home                          首页（关注流）
+     · #/search?q=关键词&tab=top|latest 搜索（搜索参数进 URL）
+     · #/bookmarks  #/history  #/cache  #/download
+     · #/tweet/<id>                    推文详情（中立：不绑定来源，
+                                       首页/搜索/收藏/历史/粘贴链接进来都是同一个 URL）
+     兼容旧格式 #/view/<view>。
+     重要：从 URL 进来只渲染已有缓存，**绝不自动发起搜索**；只有点「搜索」按钮
+     才真正请求 X 刷新缓存。
+  */
+  const VIEW_ROUTES = ['browse', 'search', 'bookmarks', 'history', 'cache', 'download'];
+  const ROUTE_PATH = { browse: 'home', search: 'search', bookmarks: 'bookmarks',
+                       history: 'history', cache: 'cache', download: 'download' };
+  const PATH_VIEW = { home: 'browse', search: 'search', bookmarks: 'bookmarks',
+                      history: 'history', cache: 'cache', download: 'download',
+                      browse: 'browse', download: 'download' };
+
+  function parseRoute(hashStr) {
+    const raw = String(hashStr || '').replace(/^#/, '');
+    if (!raw) return null;
+    const qi = raw.indexOf('?');
+    const path = qi >= 0 ? raw.slice(0, qi) : raw;
+    const qs = qi >= 0 ? raw.slice(qi + 1) : '';
+    const params = {};
+    if (qs) {
+      qs.split('&').forEach((kv) => {
+        if (!kv) return;
+        const p = kv.split('=');
+        try {
+          params[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || '').replace(/\+/g, ' '));
+        } catch (_) {}
+      });
+    }
+    const seg = path.split('/').filter(Boolean);
+    if (!seg.length) return null;
+    if (seg[0] === 'tweet' && seg[1]) {
+      let id = seg[1];
+      try { id = decodeURIComponent(id); } catch (_) {}
+      return { name: 'tweet', id: id, params: params };
+    }
+    // 旧格式 #/view/<view> 与现行 #/<path> 都认
+    const key = (seg[0] === 'view' && seg[1]) ? seg[1] : seg[0];
+    const view = PATH_VIEW[key] || (VIEW_ROUTES.indexOf(key) >= 0 ? key : null);
+    return view ? { name: view, params: params } : null;
+  }
+
+  function buildHash(route) {
+    if (!route) return '#/home';
+    if (route.name === 'tweet') return '#/tweet/' + encodeURIComponent(route.id);
+    const q = [];
+    if (route.name === 'search') {
+      const pr = route.params || {};
+      if (pr.q) q.push('q=' + encodeURIComponent(pr.q));
+      if (pr.tab) q.push('tab=' + encodeURIComponent(String(pr.tab).toLowerCase()));
+    }
+    return '#/' + (ROUTE_PATH[route.name] || route.name) + (q.length ? '?' + q.join('&') : '');
+  }
+
+  // 当前搜索视图的 URL 参数（读输入框与当前排序，始终反映界面真实状态）
+  function searchRouteParams() {
+    const inp = $('srch-input');
+    const q = ((inp && inp.value) || '').trim();
+    const params = {};
+    if (q) params.q = q;
+    if (typeof srchProduct === 'string' && srchProduct) {
+      params.tab = srchProduct === 'Latest' ? 'latest' : 'top';
+    }
+    return params;
+  }
+
+  function currentListRoute() {
+    return { name: activeView, params: activeView === 'search' ? searchRouteParams() : {} };
+  }
+
+  // 写 URL：面板自身 hash + 同步宿主顶层 URL（仅独立全屏页，小窗不动宿主地址栏）
+  function navigate(route, opts) {
+    opts = opts || {};
+    const hash = buildHash(route);
+    if (urlSyncEnabled) {
+      try {
+        window.parent.postMessage({
+          type: 'DBOX_URL_SYNC', extId: 'x', hash: hash, replace: !!opts.replace,
+        }, '*');
+      } catch (_) {}
+    }
+    if (opts.replace) {
+      // replaceState 不触发 hashchange，需手动应用；且用于「同一层的视图切换」
+      // （切 tab、切热门/最新），避免历史栈被无意义地刷屏。
+      try { history.replaceState(null, '', hash); } catch (_) { location.hash = hash; }
+      if (!opts.silent) applyRoute(route, opts);
+      return;
+    }
+    if (location.hash === hash) { if (!opts.silent) applyRoute(route, opts); return; }
+    location.hash = hash;   // 触发 hashchange → applyRoute
+  }
+
+  // URL 上的搜索参数落到界面（只填框/切排序，**不发请求**）
+  function applySearchParams(params, opts) {
+    const inp = $('srch-input');
+    if (inp && typeof params.q === 'string' && params.q) inp.value = params.q;
+    if (params.tab) {
+      const tab = String(params.tab).toLowerCase() === 'latest' ? 'Latest' : 'Top';
+      if (tab !== srchProduct) setSrchProduct(tab, { silent: true });
+    }
+  }
+
+  function applyRoute(route, opts) {
+    opts = opts || {};
+    if (!route) return;
+    if (route.name === 'tweet') {
+      // 推文页中立：不切换底层列表视图，只在其上开详情层；
+      // 记住来源路由，关闭详情（含浏览器后退）时回到它。
+      if (!lastListRoute) lastListRoute = currentListRoute();
+      openTweetDetail(route.id, null);
+      return;
+    }
+    if (route.name === 'search') applySearchParams(route.params || {}, opts);
+    // URL 已经不是推文页 → 收起详情层（覆盖「用户在浏览器里后退/改地址栏」的情况，
+    // 此时历史由浏览器消费，面板不能再 back 一次）
+    if (route.name !== 'tweet') hideDetailLayer();
+    // 视图未变（如从推文详情后退回列表）时不再重载，保留列表现场与滚动位置
+    if (!routeInited || route.name !== activeView) {
+      switchView(route.name, {
+        silent: !!opts.silent, url: false, fromUrl: !!opts.fromUrl,
+        params: route.params || {},
+      });
+    }
+    lastListRoute = { name: route.name, params: route.params || {} };
+  }
+
   let activeView = 'browse';
-  function switchView(v, { silent = false } = {}) {
+  let lastListRoute = null;   // 最近一次所处的列表路由（推文详情页的「返回」目标）
+  function switchView(v, opts) {
+    opts = opts || {};
+    const silent = !!opts.silent;
+    const fromUrl = !!opts.fromUrl;
     if (!silent) userSwitchedView = true;
     activeView = v;
     // 记忆当前所在视图：迷你窗关闭/重开（iframe 可能被重载或 hash 被框架改写）后，
@@ -1271,7 +1451,11 @@
     viewCache.style.display = v === 'cache' ? '' : 'none';
     viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
     viewSearch.style.display = v === 'search' ? '' : 'none';
-    if (!silent) location.hash = '#/view/' + v;
+    // 一级 URL：每个视图一个（silent=true：URL 与视图都由本次调用决定，不回环再应用一次）
+    if (opts.url !== false) {
+      navigate({ name: v, params: (v === 'search' ? (opts.params || searchRouteParams()) : {}) },
+               { silent: true });
+    }
     if (v === 'browse') {
       syncFavFromServer();
       openBrowse();   // 渲染缓存+恢复位置+后台静默刷新（不打断查看位置）
@@ -1281,8 +1465,10 @@
     } else if (v === 'cache') {
       loadCache();
     } else if (v === 'search') {
-      // 打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）
-      restoreSearch();
+      // 打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）。
+      // 传入 URL 上的搜索参数：URL 指定的关键词若与缓存不同，只对齐输入框、
+      // 不发请求（点「搜索」按钮才刷新缓存）。
+      restoreSearch(opts.params || {});
     } else if (v === 'bookmarks') {
       // 打开即拉取共享缓存并渲染（多设备同步：先 pull 再显示）
       restoreBookmarks();
@@ -1290,8 +1476,8 @@
   }
 
   function parseHash() {
-    const m = (location.hash || '').match(/^#\/view\/(\w+)/);
-    return m ? m[1] : null;
+    const r = parseRoute(location.hash);
+    return r && r.name !== 'tweet' ? r.name : null;
   }
 
   // 桌面端刷新按钮：刷新当前列表视图（触摸端用下拉刷新，此按钮仅鼠标设备显示）
@@ -1313,15 +1499,51 @@
     t.addEventListener('click', () => switchView(t.dataset.view));
   });
 
-  // 初始视图：优先用 localStorage 记忆的视图（迷你窗重开可靠还原），其次 hash，最后默认 browse。
+  // 初始路由：宿主深链（/ext/x#/search?q=.. ）优先，其次面板自身 hash，
+  // 再次本地记忆的视图，最后默认首页。
   // 延迟到脚本末尾再执行，避免 switchView 内引用的 bmXList/bmShowingFolder 等 const 尚未初始化的 TDZ 问题。
-  let initialView;
-  try { initialView = localStorage.getItem('xd_active_view'); } catch (_) {}
-  // 本地优先：先用本地快照瞬时渲染（不等网络），再由后台对账补齐服务端状态
-  if (XSTATE) initialView = XSTATE.get('active_view', initialView) || initialView;
-  if (!initialView) initialView = parseHash();
-  if (!initialView || !['download', 'browse', 'history', 'cache', 'bookmarks', 'search'].includes(initialView)) initialView = 'browse';
-  setTimeout(() => switchView(initialView, { silent: true }), 0);
+  // 略微延后（60ms）等宿主把顶层 hash 推过来，避免先渲染首页再跳到深链目标的闪烁。
+  // 面板与宿主同源（srcdoc + allow-same-origin），可直读顶层 URL。深链（如
+  // /ext/x#/tweet/123）因此不必等 postMessage 往返，避免「先落到本地记忆的视图、
+  // 再被纠正」的抖动。小窗形态下顶层是 dbox 自己的页面，其 hash 与面板无关。
+  function hostDeepLink() {
+    try {
+      const pl = window.parent && window.parent.location;
+      if (!pl || pl === window.location) return null;
+      const path = String(pl.pathname || '');
+      if (path !== '/ext/x' && !(standaloneRoute && path === standaloneRoute)) return null;
+      return parseRoute(pl.hash);
+    } catch (_) { return null; }
+  }
+
+  function initialRoute() {
+    const fromTop = hostDeepLink();
+    if (fromTop) return fromTop;
+    const fromHost = parseRoute(hostHash);
+    if (fromHost) return fromHost;
+    const self = parseRoute(location.hash);
+    if (self) return self;
+    let v = null;
+    try { v = localStorage.getItem('xd_active_view'); } catch (_) {}
+    // 本地优先：先用本地快照瞬时渲染（不等网络），再由后台对账补齐服务端状态
+    if (XSTATE) v = XSTATE.get('active_view', v) || v;
+    if (!v || VIEW_ROUTES.indexOf(v) < 0) v = 'browse';
+    return { name: v, params: {} };
+  }
+  // 启动落地：宿主深链若在 60ms 内到达就立即执行（不等超时），否则按本地记忆的视图落地。
+  // 它是视图加载的唯一入口，初始视图的首次拉取也由它触发（不再另起一份加载，避免重复请求）。
+  let _bootTimer = null;
+  function bootRoute() {
+    if (routeInited) return;
+    if (_bootTimer) { clearTimeout(_bootTimer); _bootTimer = null; }
+    const r0 = initialRoute();
+    applyRoute(r0, { fromUrl: true, silent: true });   // routeInited 仍为 false → 必定加载
+    routeInited = true;
+    // 落地后把 URL 对齐到当前路由：即使是「本地记忆的视图」也要反映到地址栏，
+    // 让用户随时能复制/刷新当前页。推文页的 URL 已由 openTweetDetail 写好，不覆盖。
+    if (r0.name !== 'tweet') navigate(r0, { replace: true, silent: true });
+  }
+  _bootTimer = setTimeout(bootRoute, 60);
 
   // 后台与服务端对账：把其它设备拉到的缓存并进本地（新设备秒开），
   // 但用户一旦自己动过视图就绝不再改（避免"被拉走"）。
@@ -1350,8 +1572,17 @@
   }
 
   window.addEventListener('hashchange', () => {
-    const v = parseHash();
-    if (v && ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'].includes(v)) switchView(v, { silent: true });
+    // 面板内后退/前进导致 hash 变化时，把宿主 URL 一并带回同一位置（replace，
+    // 不再给宿主加历史条目：面板这次后退消费的是面板自己的那条）。
+    if (urlSyncEnabled && location.hash) {
+      try {
+        window.parent.postMessage({
+          type: 'DBOX_URL_SYNC', extId: 'x', hash: location.hash, replace: true,
+        }, '*');
+      } catch (_) {}
+    }
+    const r = parseRoute(location.hash);
+    if (r) applyRoute(r, { fromUrl: true });
   });
 
   /* ---- X 收藏 ---- */
@@ -1405,6 +1636,7 @@
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
     card.className = 'bm-card';
+    card.dataset.tid = tid;   // 与浏览/搜索卡片一致，便于按推文定位与去重
     card.innerHTML = `
       <div class="head">
         ${a.avatar ? `<img class="avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
@@ -1444,6 +1676,13 @@
         showLightbox(_lbIdx);
       });
     });
+    // 点正文 → 打开 DBox 内推文页（与首页/搜索/历史里点开同一条推文是同一个
+    // 中立 URL：#/tweet/<id>）；「打开原推文」按钮仍跳 x.com 外链。
+    const bmText = card.querySelector('.text');
+    if (bmText && tid) {
+      bmText.style.cursor = 'pointer';
+      bmText.addEventListener('click', (e) => { e.stopPropagation(); openTweetDetail(tid, item); });
+    }
     card.querySelectorAll('.open').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
     }));
@@ -1510,9 +1749,11 @@
         if (!cursor || !pageItems.length) break;
       }
       if (!all.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
+      // 过总库：与首页/搜索/历史里的同一条推文共用一份记录，不另存一份
+      const merged = mergeTweets(all);
       bmXList.innerHTML = '';
-      all.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
-      if (XSTATE) try { XSTATE.set('bm:list', all.slice(0, 600), { strategy: 'lww' }); } catch (_) {}
+      merged.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+      if (XSTATE) try { XSTATE.set('bm:list', merged.slice(0, 600), { strategy: 'lww' }); } catch (_) {}
     } catch (e) {
       if (!all.length) bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -1526,7 +1767,7 @@
     try { cached = XSTATE.get('bm:list'); } catch (_) { return; }
     if (!cached || !cached.length) return;
     bmXList.innerHTML = '';
-    cached.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+    mergeTweets(cached).forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
   }
 
   async function loadCollections() {
@@ -1565,7 +1806,7 @@
       return;
     }
     bmFolderList.innerHTML = '';
-    items.forEach((it) => bmFolderList.appendChild(renderBmCard(it, true)));
+    mergeTweets(items).forEach((it) => bmFolderList.appendChild(renderBmCard(it, true)));
   }
 
   $('bm-sync').addEventListener('click', () => {
@@ -1868,6 +2109,61 @@
     } catch (_) { return false; }
   }
 
+  /* ---- 推文总库：全面板唯一的推文身份与内容登记表 ----
+     同一条推文（同一 tweet_id）无论从首页 / 搜索 / 收藏 / 历史 / 详情哪条路径进来，
+     都只登记一条记录、复用同一个对象：
+       · 首页缓存过、搜索又搜到 → 不会再存第二份，只会补全字段；
+       · 别人转发了这条推文 → 后端已把身份归一到原推 id（见 run.py 的
+         _canonical_tweet_id），转发条目命中同一条记录，不会判成全新推文。
+     于是各列表存的是「同一批对象的引用」，收藏/已下载等状态天然一致。
+  */
+  const TWEET_STORE = new Map();
+  const TWEET_STORE_CAP = 3000;
+  function mergeTweet(t) {
+    if (!t || typeof t !== 'object') return t;
+    const id = String(t.tweet_id != null ? t.tweet_id : (t.id || ''));
+    if (!id) return t;
+    const prev = TWEET_STORE.get(id);
+    if (!prev) {
+      // 简单 LRU：超出上限时淘汰最早登记的一批，防止长时间使用无限增长
+      if (TWEET_STORE.size >= TWEET_STORE_CAP) {
+        let n = Math.floor(TWEET_STORE_CAP / 10);
+        for (const k of TWEET_STORE.keys()) {
+          TWEET_STORE.delete(k);
+          if (--n <= 0) break;
+        }
+      }
+      const rec = Object.assign({}, t, { tweet_id: id });
+      TWEET_STORE.set(id, rec);
+      return rec;
+    }
+    // 已有记录：只补全缺失/更完整的字段，不覆盖已有内容（先到为准，避免
+    // 列表里的精简数据把详情拉到的完整数据冲掉）
+    for (const k of Object.keys(t)) {
+      const nv = t[k], ov = prev[k];
+      if (nv == null || nv === '') continue;
+      if (ov == null || ov === '' || (Array.isArray(ov) && !ov.length)) {
+        prev[k] = nv;
+      } else if (Array.isArray(nv) && Array.isArray(ov) && nv.length > ov.length) {
+        prev[k] = nv;   // 媒体等多取到的那一份更完整
+      }
+    }
+    return prev;
+  }
+  // 一批推文过总库：既去重（同 id 合成一个对象）又归一（返回登记表里的规范对象）
+  function mergeTweets(list) {
+    const out = [];
+    const seen = new Set();
+    (list || []).forEach((it) => {
+      const rec = mergeTweet(it);
+      if (!rec) return;
+      const id = String(rec.tweet_id || '');
+      if (id) { if (seen.has(id)) return; seen.add(id); }
+      out.push(rec);
+    });
+    return out;
+  }
+
   // 浏览数据缓存：小屏/全屏共享，避免切换后重新刷新
   // 按发布时间倒序（最新在前）
   function sortItemsByTime(items) {
@@ -1915,7 +2211,7 @@
     try {
       // 内容缓存交给框架 feed()（union_by_id，服务端权威），不再自写 localStorage 缓存
       if (XFEED) {
-        XFEED.merge(sortItemsByTime(items || []), !!append);
+        XFEED.merge(sortItemsByTime(mergeTweets(items || [])), !!append);
         if (brCursor) XFEED.setCursor(brCursor);
       }
     } catch (_) {}
@@ -1923,7 +2219,7 @@
   function renderCachedBrowse() {
     try {
       // 打开即秒开：用框架 feed 的内容缓存先渲染，随后后台静默刷新，避免白屏等"加载中"
-      const list = XFEED ? XFEED.items() : [];
+      const list = XFEED ? mergeTweets(XFEED.items()) : [];
       if (!list.length) return false;
       brList.innerHTML = '';
       brSeenIds.clear();
@@ -2019,7 +2315,7 @@
     if (em) em.remove();
     const frag = document.createDocumentFragment();
     let inserted = 0;
-    sortItemsByTime(items).forEach((it) => {
+    sortItemsByTime(mergeTweets(items)).forEach((it) => {
       const id = it.tweet_id || it.id;
       if (!id || brSeenIds.has(String(id))) return;
       brSeenIds.add(String(id));
@@ -2193,7 +2489,8 @@
           else if (reset) showBrowseStatus('加载失败: ' + (d.message || '未知错误'), 'err');
           return;
         }
-        const items = d.items || [];
+        // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
+        const items = mergeTweets(d.items || []);
         // 定位前先等对账落地：锚点必须取服务端真相。否则本机旧锚点会被当成"当前位置"，
         // 而本设备刚抢占为主控，随后一滚动就把陈旧位置推回服务端、覆盖真正进度。
         if (syncP) { try { await syncP; } catch (_) {} }
@@ -2243,7 +2540,7 @@
       const r = await req(url);
       const d = await r.json();
       if (!d.success) break;
-      const items = d.items || [];
+      const items = mergeTweets(d.items || []);
       if (!items.length) { brCursor = null; break; }
       allItems = allItems.concat(items);
       let appended = 0;
@@ -2297,14 +2594,20 @@
   let srchCursorLatest = null;
   let srchAllItems = [];   // 当前展示的那一份（= 上面某一产品的引用副本）
 
-  function setSrchProduct(p) {
+  function setSrchProduct(p, opts) {
+    opts = opts || {};
     if (srchProduct === p) return;
     srchProduct = p;
     const topBtn = $('srch-prod-top');
     const latestBtn = $('srch-prod-latest');
     if (topBtn) topBtn.className = 'sm' + (p === 'Top' ? ' primary' : '');
     if (latestBtn) latestBtn.className = 'sm' + (p === 'Latest' ? ' primary' : '');
-    if (srchQuery) { renderSrchProduct(); resetSearchPos(); }  // 已有搜索时切模式只展示已缓存的另一份（不同内容集→位置回顶部）
+    // 排序（热门/最新）属于搜索参数的一部分，同步进 URL；用 replace，
+    // 避免连续切来切去把历史栈刷满。silent：仅改状态不重渲染（由调用方统一渲染）
+    if (!opts.silent) {
+      navigate({ name: 'search', params: searchRouteParams() }, { replace: true, silent: true });
+    }
+    if (srchQuery && !opts.silent) { renderSrchProduct(); resetSearchPos(); }  // 已有搜索时切模式只展示已缓存的另一份（不同内容集→位置回顶部）
   }
 
   async function fetchSearch(q, product, cursor) {
@@ -2359,8 +2662,9 @@
           fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
           fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
         ]);
-        srchTopItems = (topD && topD.items) || [];
-        srchLatestItems = (latestD && latestD.items) || [];
+        // 过总库：首页已缓存过的同一条推文不会在这里再存一份，只复用同一条记录
+        srchTopItems = mergeTweets((topD && topD.items) || []);
+        srchLatestItems = mergeTweets((latestD && latestD.items) || []);
         srchCursorTop = (topD && topD.next_cursor) || null;
         srchCursorLatest = (latestD && latestD.next_cursor) || null;
         if (!srchTopItems.length && !srchLatestItems.length) {
@@ -2393,7 +2697,7 @@
       pages++;
       try {
         const d = await fetchSearch(srchQuery, srchProduct, srchCursor);
-        const items = d.items || [];
+        const items = mergeTweets(d.items || []);
         if (!items.length) { srchCursor = null; break; }
         let appended = 0;
         sortItemsByTime(items).forEach((it) => {
@@ -2469,21 +2773,39 @@
 
   // 打开搜索视图：先与服务端对账，拿到「任一设备最近一次搜索」这份共享缓存再渲染；
   // 这是多设备同步的关键一步——必须 pull，否则只会读本地旧缓存（换设备看到的是别人早先的数据）。
-  async function restoreSearch() {
+  // opts.q / opts.tab 来自 URL：URL 指定的关键词若与共享缓存不同，**只对齐输入框、
+  // 绝不自动发请求**（搜索缓存只在用户点「搜索」时才刷新）。
+  async function restoreSearch(opts) {
+    opts = opts || {};
     if (!XSTATE) return;
     try { await XSTATE.pull(); } catch (_) {}
     let snap;
     try { snap = XSTATE.get('search:last'); } catch (_) { return; }
+    const wantQ = (opts.q || '').trim();
+    const wantTab = String(opts.tab || '').toLowerCase() === 'latest' ? 'Latest'
+      : (opts.tab ? 'Top' : null);
     if (!snap || !snap.q) {
+      if (wantQ && srchInput) srchInput.value = wantQ;
+      if (wantTab && wantTab !== srchProduct) setSrchProduct(wantTab, { silent: true });
       srchList.innerHTML = '<div class="bm-empty">输入关键词搜索 X 推文。</div>';
+      return;
+    }
+    if (wantQ && wantQ !== snap.q) {
+      // URL 与缓存内容不符：不拿旧关键词的结果冒充，避免「地址栏与页面内容不一致」
+      if (srchInput) srchInput.value = wantQ;
+      srchQuery = '';
+      srchTopItems = []; srchLatestItems = [];
+      srchCursorTop = null; srchCursorLatest = null;
+      srchList.innerHTML = `<div class="bm-empty">点「搜索」获取「${esc2(wantQ)}」的结果。</div>`;
       return;
     }
     srchInput.value = snap.q;
     srchQuery = snap.q;
-    srchTopItems = (snap.top || []).slice();
-    srchLatestItems = (snap.latest || []).slice();
+    srchTopItems = mergeTweets((snap.top || []).slice());
+    srchLatestItems = mergeTweets((snap.latest || []).slice());
     srchCursorTop = snap.cursorTop || null;
     srchCursorLatest = snap.cursorLatest || null;
+    if (wantTab && wantTab !== srchProduct) setSrchProduct(wantTab, { silent: true });
     renderSrchProduct();
     srchUserScrolled = false;   // 打开即尝试恢复上次搜索位置（与首页续读一致）
     restoreSearchScroll();
@@ -2492,7 +2814,10 @@
   function doSearch() {
     const q = (srchInput ? srchInput.value : '').trim();
     if (!q) return;
-    loadSearch(true);
+    // 只有点「搜索」按钮/回车才真正请求 X 刷新缓存；URL 进来不会走到这里。
+    Promise.resolve(loadSearch(true)).then(() => {
+      navigate({ name: 'search', params: { q: srchQuery || q, tab: srchProduct } }, { silent: true });
+    });
   }
   $('srch-btn').addEventListener('click', doSearch);
   srchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
@@ -2823,9 +3148,16 @@
     // 详情层会盖住整个面板，视频虽被遮住但解码与声音仍在继续（被遮挡不会自动
     // 暂停），表现为「推文都点开了，视频还在响」。
     if (_inlineVid) stopInlineVideo(_inlineVid);
-    // 打开详情层（压入历史以拦截浏览器后退）
-    if (!dtEl.classList.contains('active')) enterDrill('detail');
+    // 推文页 URL 中立（#/tweet/<id>）：不论从首页 / 搜索 / 收藏 / 历史 / 粘贴链接
+    // 进来，同一条推文都是同一个 URL，且不带任何来源参数。
+    const wasActive = dtEl.classList.contains('active');
+    if (!wasActive) enterDrill('detail', false);   // 历史项由下面的 navigate 压入
     dtEl.classList.add('active');
+    const wantHash = buildHash({ name: 'tweet', id: tweetId });
+    // 详情内跳到另一条推文（如点引用的原推）用 replace：详情始终只占一条历史
+    if (location.hash !== wantHash) {
+      navigate({ name: 'tweet', id: tweetId }, { silent: true, replace: wasActive });
+    }
     dtBody.innerHTML = '<div class="bm-empty">加载中…</div>';
     dtReplies.innerHTML = '';
     dtLoadmore.style.display = 'none';
@@ -2833,7 +3165,7 @@
     if (seed) {
       // 先用列表数据即时渲染，再拉取完整详情+评论区
       dtBody.innerHTML = '';
-      dtBody.appendChild(renderTweetDetailCard(seed));
+      dtBody.appendChild(renderTweetDetailCard(mergeTweet(seed)));
       dtReplies.innerHTML = '<div class="bm-empty">正在加载评论区…</div>';
     }
     try {
@@ -2844,10 +3176,11 @@
         return;
       }
       if (d.tweet) {
-        dtCurTweet = d.tweet;
+        // 详情是最完整的那一份：并入总库，顺带把列表里的同一条推文补全
+        dtCurTweet = mergeTweet(d.tweet);
         dtBody.innerHTML = '';
-        dtBody.appendChild(renderTweetDetailCard(d.tweet));
-        recordHistory(d.tweet);  // P1-7：记录浏览历史（fire-and-forget）
+        dtBody.appendChild(renderTweetDetailCard(dtCurTweet));
+        recordHistory(dtCurTweet);  // P1-7：记录浏览历史（fire-and-forget）
       }
       const replies = d.replies || [];
       dtReplies.innerHTML = replies.length ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
@@ -2903,7 +3236,7 @@
       if (!items.length) { hsList.innerHTML = '<div class="bm-empty">浏览过的推文会记录在这里，可回看。</div>'; return; }
       hsList.innerHTML = '';
       // 复用浏览卡渲染（含点开详情/收藏/下载），历史可回看
-      items.forEach((it) => hsList.appendChild(renderBrowseCard(it)));
+      mergeTweets(items).forEach((it) => hsList.appendChild(renderBrowseCard(it)));
     } catch (e) {
       hsList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -2956,19 +3289,11 @@
     loadCache();
   });
 
-  /* ---- 初始化：默认 tab 是浏览，打开即自动加载关注流（无需点刷新） ---- */
-  (function initAutoBrowse() {
-    // 不再等待父窗口推送 TOKEN（postMessage 时序不可靠，可能导致首次请求以空 token 发出）。
-    // req() 内部已改用 latestToken()（读 localStorage/sessionStorage），可直接发起。
-    // 延迟一帧确保 DOM 就绪（tabsEl / brList 等已初始化）。
-    setTimeout(() => {
-      const activeTab = tabsEl.querySelector('.tab.active');
-      if (activeTab && activeTab.dataset.view === 'browse' &&
-          brList && !brList.querySelector('.bm-card')) {
-        loadBrowse(true);
-      }
-    }, 0);
-  })();
+  /* ---- 初始化：首屏加载由启动路由（bootRoute）统一触发 ----
+     视图加载与 URL 落地是同一件事：bootRoute 依据深链/本地记忆决定初始页，
+     再由 switchView 拉起对应数据（首页即自动加载关注流，无需点刷新）。
+     这里不再单独触发一次加载，否则「深链到首页」会重复请求一次时间线。
+  */
 </script>
 </body>
 </html>
