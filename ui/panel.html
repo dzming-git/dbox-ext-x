@@ -1097,15 +1097,35 @@
         v.load();
         v.play().catch(() => {});
       };
+      // hls.js 的 fatal 错误**大多可以内置恢复**，标准处理是先 startLoad /
+      // recoverMediaError，而不是立刻销毁。此前一遇 fatal 就 destroy + 切 mp4，
+      // 会在分片网络抖动时把刚播起来的视频打断重载 —— 表现为「播 1 秒就闪一下
+      // 停住、再点又只播 1 秒」的循环。故先重试恢复，次数用尽才回退直链。
+      let recoverTries = 0;
+      const MAX_RECOVER = 3;
       hls.on(Hls.Events.ERROR, (_evt, data) => {
-        if (data && data.fatal) fallbackToMp4('hls-fatal');
+        if (!data || !data.fatal) return;
+        const T = (window.Hls && Hls.ErrorTypes) || {};
+        if (data.type === T.NETWORK_ERROR && recoverTries < MAX_RECOVER) {
+          recoverTries++;
+          try { hls.startLoad(); } catch (_) {}
+          return;
+        }
+        if (data.type === T.MEDIA_ERROR && recoverTries < MAX_RECOVER) {
+          recoverTries++;
+          try { hls.recoverMediaError(); } catch (_) {}
+          return;
+        }
+        fallbackToMp4('hls-fatal');
       });
-      // 启动超时兜底：N 秒内既没解析出清单也没产生可播放数据，同样回退 mp4。
-      // 覆盖「请求挂起不报错」这类静默卡死（表现为一直 0:00 却无任何错误）。
+      // 启动超时兜底：仅在「连一个字节都没收到」时才判定卡死并回退。
+      // 正在缓冲（已有 buffered 数据）或已经播起来的（currentTime>0）绝不能打断，
+      // 否则慢速网络下会被误判为卡死、平白重载（此前判断过宽，会误伤缓冲中的视频）。
       setTimeout(() => {
         if (fellBack) return;
-        const stalled = v.readyState < 2 && !(v.currentTime > 0);
-        if (stalled) fallbackToMp4('hls-timeout');
+        if (v.currentTime > 0) return;                 // 已播起来，不打断
+        const noData = (!v.buffered || v.buffered.length === 0) && v.readyState < 2;
+        if (noData) fallbackToMp4('hls-timeout');
       }, 8000);
     } else if (mp4) {
       v.src = mp4;
