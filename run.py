@@ -1330,6 +1330,32 @@ def _mention_name(tweet_legacy, handle):
     return None
 
 
+def _canonical_tweet_id(rt_legacy, fallback_id):
+    """扁平化 RT 的归一身份：一律取「被转发的原推」id。
+
+    X 的转推有两种表示：
+      · 嵌套原推（retweeted_status_*）—— 主体已换成原推，rest_id 就是原推 id；
+      · 扁平化 RT —— 只有正文 "RT @handle: ..."，没有嵌套原推对象，此时
+        rest_id 是**转发者那条 RT 自己的 id**，与原推不是同一个。
+
+    第二种若不纠正，同一条原推被不同的人转发就会各产生一个新 id（转发者 RT
+    的 id），于是同一份内容被当成多条全新推文缓存下来——这正是「别人转发了
+    一次就多缓存一份」的根因。这里从 legacy 里的 retweeted_status_id_str /
+    retweeted_status.id_str 取回原推 id，保证转推与原推同身份、同 URL。
+    """
+    tid = None
+    try:
+        rs = rt_legacy.get('retweeted_status') or {}
+        if not isinstance(rs, dict):
+            rs = {}
+        tid = (rt_legacy.get('retweeted_status_id_str')
+               or rs.get('id_str')
+               or rt_legacy.get('retweeted_status_id'))
+    except Exception:
+        tid = None
+    return str(tid or fallback_id or '')
+
+
 def _extract_quoted(qtweet):
     """从被引用的原推里提取作者/正文/媒体（用于「引用转发」嵌套展示）。
 
@@ -1473,8 +1499,15 @@ def _extract_bookmark_tweets(data):
                     and retweeted_by['screen_name'].lower() == author['screen_name'].lower()):
                 retweeted_by = None
             media = _normalize_media(legacy)
+            # 身份归一：扁平化 RT 的主体已是原推（正文去掉了 "RT @x:" 前缀、作者也
+            # 换成了原推 handle），身份就必须跟着用原推 id，否则转发者那条 RT 的
+            # rest_id 会让同一份内容被判成全新推文、再缓存一份。
+            if flat_rt_handle is not None:
+                tid = _canonical_tweet_id(legacy, result.get('rest_id'))
+            else:
+                tid = result.get('rest_id')
             out.append({
-                'tweet_id': result.get('rest_id'),
+                'tweet_id': tid,
                 'text': legacy.get('full_text', ''),
                 'created_at': legacy.get('created_at'),
                 'favorite_count': legacy.get('favorite_count'),
@@ -1484,7 +1517,7 @@ def _extract_bookmark_tweets(data):
                 'retweeted_by': retweeted_by,
                 'quoted': quoted,
                 'url': 'https://x.com/{}/status/{}'.format(
-                    author.get('screen_name') or 'unknown', result.get('rest_id')),
+                    author.get('screen_name') or 'unknown', tid),
             })
     return out
 
@@ -1656,8 +1689,12 @@ def _extract_tweet_obj(r):
     _q = _nested_tweet(r, 'quoted_status_results', 'quoted_status_result')
     if _q is not None:
         quoted = _extract_quoted(_q)
+    # 身份归一：扁平化 RT（详情接口常见）主体是原推，身份也取原推 id，
+    # 与浏览/收藏路径保持一致——同一条原推到处都只有一个 id、一份缓存。
+    tid = (_canonical_tweet_id(legacy, r.get('rest_id'))
+           if flat_rt_handle is not None else r.get('rest_id'))
     return {
-        'tweet_id': r.get('rest_id'),
+        'tweet_id': tid,
         'text': legacy.get('full_text', ''),
         'created_at': legacy.get('created_at'),
         'favorite_count': legacy.get('favorite_count'),
@@ -1670,7 +1707,8 @@ def _extract_tweet_obj(r):
         'retweeted_by': retweeted_by,
         'quoted': quoted,
         'media': _normalize_media(legacy),
-        'url': 'https://x.com/{}/status/{}'.format(u_screen or 'unknown', r.get('rest_id')),
+        'url': 'https://x.com/{}/status/{}'.format(
+            author.get('screen_name') or u_screen or 'unknown', tid),
     }
 
 
