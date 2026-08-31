@@ -1418,6 +1418,32 @@ def create_blueprint(host):
                     _media_dl_err.pop(url, None)
 
         _start_media_download(url, tmp_path, ext)
+
+        # m3u8 是「播放列表」文本索引，残缺即废：只下到一半的播放列表缺分片信息，
+        # hls.js 解析必然失败，表现为视频永久停在 0:00；而刷新时该文件已完整下载
+        # 并登记进缓存、走上面的 send_file 分支返回完整内容，于是「刷新后就能播」。
+        # 边下边播对 mp4/图片是对的（可渐进呈现），但对 m3u8 必须等下载完整再返回。
+        # m3u8 通常仅数 KB，等待完全可行。
+        if ext == '.m3u8':
+            final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
+            _mt0 = time.time()
+            while (time.time() - _mt0) < 20.0:
+                with _media_dl_lock:
+                    _m3u8_failed = url in _media_dl_err
+                if _m3u8_failed:
+                    break
+                if os.path.exists(final_path):
+                    try:
+                        resp = send_file(final_path, mimetype=ct, conditional=True,
+                                         max_age=86400)
+                        resp.headers['Cache-Control'] = 'private, max-age=86400'
+                        return resp
+                    except Exception:
+                        break
+                time.sleep(0.1)
+            # 超时/已失败：回落到既有的边下边播路径，保留原有降级行为
+            return _serve_media_partial(tmp_path, ct, request, url, ext)
+
         # 给下载线程一点启动时间：若已确定失败，返回 502 而不是 200 空流。
         # 流式响应一旦发出头就改不了状态码，浏览器 <img> 收到 200 空 body
         # 只会静默显示破图，既无法触发 onerror 重试也让用户以为是坏了。
