@@ -1082,51 +1082,6 @@
       v.addEventListener('webkitendfullscreen', sync);
       v._hls = hls;
       _inlineVid = { el: mediaEl, v, hls, close };
-      // HLS 加载失败必须有退路：此前只监听 MANIFEST_PARSED、不处理 ERROR，
-      // 一旦 m3u8 取不到（代理首次未命中、上游抖动、分片请求被掐），hls.js 静默失败、
-      // 视频永久停在 0:00，只有刷新整个页面让代理缓存命中才能播。
-      // 这里监听致命错误 → 销毁 hls 并回退直链 mp4。
-      let fellBack = false;
-      const fallbackToMp4 = (why) => {
-        if (fellBack || !mp4) return;
-        fellBack = true;
-        try { hls.destroy(); } catch (_) {}
-        v._hls = null;
-        if (_inlineVid && _inlineVid.el === mediaEl) _inlineVid.hls = null;
-        v.src = mp4;
-        v.load();
-        v.play().catch(() => {});
-      };
-      // hls.js 的 fatal 错误**大多可以内置恢复**，标准处理是先 startLoad /
-      // recoverMediaError，而不是立刻销毁。此前一遇 fatal 就 destroy + 切 mp4，
-      // 会在分片网络抖动时把刚播起来的视频打断重载 —— 表现为「播 1 秒就闪一下
-      // 停住、再点又只播 1 秒」的循环。故先重试恢复，次数用尽才回退直链。
-      let recoverTries = 0;
-      const MAX_RECOVER = 3;
-      hls.on(Hls.Events.ERROR, (_evt, data) => {
-        if (!data || !data.fatal) return;
-        const T = (window.Hls && Hls.ErrorTypes) || {};
-        if (data.type === T.NETWORK_ERROR && recoverTries < MAX_RECOVER) {
-          recoverTries++;
-          try { hls.startLoad(); } catch (_) {}
-          return;
-        }
-        if (data.type === T.MEDIA_ERROR && recoverTries < MAX_RECOVER) {
-          recoverTries++;
-          try { hls.recoverMediaError(); } catch (_) {}
-          return;
-        }
-        fallbackToMp4('hls-fatal');
-      });
-      // 启动超时兜底：仅在「连一个字节都没收到」时才判定卡死并回退。
-      // 正在缓冲（已有 buffered 数据）或已经播起来的（currentTime>0）绝不能打断，
-      // 否则慢速网络下会被误判为卡死、平白重载（此前判断过宽，会误伤缓冲中的视频）。
-      setTimeout(() => {
-        if (fellBack) return;
-        if (v.currentTime > 0) return;                 // 已播起来，不打断
-        const noData = (!v.buffered || v.buffered.length === 0) && v.readyState < 2;
-        if (noData) fallbackToMp4('hls-timeout');
-      }, 8000);
     } else if (mp4) {
       v.src = mp4;
       v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
@@ -1691,15 +1646,8 @@
     const mediaHtml = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
-        // 媒体对象有两个生产者，字段不统一，两种都要认（与详情页同一套算法）：
-        //   时间线 GraphQL：url = m3u8 流，mp4 = 直链
-        //   详情 _normalize_media：url = mp4，且没有 mp4 键
-        // 必须保留 m.mp4 直链作为兜底：新视频（时间线）url 是 m3u8，
-        // 若只认 url 会把 mp4 直链丢掉，HLS 一旦加载受阻就没有任何退路、永久卡在 0:00。
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
-        const mp4 = (m.mp4 && !String(m.mp4).includes('.m3u8'))
-          ? mediaUrl(m.mp4, 'video')
-          : ((!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '');
+        const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
@@ -2008,15 +1956,8 @@
     const html = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
-        // 媒体对象有两个生产者，字段不统一，两种都要认（与详情页同一套算法）：
-        //   时间线 GraphQL：url = m3u8 流，mp4 = 直链
-        //   详情 _normalize_media：url = mp4，且没有 mp4 键
-        // 必须保留 m.mp4 直链作为兜底：新视频（时间线）url 是 m3u8，
-        // 若只认 url 会把 mp4 直链丢掉，HLS 一旦加载受阻就没有任何退路、永久卡在 0:00。
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
-        const mp4 = (m.mp4 && !String(m.mp4).includes('.m3u8'))
-          ? mediaUrl(m.mp4, 'video')
-          : ((!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '');
+        const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
