@@ -58,7 +58,7 @@
   .media .thumb .placeholder { font-size: 12px; color: #999; text-align: center; padding: 8px; }
   .media .play { position: absolute; inset: 0; margin: auto; width: 42px; height: 42px; border-radius: 50%; border: none; background: rgba(0,0,0,.45); color: #fff; font-size: 17px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding-left: 3px; }
   .media .play:hover { background: rgba(29,155,240,.85); }
-  .media video { width: 100%; aspect-ratio: 16 / 10; background: #000; display: block; }
+  .media video { width: 100%; max-height: 70vh; object-fit: contain; background: #000; display: block; }
   .media .note { position: absolute; inset: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 12px; display: flex; align-items: center; justify-content: center; text-align: center; padding: 10px; }
   .media .meta { padding: 7px 10px; font-size: 12px; color: #555; display: flex; align-items: center; gap: 6px; }
   .media .meta input { accent-color: #1d9bf0; }
@@ -125,7 +125,7 @@
   .dt-text { font-size: 16px; line-height: 1.6; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 12px; }
   .dt-media { border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
   .dt-media img { width: 100%; display: block; }
-  .dt-media video { width: 100%; border-radius: 12px; }
+  .dt-media video { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 12px; display: block; background: #000; }
   /* 详情页视频：与浏览卡片同构（封面 + ▶，点按原地点播走 hls.js）。
      .bm-media / .bm-play / .bm-vclose 的样式都定义在 .bm-card 作用域下，详情页
      够不着，必须自带一份，否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
