@@ -457,13 +457,29 @@ def create_blueprint(host):
             start = int(rm.group(1))
             end = int(rm.group(2)) if rm.group(2) else None
             waited = 0.0
-            while not os.path.exists(tmp_path) and waited < 30:
+            # 必须等 .part「已有足够字节」，而不是只等文件出现。
+            # 下载线程是在连接建立后才 open(tmp_path,'wb')，文件被创建的瞬间 size 仍为 0，
+            # 首个 64KB chunk 要等网络送达；而 <video>/<img> 的首个请求必带 Range: bytes=0-。
+            # 此前只等 os.path.exists()，于是「文件已建、字节未到」这段窗口（慢代理/大文件
+            # 可达数秒）必然落到下面的 cur==0 分支返回 416 → 视频黑屏停在 0:00（图片则破图）。
+            # 刷新后后台线程早已下完并登记 LRU 缓存、走 send_file 分支返回完整内容，
+            # 于是「刷新后就好了」——与 m3u8 的同类 bug 完全同源。
+            while waited < 30:
                 if url in _media_dl_err:
                     return jsonify({'success': False, 'message': '代理失败'}), 502
+                try:
+                    cur = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                except OSError:
+                    cur = 0
+                if cur > start:
+                    break
                 time.sleep(0.1); waited += 0.1
             if url in _media_dl_err and not os.path.exists(tmp_path):
                 return jsonify({'success': False, 'message': '代理失败'}), 502
-            cur = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+            try:
+                cur = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+            except OSError:
+                cur = 0
             if cur == 0 or start >= cur:
                 resp = Response(status=416)
                 resp.headers['Content-Range'] = 'bytes */%d' % cur
@@ -1447,17 +1463,44 @@ def create_blueprint(host):
         # 给下载线程一点启动时间：若已确定失败，返回 502 而不是 200 空流。
         # 流式响应一旦发出头就改不了状态码，浏览器 <img> 收到 200 空 body
         # 只会静默显示破图，既无法触发 onerror 重试也让用户以为是坏了。
+        #
+        # 视频（mp4）还要多等一层：mp4 的 moov atom（元数据）通常在文件开头几十 KB，
+        # 此前只等「有 1 字节」就放行，于是 Content-Range 把资源总长谎报成当时已下的
+        # 几 KB，播放器解析不出 moov → 黑屏停在 0:00；刷新时文件早已下完并登记缓存、
+        # 走上面的 send_file 分支返回完整内容，于是「刷新后就能播」（与 m3u8 同源）。
+        _final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
+        _min_bytes = 131072 if ext == '.mp4' else 1      # 视频等够 128KB 头部再放行
         _t0 = time.time()
-        while (time.time() - _t0) < 3.0:
+        _last_sz = -1
+        _stable = 0.0
+        while (time.time() - _t0) < 8.0:
             with _media_dl_lock:
                 _failed = url in _media_dl_err
             if _failed:
                 return jsonify({'success': False, 'message': '代理失败'}), 502
-            try:
-                if os.path.getsize(tmp_path) > 0:
+            # 已下完并登记：直接返回完整文件（真实长度，播放器能正确解析与拖动）
+            if os.path.exists(_final_path):
+                try:
+                    resp = send_file(_final_path, mimetype=ct, conditional=True,
+                                     max_age=86400)
+                    resp.headers['Cache-Control'] = 'private, max-age=86400'
+                    return resp
+                except Exception:
                     break
+            try:
+                _sz = os.path.getsize(tmp_path)
             except OSError:
-                pass
+                _sz = 0
+            if _sz >= _min_bytes:
+                break
+            # 小文件：大小连续 300ms 无增长即认为已下完，避免白白空等到 8 秒超时
+            if _sz > 0 and _sz == _last_sz:
+                _stable += 0.1
+                if _stable >= 0.3:
+                    break
+            else:
+                _stable = 0.0
+            _last_sz = _sz
             time.sleep(0.1)
         return _serve_media_partial(tmp_path, ct, request, url, ext)
 
