@@ -1906,6 +1906,19 @@
     });
   }
 
+  // 以推文为单位重新拉取完整内容（正文+媒体）并原地更新卡片：用于卡片
+  // 「重新获取」按钮，确保详情页补全过的内容也能回流到列表，而不是只刷媒体。
+  async function fetchTweetAndUpdateCard(tid, card) {
+    if (!tid || !card) return;
+    try {
+      const r = await req(`${API}/tweet/${encodeURIComponent(tid)}`);
+      const d = await r.json();
+      if (!d.success || !d.tweet) return;
+      const item = mergeTweet(d.tweet);
+      if (card.parentNode) card.replaceWith(renderBrowseCard(item));
+    } catch (_) {}
+  }
+
   // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
   function cardMediaInner(mediaList) {
     const medias = (mediaList || []).slice(0, 4);
@@ -2082,12 +2095,17 @@
         .then((ok) => { b.textContent = ok ? '已下载 ✓' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
         .catch(() => { b.textContent = '下载失败'; downloadedTweetIds.delete(t); b.disabled = false; });
     }));
-    // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
+    // 重新获取：以推文为单位重新拉取完整内容（正文+媒体），确保列表里旧的
+    // 截断/缺图内容能被详情页补全过的全文覆盖，而不是只刷新媒体。
     card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
-      reloadCardMedia(card);
+      const tid = b.dataset.tid;
       b.textContent = '获取中…';
-      setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
+      b.disabled = true;
+      fetchTweetAndUpdateCard(tid, card).finally(() => {
+        b.disabled = false;
+        setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1200);
+      });
     }));
     return card;
   }
@@ -2137,13 +2155,17 @@
       TWEET_STORE.set(id, rec);
       return rec;
     }
-    // 已有记录：只补全缺失/更完整的字段，不覆盖已有内容（先到为准，避免
-    // 列表里的精简数据把详情拉到的完整数据冲掉）
+    // 已有记录：补全缺失字段，并以「更完整」为准覆盖——正文取更长的一份
+    // （列表精简/截断版不能把详情拉到的全文冲掉，反之详情全文也不能被更早
+    // 进来的截断版钉死），媒体等多取到的那一份也覆盖；其余字段维持先到为准，
+    // 避免无关字段互相覆盖。这样才能让详情页补全过的内容回流到列表缓存。
     for (const k of Object.keys(t)) {
       const nv = t[k], ov = prev[k];
       if (nv == null || nv === '') continue;
       if (ov == null || ov === '' || (Array.isArray(ov) && !ov.length)) {
         prev[k] = nv;
+      } else if (k === 'text' && typeof nv === 'string' && typeof ov === 'string' && nv.length > ov.length) {
+        prev[k] = nv;   // 正文以更长（更完整）为准
       } else if (Array.isArray(nv) && Array.isArray(ov) && nv.length > ov.length) {
         prev[k] = nv;   // 媒体等多取到的那一份更完整
       }
@@ -2317,7 +2339,22 @@
     let inserted = 0;
     sortItemsByTime(mergeTweets(items)).forEach((it) => {
       const id = it.tweet_id || it.id;
-      if (!id || brSeenIds.has(String(id))) return;
+      if (!id) return;
+      if (brSeenIds.has(String(id))) {
+        // 已渲染过的卡片：若本次拉到的正文/媒体更完整（如详情页补全、或修复后
+        // 后端返回全文），原地更新该卡，避免「缓存不归一、列表还是旧的」。
+        const old = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(id))}"]`);
+        if (old) {
+          const oldText = (old.querySelector('.text') || {}).textContent || '';
+          const newText = it.text || '';
+          const oldMedia = old.querySelectorAll('.media img, .media video').length;
+          const newMedia = (it.media || []).length;
+          if (newText.length > oldText.length || newMedia > oldMedia) {
+            old.replaceWith(renderBrowseCard(it));
+          }
+        }
+        return;
+      }
       brSeenIds.add(String(id));
       frag.appendChild(renderBrowseCard(it));
       inserted++;
