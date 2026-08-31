@@ -119,6 +119,15 @@
   .rt-note .rt-avatar { width: 16px; height: 16px; border-radius: 50%; object-fit: cover; background: #e9eef2; flex: 0 0 auto; }
   .rt-note b { color: #536471; font-weight: 600; }
   .rt-note .rt-handle { color: #8899a6; font-weight: 400; }
+  /* 评论（回复）上下文条：说明这是回复谁，并给出「查看完整帖子」入口。
+     搜索常直接搜到评论，点开后需要能回到上下文里的原贴。 */
+  .dt-reply-ctx { display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 8px; padding: 6px 10px; border-radius: 8px;
+    background: #f0f7ff; border: 1px solid #cfe6fb; font-size: 12px; color: #4a6572; }
+  .dt-reply-ctx-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dt-goto-parent { flex: 0 0 auto; border: 1px solid #1d9bf0; background: #1d9bf0;
+    color: #fff; border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .dt-goto-parent:hover { filter: brightness(1.06); }
   .dt-name { font-weight: 600; font-size: 15px; color: #0f1419; }
   .dt-handle { color: #536471; font-size: 13px; }
   .dt-time { color: #8899a6; font-size: 13px; margin-left: auto; }
@@ -2082,6 +2091,17 @@
     return `<div class="rt-note"><span class="rt-icon">↻</span>${av}${who}${at} 转发</div>`;
   }
 
+  // 评论（回复）的上下文提示：搜索经常直接搜到评论本身，点开后用户需要回到
+  // 被回复的完整帖子。这里给出「↩ 回复 @xxx」说明 + 「查看完整帖子」入口。
+  function replyContextHtml(irt) {
+    const handle = (irt && irt.screen_name) || '';
+    const who = handle ? `@${esc2(handle)}` : '某条帖子';
+    return `<div class="dt-reply-ctx">`
+      + `<span class="dt-reply-ctx-label">↩ 回复 ${who}</span>`
+      + `<button class="dt-goto-parent" type="button">查看完整帖子</button>`
+      + `</div>`;
+  }
+
   // 引用转发（quote）的嵌套卡片 HTML：含头像/名字/正文/媒体
   function quotedHtml(q) {
     const a = (q && q.author) || {};
@@ -3460,6 +3480,7 @@
     card.className = 'dt-card';
     card.innerHTML = `
       ${t.retweeted_by ? rtNoteHtml(t.retweeted_by) : ''}
+      ${t.in_reply_to ? replyContextHtml(t.in_reply_to) : ''}
       <div class="dt-head">
         ${a.avatar ? `<img class="dt-avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
@@ -3491,6 +3512,16 @@
         playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);
       });
     });
+    // 「查看完整帖子」：本条是评论（回复）时，跳到被回复的原贴详情。
+    // 搜索常直接搜到评论本身，用户点开后需要回到上下文里的完整帖子；
+    // openTweetDetail 会压入历史，看完可后退返回这条评论。
+    const gotoParent = card.querySelector('.dt-goto-parent');
+    if (gotoParent && t.in_reply_to && t.in_reply_to.tweet_id) {
+      gotoParent.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openTweetDetail(t.in_reply_to.tweet_id, null);
+      });
+    }
     // 引用转发：原贴也以嵌套卡片呈现（头像/@id/正文/媒体），点卡片打开原贴详情
     if (t.quoted) {
       wireMediaBlock(card.querySelector('.quoted'), t.quoted.media || []);
@@ -3577,6 +3608,16 @@
         <div class="rtext">${esc2(rp.text || '')}</div>
         ${thumb}
       </div>`;
+    // 回复本身也是一条推文：点开可看它自己的详情（若它也是评论，就能继续
+    // 通过「查看完整帖子」追溯到被回复的原帖）。此前未绑事件＝点不动。
+    if (rp.tweet_id) {
+      div.dataset.tid = rp.tweet_id;
+      div.style.cursor = 'pointer';
+      div.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openTweetDetail(rp.tweet_id, rp);
+      });
+    }
     return div;
   }
 
