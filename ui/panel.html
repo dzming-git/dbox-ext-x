@@ -1171,8 +1171,12 @@
       loadHistory();
     } else if (v === 'cache') {
       loadCache();
+    } else if (v === 'search') {
+      // 先秒开本地缓存（上次搜索结果），没有再提示去搜索；刷新/换设备不再空白
+      if (!srchList.querySelector('.bm-card')) restoreSearch();
     } else if (v === 'bookmarks') {
-      if (!bmXList.querySelector('.bm-card') && !bmShowingFolder) loadXBookmarks();
+      // 先秒开本地缓存（X 拉取失败也不会空白），需要最新再点「从 X 同步收藏」
+      if (!bmXList.querySelector('.bm-card') && !bmShowingFolder) restoreBookmarks();
     }
   }
 
@@ -1381,9 +1385,20 @@
       if (!all.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
       bmXList.innerHTML = '';
       all.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+      if (XSTATE) try { XSTATE.set('bm:list', all.slice(0, 600), { strategy: 'lww' }); } catch (_) {}
     } catch (e) {
       if (!all.length) bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
+  }
+
+  // 收藏列表本地缓存 + 多设备同步：打开即秒开，不必每次都从 X 重拉（X 拉取失败也不空白）
+  function restoreBookmarks() {
+    if (!XSTATE || bmShowingFolder || bmXList.querySelector('.bm-card')) return;
+    let cached;
+    try { cached = XSTATE.get('bm:list'); } catch (_) { return; }
+    if (!cached || !cached.length) return;
+    bmXList.innerHTML = '';
+    cached.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
   }
 
   async function loadCollections() {
@@ -2069,6 +2084,7 @@
   let srchSeenIds = new Set();
   let srchQuery = '';
   let srchProduct = 'Top';  // 'Top' 热门 / 'Latest' 最新
+  let srchAllItems = [];   // 当前搜索已加载的全部条目（用于本地缓存 + 多设备同步）
 
   function setSrchProduct(p) {
     if (srchProduct === p) return;
@@ -2105,8 +2121,10 @@
           return;
         }
         const items = d.items || [];
+        const ch = $('srch-cache-hint'); if (ch) ch.remove();  // 真实结果到达，移除缓存提示
         srchList.innerHTML = '';
         srchSeenIds.clear();
+        srchAllItems = [];
         srchCursor = null;
         if (!items.length) srchList.innerHTML = '<div class="bm-empty">没有搜到相关推文。</div>';
         let i = 0;
@@ -2114,6 +2132,7 @@
           const id = it.tweet_id || it.id;
           if (!id || srchSeenIds.has(String(id))) return;
           srchSeenIds.add(String(id));
+          srchAllItems.push(it);
           const card = renderBrowseCard(it);
           card.classList.add('card-enter');
           card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
@@ -2122,6 +2141,7 @@
         });
         srchCursor = d.next_cursor || null;
         srchLoadmore.style.display = srchCursor ? '' : 'none';
+        cacheSearch();   // 落本地缓存并同步其它设备，刷新/换设备不再空白
       } else {
         await loadSearchOlderBatch();
       }
@@ -2154,6 +2174,7 @@
         const id = it.tweet_id || it.id;
         if (!id || srchSeenIds.has(String(id))) return;
         srchSeenIds.add(String(id));
+        srchAllItems.push(it);
         const card = renderBrowseCard(it);
         card.classList.add('card-enter');
         card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
@@ -2161,6 +2182,7 @@
         appended++; appendedTotal++;
       });
       srchCursor = d.next_cursor || null;
+      cacheSearch();
       if (appended === 0) {
         if (!srchCursor) break;
         continue;
@@ -2168,6 +2190,48 @@
       if (appendedTotal >= BATCH_TARGET) break;
     }
     srchLoadmore.style.display = srchCursor ? '' : 'none';
+  }
+
+  // 搜索结果本地缓存 + 多设备同步：store 用框架 XSTATE（lww 策略），刷新/换设备不再空白
+  function cacheSearch() {
+    if (!XSTATE || !srchQuery) return;
+    try {
+      XSTATE.set('search:last', {
+        q: srchQuery, product: srchProduct,
+        items: srchAllItems.slice(0, 200), cursor: srchCursor, ts: Date.now()
+      }, { strategy: 'lww' });
+    } catch (_) {}
+  }
+
+  function restoreSearch() {
+    if (!XSTATE || srchList.querySelector('.bm-card')) return;  // 已有内容不覆盖
+    let snap;
+    try { snap = XSTATE.get('search:last'); } catch (_) { return; }
+    if (!snap || !snap.items || !snap.items.length) return;
+    srchInput.value = snap.q || '';
+    srchQuery = snap.q || '';
+    srchProduct = snap.product || 'Top';
+    const topBtn = $('srch-prod-top'), latestBtn = $('srch-prod-latest');
+    if (topBtn) topBtn.className = 'sm' + (srchProduct === 'Top' ? ' primary' : '');
+    if (latestBtn) latestBtn.className = 'sm' + (srchProduct === 'Latest' ? ' primary' : '');
+    srchAllItems = (snap.items || []).slice();
+    srchCursor = snap.cursor || null;
+    srchSeenIds = new Set(srchAllItems.map((it) => String(it.tweet_id || it.id)));
+    srchList.innerHTML = '';
+    let i = 0;
+    srchAllItems.forEach((it) => {
+      const card = renderBrowseCard(it);
+      card.classList.add('card-enter');
+      card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
+      srchList.appendChild(card);
+      i++;
+    });
+    srchLoadmore.style.display = srchCursor ? '' : 'none';
+    // 顶部提示：当前展示的是本地缓存，可点刷新按钮获取最新
+    const hint = document.createElement('div');
+    hint.id = 'srch-cache-hint';
+    hint.innerHTML = '<button disabled style="width:100%;padding:8px;border:none;border-radius:9px;font-size:12.5px;cursor:default;background:#eef5fd;color:#1d9bf0">📦 本地缓存 ' + srchAllItems.length + ' 条 · 点刷新按钮获取最新</button>';
+    srchList.insertBefore(hint, srchList.firstChild);
   }
 
   function doSearch() {
