@@ -302,6 +302,173 @@ def create_blueprint(host):
             _cache_evict()
             return path
 
+    # ---------- 媒体边下边播（未缓存完也能拖动进度条） ----------
+    # 同一 url 只起一个后台下载线程写 .part；响应从 .part 渐进读取并支持 Range，
+    # 这样视频在下载途中也能拖动进度条（拖动即发 Range 请求，按当前已下大小截取）；
+    # 完整下载完登记 LRU 缓存，之后走上面的 send_file 分支（同样支持 Range）。
+    _media_dl_lock = threading.Lock()
+    _media_dl_active = set()
+    _media_dl_err = set()
+
+    def _media_ext_ct(url, mtype):
+        """按 URL 后缀 / 显式 type 推断扩展名与 mimetype（用于边下边播的响应类型）。"""
+        path_ext = os.path.splitext(urlparse(url).path)[1].lower()
+        if path_ext == '.m3u8':
+            ext = '.m3u8'
+        elif mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
+            ext = path_ext if path_ext else '.mp4'
+        elif mtype == 'image' or path_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
+            ext = path_ext if path_ext else '.jpg'
+        elif path_ext:
+            ext = path_ext
+        else:
+            ext = '.mp4' if mtype == 'video' else '.jpg'
+        ct = ('application/vnd.apple.mpegurl' if ext == '.m3u8'
+              else 'video/mp4' if ext == '.mp4' else mimetypes.guess_type(url)[0] or 'image/jpeg')
+        return ext, ct
+
+    def _start_media_download(url, tmp_path, ext):
+        """后台把上游 twimg 读到 .part，完成后登记 LRU 缓存；同一 url 并发只跑一个线程。"""
+        with _media_dl_lock:
+            if url in _media_dl_active:
+                return
+            _media_dl_active.add(url)
+            _media_dl_err.discard(url)
+        def run():
+            try:
+                cookie = _x_cookie_header()
+                headers = xrun.build_headers(cookie, with_bearer=True)
+                opener = xrun.make_opener(None)
+                # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket
+                xrun._apply_socks()
+                try:
+                    up = opener.open(urllib.request.Request(url, headers=headers), timeout=90)
+                finally:
+                    xrun._restore_socks()
+                with open(tmp_path, 'wb') as f:
+                    while True:
+                        chunk = up.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                try:
+                    up.close()
+                except Exception:
+                    pass
+                if os.path.getsize(tmp_path) > 0:
+                    _cache_put_file(url, tmp_path, ext)
+            except Exception:
+                # 下载失败：清理半成品，别让 .part 污染缓存
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+                with _media_dl_lock:
+                    _media_dl_err.add(url)
+            finally:
+                with _media_dl_lock:
+                    _media_dl_active.discard(url)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _serve_media_partial(tmp_path, ct, req, url):
+        """从正在增长的 .part 渐进读取并响应：支持 Range（进度条可拖动）；
+        未带 Range 的首次请求走分块流（连接保持，边下边播）。"""
+        range_header = (req.headers.get('Range') or '').strip()
+        rm = re.match(r'bytes=(\d+)-(\d*)$', range_header)
+        if rm:
+            start = int(rm.group(1))
+            end = int(rm.group(2)) if rm.group(2) else None
+            waited = 0.0
+            while not os.path.exists(tmp_path) and waited < 30:
+                if url in _media_dl_err:
+                    return jsonify({'success': False, 'message': '代理失败'}), 502
+                time.sleep(0.1); waited += 0.1
+            if url in _media_dl_err and not os.path.exists(tmp_path):
+                return jsonify({'success': False, 'message': '代理失败'}), 502
+            cur = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+            if cur == 0 or start >= cur:
+                resp = Response(status=416)
+                resp.headers['Content-Range'] = 'bytes */%d' % cur
+                resp.headers['Accept-Ranges'] = 'bytes'
+                return resp
+            actual_end = end if end is not None else cur - 1
+            if actual_end >= cur:
+                actual_end = cur - 1
+            total = actual_end - start + 1
+
+            def gen():
+                try:
+                    f = open(tmp_path, 'rb')
+                except Exception:
+                    return
+                try:
+                    sent = 0
+                    while sent < total:
+                        if not os.path.exists(tmp_path):
+                            return
+                        avail = os.path.getsize(tmp_path)
+                        readable = avail - (start + sent)
+                        if readable <= 0:
+                            time.sleep(0.05)
+                            continue
+                        to_read = min(total - sent, readable)
+                        f.seek(start + sent)
+                        chunk = f.read(to_read)
+                        if not chunk:
+                            time.sleep(0.05)
+                            continue
+                        sent += len(chunk)
+                        yield chunk
+                finally:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+            resp = Response(stream_with_context(gen()), status=206, mimetype=ct)
+            resp.headers['Accept-Ranges'] = 'bytes'
+            resp.headers['Content-Range'] = 'bytes %d-%d/%d' % (start, start + total - 1, cur)
+            resp.headers['Content-Length'] = str(total)
+            resp.headers['Cache-Control'] = 'private, max-age=86400'
+            resp.headers['Content-Disposition'] = 'inline'
+            return resp
+
+        # 未带 Range：分块流，连接保持到下载完成（或客户端断开 / 下载失败）
+        def gen():
+            waited = 0.0
+            while not os.path.exists(tmp_path) and waited < 30:
+                if url in _media_dl_err:
+                    return
+                time.sleep(0.1); waited += 0.1
+            try:
+                f = open(tmp_path, 'rb')
+            except Exception:
+                return
+            try:
+                pos = 0
+                while True:
+                    if not os.path.exists(tmp_path):
+                        break  # 下载完成（.part 已改名）或失败被清理
+                    cur = os.path.getsize(tmp_path)
+                    if pos < cur:
+                        f.seek(pos)
+                        chunk = f.read(cur - pos)
+                        if chunk:
+                            pos += len(chunk)
+                            yield chunk
+                            continue
+                    time.sleep(0.1)
+            finally:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+        resp = Response(stream_with_context(gen()), mimetype=ct)
+        resp.headers['Accept-Ranges'] = 'bytes'
+        resp.headers['Cache-Control'] = 'private, max-age=86400'
+        resp.headers['Content-Disposition'] = 'inline'
+        return resp
+
     # ---------- 本地 X 收藏夹（SQLite，独立于 X 账号，持久化快照） ----------
     _folder_db_path = os.path.join(host.data_dir, 'x_bookmarks.db')
     _folder_lock = threading.Lock()
@@ -1092,79 +1259,17 @@ def create_blueprint(host):
                 resp.headers['Cache-Control'] = 'private, max-age=86400'
                 return resp
 
-        # 未命中：流式转发上游并顺带落缓存。
-        # 关键：不能先把整个文件读进内存再返回——大视频要等几十秒才出第一个字节，
-        # 前端就一直转圈，且整份字节驻留内存容易把进程撑爆。改为边收边发，浏览器
-        # 拿到前几片就能起播；完整读完后登记缓存，之后走 send_file（支持 Range）。
-        cookie = _x_cookie_header()
-        try:
-            headers = xrun.build_headers(cookie, with_bearer=True)
-            opener = xrun.make_opener(None)
-            # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket，
-            # 避免长时间占用全局状态影响并发的其它请求（流式传输会持续一段时间）。
-            xrun._apply_socks()
-            try:
-                up = opener.open(urllib.request.Request(url, headers=headers), timeout=90)
-            finally:
-                xrun._restore_socks()
-        except Exception as e:
-            return jsonify({'success': False, 'message': '代理失败: ' + str(e)}), 502
-
-        # 判断扩展名：URL 后缀 / 显式 type 优先，其次上游 Content-Type
-        #（无法再按 magic bytes 探测——数据不再整体读入内存）。
-        # m3u8 必须最先判定：它是文本播放列表而非 mp4，误存成 .mp4 后命中时会按
-        # video/mp4 返回，hls.js 解析不出分片。
-        up_ct = ((up.headers.get('Content-Type') or '').split(';')[0].strip().lower()
-                 if hasattr(up, 'headers') else '')
-        path_ext = os.path.splitext(urlparse(url).path)[1].lower()
-        if path_ext == '.m3u8' or 'mpegurl' in up_ct:
-            ext = '.m3u8'
-        elif mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
-            ext = path_ext if path_ext else '.mp4'
-        elif mtype == 'image' or path_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
-            ext = path_ext if path_ext else '.jpg'
-        elif up_ct.startswith('image/'):
-            ext = mimetypes.guess_extension(up_ct) or '.jpg'
-        elif 'mp4' in up_ct or up_ct.startswith('video/'):
-            ext = '.mp4'
-        else:
-            ext = '.jpg'
-        ct = up_ct or mimetypes.guess_type(url)[0] or (
-            'video/mp4' if ext == '.mp4' else 'image/jpeg')
-
+        # 未命中：后台把上游读到 .part，响应从 .part 渐进读取并支持 Range，
+        # 实现「边下边播 + 进度条可拖动」。完整下载完登记 LRU 缓存，之后走上面的
+        # send_file 分支（同样支持 Range）。缓存命中（已下完）走上面的 send_file 分支。
+        ext, ct = _media_ext_ct(url, mtype)
         tmp_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext + '.part')
-
-        def _iter_and_cache():
-            total = 0
-            try:
-                with open(tmp_path, 'wb') as f:
-                    while True:
-                        chunk = up.read(65536)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        total += len(chunk)
-                        yield chunk
-            except Exception:
-                # 传输中断（含客户端提前断开）：丢弃半成品，别让 .part 污染缓存
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-                return
-            finally:
-                try:
-                    up.close()
-                except Exception:
-                    pass
-            # 只有完整读完才登记缓存，保证缓存里不会是半截文件
-            if total:
-                _cache_put_file(url, tmp_path, ext)
-
-        resp = Response(stream_with_context(_iter_and_cache()), mimetype=ct)
-        resp.headers['Cache-Control'] = 'private, max-age=86400'
-        resp.headers['Content-Disposition'] = 'inline'
-        return resp
+        # 同一 url 已失败过：直接报错，避免再次无谓等待
+        with _media_dl_lock:
+            if url in _media_dl_err:
+                return jsonify({'success': False, 'message': '代理失败（已记录）'}), 502
+        _start_media_download(url, tmp_path, ext)
+        return _serve_media_partial(tmp_path, ct, request, url)
 
     @bp.route('/media/cache', methods=['GET', 'DELETE'])
     @host.login_required
