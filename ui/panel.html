@@ -2968,7 +2968,16 @@
     if (!opts.silent) {
       navigate({ name: 'search', params: searchRouteParams() }, { replace: true, silent: true });
     }
-    if (srchQuery && !opts.silent) { renderSrchProduct(); resetSearchPos(); }  // 已有搜索时切模式只展示已缓存的另一份（不同内容集→位置回顶部）
+    // 已有搜索时切模式只展示已缓存的另一份（不同内容集→位置回顶部）。
+    // 但【搜索进行中不要渲染】：此时 srchTopItems / srchLatestItems 仍是上一次
+    // 搜索的旧数据（本次结果要等 Promise.all 返回才写入），此刻渲染会把
+    // 「正在搜索…」直接顶成旧缓存，用户便以为「切换模式打断了搜索」。
+    // 只切按钮状态与 URL 即可——Top/Latest 是并行爬取的两份，loadSearch 收尾时
+    // 会按新的 product 渲染本次结果，切到哪边都有正确数据，无需重新搜索。
+    if (srchQuery && !opts.silent && !srchLoading) {
+      renderSrchProduct();
+      resetSearchPos();
+    }
   }
 
   async function fetchSearch(q, product, cursor) {
@@ -3076,12 +3085,16 @@
   async function loadSearchOlderBatch() {
     const BATCH_TARGET = 40;
     const MAX_PAGES = 6;
-    const targetArr = srchProduct === 'Top' ? srchTopItems : srchLatestItems;
+    // 固定本次批量所用的模式：翻页途中用户可能切换热门/最新，若循环内继续读
+    // srchProduct，会用新模式发请求、结果却 push 进旧模式的 targetArr，游标也会
+    // 存错位置（串味）。固定住，让本次批次完整跑完。
+    const product = srchProduct;
+    const targetArr = product === 'Top' ? srchTopItems : srchLatestItems;
     let appendedTotal = 0, pages = 0;
     while (srchCursor && pages < MAX_PAGES) {
       pages++;
       try {
-        const d = await fetchSearch(srchQuery, srchProduct, srchCursor);
+        const d = await fetchSearch(srchQuery, product, srchCursor);
         const items = mergeTweets(d.items || []);
         if (!items.length) { srchCursor = null; break; }
         tweetCachePut(items);
@@ -3098,7 +3111,7 @@
           appended++; appendedTotal++;
         });
         srchCursor = d.next_cursor || null;
-        if (srchProduct === 'Top') srchCursorTop = srchCursor; else srchCursorLatest = srchCursor;
+        if (product === 'Top') srchCursorTop = srchCursor; else srchCursorLatest = srchCursor;
         cacheSearch();
         if (appended === 0) { if (!srchCursor) break; continue; }
         if (appendedTotal >= BATCH_TARGET) break;
