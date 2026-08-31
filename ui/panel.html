@@ -2304,6 +2304,19 @@
     // 同步本地内存：XTWEETS 是 feed() 实例，其内部缓存已被 SDK.set 更新；
     // 但 feed().items() 可能返回旧快照，这里显式 merge 确保一致性。
     try { XTWEETS.merge(clean); } catch (_) {}
+    // 同步清理 feed:main 成员列表里的孤儿 id（指向已被清掉内容的 id）。
+    // 只清内容不清成员的话，这些 id 会一直占着位置，随后 prependNewTweets 又会
+    // 用残缺对象兜底把它们渲染成 @unknown 空壳，脏数据永远去不干净。
+    try {
+      if (XFEED) {
+        const alive = new Set(clean.map((x) => String(x.tweet_id || x.id)));
+        const mem = (XFEED.items() || []).filter((m) => alive.has(String(m.tweet_id || m.id)));
+        if (mem.length !== (XFEED.items() || []).length) {
+          XSTATE.set(XFEED.keys.items, mem, { strategy: 'lww' });
+          XFEED.merge(mem);
+        }
+      }
+    } catch (_) {}
     return Promise.resolve(dirty);
   }
 
@@ -2465,6 +2478,11 @@
       const id = it.tweet_id || it.id;
       if (!id) return;
       const full = tweetCacheGet(id) || it;   // 内容回查全局单缓存
+      // 内容残缺（连作者都没有）坚决不渲染：此前 tweetCacheGet 返回 null 时会回退到
+      // it（可能只是个带 id 的空壳/脏条目），直接渲染出 @unknown 空卡片。跳过它们，
+      // 后续刷新即可重新拉到完整内容，而不是把残壳一直摆在列表里。
+      const _fa = (full && full.author) || {};
+      if (!_fa.screen_name) return;
       if (brSeenIds.has(String(id))) {
         // 已渲染过的卡片：若本次拉到的正文/媒体更完整（如详情页补全、或修复后
         // 后端返回全文），原地更新该卡，避免「缓存不归一、列表还是旧的」。
