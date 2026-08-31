@@ -1751,9 +1751,11 @@
       if (!all.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
       // 过总库：与首页/搜索/历史里的同一条推文共用一份记录，不另存一份
       const merged = mergeTweets(all);
+      tweetCachePut(merged);   // 内容进全局单缓存（一处内容，所有视图共享）
       bmXList.innerHTML = '';
       merged.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
-      if (XSTATE) try { XSTATE.set('bm:list', merged.slice(0, 600), { strategy: 'lww' }); } catch (_) {}
+      // 只存成员 id（不重复存内容）；完整内容在 XTWEETS
+      if (XSTATE) try { XSTATE.set('bm:list', toMembership(merged).slice(0, 600), { strategy: 'lww' }); } catch (_) {}
     } catch (e) {
       if (!all.length) bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -1767,7 +1769,13 @@
     try { cached = XSTATE.get('bm:list'); } catch (_) { return; }
     if (!cached || !cached.length) return;
     bmXList.innerHTML = '';
-    mergeTweets(cached).forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+    tweetCachePut(cached);   // 兼容旧版全量缓存；新缓存只有 id，无害
+    // cached 是成员 id 列表；内容回查全局单缓存 XTWEETS
+    cached.forEach((entry) => {
+      const id = entry && (entry.tweet_id || entry.id);
+      const t = tweetCacheGet(id);
+      if (t) bmXList.appendChild(renderBmCard(t, false));
+    });
   }
 
   async function loadCollections() {
@@ -1805,8 +1813,9 @@
       bmFolderList.innerHTML = '<div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div>';
       return;
     }
+    tweetCachePut(items);   // 内容进全局单缓存
     bmFolderList.innerHTML = '';
-    mergeTweets(items).forEach((it) => bmFolderList.appendChild(renderBmCard(it, true)));
+    items.forEach((it) => bmFolderList.appendChild(renderBmCard(it, true)));
   }
 
   $('bm-sync').addEventListener('click', () => {
@@ -2230,33 +2239,75 @@
     autoBind: false,       // 滚动由本面板统一处理（还要兼顾自动加载）
   }) : null;
 
+  // ===== 全局单缓存：所有视图与详情页共享的唯一推文内容权威副本 =====
+  // 此前首页(XFEED)、搜索(search:last)、收藏(bm:list)各自存一份完整推文对象，详情又有一份
+  // DT_CACHE(localStorage)——同一条推文散在多处以致互相分叉（正是此前的 bug 根因）。
+  // 现在全推文内容只登记在 XTWEETS 这一处（框架 feed()，union_by_id、服务端权威、跨设备），
+  // 各视图只保留「成员 tweet_id + 位置锚点」，渲染时回查这份单缓存；详情页也只读写这一份。
+  const XTWEETS = XSTATE ? XSTATE.feed('tweets', {
+    idAttr: 'data-tid', idKeys: ['tweet_id', 'id'], orderKey: 'created_at',
+    cap: 1500, throttle: 200, autoBind: false,
+  }) : null;
+
+  // 入参一批推文 → 合并进全局单缓存（union_by_id：同 id 以 created_at 较新者为准）
+  function tweetCachePut(list) {
+    if (!XTWEETS) return;
+    try { XTWEETS.merge(mergeTweets(list || [])); } catch (_) {}
+  }
+  // 按 tweet_id 从全局单缓存取一条完整推文（并入会话总库 TWEET_STORE，内存里也只有一份）
+  function tweetCacheGet(id) {
+    if (!XTWEETS || id == null) return null;
+    const sid = String(id);
+    const it = (XTWEETS.items() || []).find((x) => String(x.tweet_id || x.id) === sid);
+    return it ? mergeTweet(it) : null;
+  }
+  // 详情页补全后回写：直接覆盖该推文的内容（正文/媒体）+ 评论分页 + 游标，确保
+  // 「详情拉到的全文」压过列表里的截断版——union_by_id 按 created_at 同序时不会覆盖，
+  // 故这里整数组 lww 落盘，只替换/追加这一条，其余条目原样保留。
+  function tweetCachePutDetail(tweet, replies, cursor) {
+    if (!XTWEETS || !tweet) return;
+    const id = String(tweet.tweet_id || tweet.id || '');
+    if (!id) return;
+    const items = (XTWEETS.items() || []).slice();
+    const idx = items.findIndex((x) => String(x.tweet_id || x.id) === id);
+    const base = idx >= 0 ? items[idx] : mergeTweet(tweet);
+    const merged = mergeTweet(Object.assign({}, base, tweet, { replies: (replies || []).slice(), cursor: cursor || null }));
+    if (idx >= 0) items[idx] = merged; else items.push(merged);
+    try { XSTATE.set(XTWEETS.keys.items, items, { strategy: 'lww' }); } catch (_) {}
+  }
+  // 从全局单缓存删除一条（详情「重新获取」用：清掉本地副本，下次打开重新请求网络）
+  function tweetCacheDrop(id) {
+    if (!XTWEETS || id == null) return;
+    const sid = String(id);
+    const out = (XTWEETS.items() || []).filter((x) => String(x.tweet_id || x.id) !== sid);
+    try { XSTATE.set(XTWEETS.keys.items, out, { strategy: 'lww' }); } catch (_) {}
+  }
+  // 把推文数组收敛成「成员 id + 排序」的轻量列表（各视图只存这个，不重复存内容）
+  function toMembership(list) {
+    return (list || []).map((it) => ({ tweet_id: it.tweet_id || it.id, created_at: it.created_at }));
+  }
+
   function saveBrowseCache(items, append) {
     try {
-      // 内容缓存交给框架 feed()（union_by_id，服务端权威），不再自写 localStorage 缓存
+      // 内容只登记进全局单缓存 XTWEETS；本 feed 只保留成员 id + 位置（不重复存内容）
+      tweetCachePut(items);
       if (XFEED) {
-        XFEED.merge(sortItemsByTime(mergeTweets(items || [])), !!append);
+        XFEED.merge(toMembership(items || []), !!append);
         if (brCursor) XFEED.setCursor(brCursor);
       }
     } catch (_) {}
   }
-  // 把补全后的推文回流到唯一持久化缓存 XFEED（框架 feed()，union_by_id 同 id 整体替换）。
-  // 首页 / 搜索 / 收藏 / 历史 / 跨设备都从这一份读，写回它刷新才不会回到旧内容。
-  // 仅当该推文已存在于信息流时才更新，避免把搜索/收藏/回复等本不在首页信息流的条目插进首页。
+  // 把补全后的推文回流到全局单缓存 XTWEETS（所有视图与详情共享同一份，写回即全员一致）。
   function persistTweetToFeed(t) {
-    if (!t || !XFEED) return;
-    const tid = String(t.tweet_id || t.id || '');
-    if (!tid) return;
-    try {
-      const items = XFEED.items() || [];
-      if (items.some((it) => String(it.tweet_id || it.id) === tid)) {
-        saveBrowseCache([t], true);
-      }
-    } catch (_) {}
+    if (!t) return;
+    tweetCachePut([t]);
   }
   function renderCachedBrowse() {
     try {
-      // 打开即秒开：用框架 feed 的内容缓存先渲染，随后后台静默刷新，避免白屏等"加载中"
-      const list = XFEED ? mergeTweets(XFEED.items()) : [];
+      // 本 feed 只存成员 id；内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
+      const ids = XFEED ? XFEED.items() : [];
+      if (!ids.length) return false;
+      const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id)).filter(Boolean);
       if (!list.length) return false;
       brList.innerHTML = '';
       brSeenIds.clear();
@@ -2350,28 +2401,30 @@
     })();
     const em = brList.querySelector('.bm-empty');
     if (em) em.remove();
+    tweetCachePut(items);
     const frag = document.createDocumentFragment();
     let inserted = 0;
     sortItemsByTime(mergeTweets(items)).forEach((it) => {
       const id = it.tweet_id || it.id;
       if (!id) return;
+      const full = tweetCacheGet(id) || it;   // 内容回查全局单缓存
       if (brSeenIds.has(String(id))) {
         // 已渲染过的卡片：若本次拉到的正文/媒体更完整（如详情页补全、或修复后
         // 后端返回全文），原地更新该卡，避免「缓存不归一、列表还是旧的」。
         const old = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(id))}"]`);
         if (old) {
           const oldText = (old.querySelector('.text') || {}).textContent || '';
-          const newText = it.text || '';
+          const newText = full.text || '';
           const oldMedia = old.querySelectorAll('.media img, .media video').length;
-          const newMedia = (it.media || []).length;
+          const newMedia = (full.media || []).length;
           if (newText.length > oldText.length || newMedia > oldMedia) {
-            old.replaceWith(renderBrowseCard(it));
+            old.replaceWith(renderBrowseCard(full));
           }
         }
         return;
       }
       brSeenIds.add(String(id));
-      frag.appendChild(renderBrowseCard(it));
+      frag.appendChild(renderBrowseCard(full));
       inserted++;
     });
     if (!inserted) return 0;
@@ -2619,12 +2672,13 @@
       const items = mergeTweets(d.items || []);
       if (!items.length) { brCursor = null; break; }
       allItems = allItems.concat(items);
+      tweetCachePut(items);
       let appended = 0;
       sortItemsByTime(items).forEach((it) => {
         const id = it.tweet_id || it.id;
         if (!id || brSeenIds.has(String(id))) return;
         brSeenIds.add(String(id));
-        const card = renderBrowseCard(it);
+        const card = renderBrowseCard(tweetCacheGet(id) || it);
         card.classList.add('card-enter');
         card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
         brList.appendChild(card);
@@ -2710,7 +2764,9 @@
       const id = it.tweet_id || it.id;
       if (!id || srchSeenIds.has(String(id))) return;
       srchSeenIds.add(String(id));
-      const card = renderBrowseCard(it);
+      // 内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
+      const full = tweetCacheGet(id) || it;
+      const card = renderBrowseCard(full);
       card.classList.add('card-enter');
       card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
       srchList.appendChild(card);
@@ -2755,9 +2811,11 @@
           fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
           fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
         ]);
-        // 过总库：首页已缓存过的同一条推文不会在这里再存一份，只复用同一条记录
-        srchTopItems = mergeTweets((topD && topD.items) || []);
-        srchLatestItems = mergeTweets((latestD && latestD.items) || []);
+        // 内容只登记进全局单缓存 XTWEETS；本视图只保留成员 id + 排序（不重复存内容）
+        tweetCachePut((topD && topD.items) || []);
+        tweetCachePut((latestD && latestD.items) || []);
+        srchTopItems = toMembership((topD && topD.items) || []);
+        srchLatestItems = toMembership((latestD && latestD.items) || []);
         srchCursorTop = (topD && topD.next_cursor) || null;
         srchCursorLatest = (latestD && latestD.next_cursor) || null;
         if (!srchTopItems.length && !srchLatestItems.length) {
@@ -2797,13 +2855,14 @@
         const d = await fetchSearch(srchQuery, srchProduct, srchCursor);
         const items = mergeTweets(d.items || []);
         if (!items.length) { srchCursor = null; break; }
+        tweetCachePut(items);
         let appended = 0;
         sortItemsByTime(items).forEach((it) => {
           const id = it.tweet_id || it.id;
           if (!id || srchSeenIds.has(String(id))) return;
           srchSeenIds.add(String(id));
-          targetArr.push(it);
-          const card = renderBrowseCard(it);
+          targetArr.push({ tweet_id: id, created_at: it.created_at });
+          const card = renderBrowseCard(tweetCacheGet(id) || it);
           card.classList.add('card-enter');
           card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
           srchList.appendChild(card);
@@ -2909,8 +2968,9 @@
     }
     srchInput.value = snap.q;
     srchQuery = snap.q;
-    srchTopItems = mergeTweets((snap.top || []).slice());
-    srchLatestItems = mergeTweets((snap.latest || []).slice());
+    srchTopItems = (snap.top || []).slice();
+    srchLatestItems = (snap.latest || []).slice();
+    tweetCachePut(srchTopItems.concat(srchLatestItems));   // 兼容旧版全量缓存；新缓存只有 id，无害
     srchCursorTop = snap.cursorTop || null;
     srchCursorLatest = snap.cursorLatest || null;
     if (wantTab && wantTab !== srchProduct) setSrchProduct(wantTab, { silent: true });
@@ -3110,104 +3170,23 @@
   let dtLoading = false;
   let dtFavBtn = null;
 
-  // 详情页缓存：以推文 id 为单位保存「完整详情 + 已取回的评论」。
-  // 推文详情页是一个 URL（#/tweet/<id>）→ 刷新页面、从收藏/历史/搜索里再次打开
-  // 同一条推文，都应该直接命中这里秒开、**一个网络请求都不发**；只有第一次打开
-  // 才真的去 X 取。想强制更新用详情页的「↻ 重新获取」。
-  const DT_CACHE = new Map();
-  const DT_CACHE_CAP = 200;
-  function dtCacheKey(id) { return String(id == null ? '' : id); }
-  function dtCacheGet(id) { return DT_CACHE.get(dtCacheKey(id)) || null; }
-  function dtCachePut(tweet, replies, cursor) {
-    const k = dtCacheKey(tweet && (tweet.tweet_id || tweet.id));
-    if (!k) return;
-    DT_CACHE.delete(k);
-    DT_CACHE.set(k, { tweet, replies: (replies || []).slice(), cursor: cursor || null });
-    while (DT_CACHE.size > DT_CACHE_CAP) DT_CACHE.delete(DT_CACHE.keys().next().value);
-    dtPersist();
-  }
-  function dtCacheDrop(id) { DT_CACHE.delete(dtCacheKey(id)); dtPersist(); }
-
-  // 详情缓存还要能跨刷新：页面刷新后重开同一条推文，同样应该命中缓存而不是再
-  // 求一次 X。落到 localStorage（只有几 MB），因此只存裁剪过的字段、双重限量
-  // （条数 + 字节数），超出就丢最旧的。
-  const DT_STORE_KEY = 'xd_detail_cache';
-  const DT_STORE_CAP = 40;
-  const DT_STORE_MAX_BYTES = 1500000;
-  const DT_STORE_REPLIES = 30;
-  function dtTrimAuthor(a) {
-    return a ? { screen_name: a.screen_name, name: a.name, avatar: a.avatar } : null;
-  }
-  function dtTrimMedia(list, n) {
-    return (list || []).slice(0, n).map((m) => ({
-      type: m.type, url: m.url, cover: m.cover || '', mp4: m.mp4 || '',
-    }));
-  }
-  function dtTrimTweet(t) {
+  // 详情页缓存：直接复用全局单缓存 XTWEETS（见上方 feed('tweets')），不再另起
+  // 一份 localStorage 缓存。同一条推文的「完整内容 + 评论分页 + 游标」只存在于一处，
+  // 详情与所有视图（首页/搜索/收藏/历史）天然一致。刷新页面、从任意入口再打开同一条
+  // 推文都命中 XTWEETS 秒开、零请求；只有首次打开或点「↻ 重新获取」才走网络。
+  function dtCacheGet(id) {
+    const t = tweetCacheGet(id);
     if (!t) return null;
-    return {
-      tweet_id: t.tweet_id, text: t.text, created_at: t.created_at, url: t.url,
-      author: dtTrimAuthor(t.author),
-      media: dtTrimMedia(t.media, 4),
-      quoted: t.quoted ? {
-        tweet_id: t.quoted.tweet_id, text: t.quoted.text, url: t.quoted.url,
-        created_at: t.quoted.created_at, author: dtTrimAuthor(t.quoted.author),
-        media: dtTrimMedia(t.quoted.media, 4),
-      } : null,
-      retweeted_by: dtTrimAuthor(t.retweeted_by),
-      reply_count: t.reply_count, retweet_count: t.retweet_count,
-      favorite_count: t.favorite_count, quote_count: t.quote_count, view_count: t.view_count,
-    };
+    return { tweet: t, replies: (t.replies || []).slice(), cursor: t.cursor || null };
   }
-  function dtTrimReply(rp) {
-    if (!rp) return null;
-    return {
-      tweet_id: rp.tweet_id, text: rp.text, created_at: rp.created_at,
-      author: dtTrimAuthor(rp.author), media: dtTrimMedia(rp.media, 1),
-    };
+  function dtCachePut(tweet, replies, cursor) {
+    tweetCachePutDetail(tweet, replies, cursor);
   }
-  let _dtSaveTimer = null;
-  function dtPersist() {
-    if (_dtSaveTimer) return;
-    _dtSaveTimer = setTimeout(() => {
-      _dtSaveTimer = null;
-      try {
-        const arr = [];
-        for (const entry of DT_CACHE) {
-          arr.push({
-            id: entry[0],
-            tweet: dtTrimTweet(entry[1].tweet),
-            replies: (entry[1].replies || []).slice(0, DT_STORE_REPLIES).map(dtTrimReply).filter(Boolean),
-            cursor: entry[1].cursor || null,
-          });
-        }
-        let payload = arr.slice(-DT_STORE_CAP);
-        let s = JSON.stringify(payload);
-        while (s.length > DT_STORE_MAX_BYTES && payload.length > 5) {
-          payload = payload.slice(Math.max(5, Math.floor(payload.length * 0.7)));
-          s = JSON.stringify(payload);
-        }
-        localStorage.setItem(DT_STORE_KEY, s);
-      } catch (_) {}
-    }, 800);
-  }
-  // 启动时把上次的详情缓存读回内存（顺便并入推文总库，让列表也能用上完整字段）
-  function dtRestore() {
-    try {
-      const arr = JSON.parse(localStorage.getItem(DT_STORE_KEY) || '[]');
-      if (!Array.isArray(arr)) return 0;
-      let n = 0;
-      for (const it of arr) {
-        if (!it || !it.id || !it.tweet) continue;
-        DT_CACHE.set(String(it.id), {
-          tweet: mergeTweet(it.tweet), replies: it.replies || [], cursor: it.cursor || null,
-        });
-        n++;
-      }
-      while (DT_CACHE.size > DT_CACHE_CAP) DT_CACHE.delete(DT_CACHE.keys().next().value);
-      return n;
-    } catch (_) { return 0; }
-  }
+  function dtCacheDrop(id) { tweetCacheDrop(id); }
+
+  // 详情缓存已统一到全局单缓存 XTWEETS（见上方 feed('tweets')），不再有独立的
+  // localStorage 详情缓存，故删除原 DT_CACHE / dtPersist / dtRestore 等本地持久化逻辑。
+
 
   // 把详情主体 + 评论区一次性画出来（缓存命中与网络取回共用同一条渲染路径）
   function paintDetail(tweet, replies, cursor) {
@@ -3474,9 +3453,10 @@
       if (!d.success) { hsList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
       const items = d.items || [];
       if (!items.length) { hsList.innerHTML = '<div class="bm-empty">浏览过的推文会记录在这里，可回看。</div>'; return; }
+      tweetCachePut(items);   // 内容进全局单缓存（一处内容，详情也读这份）
       hsList.innerHTML = '';
       // 复用浏览卡渲染（含点开详情/收藏/下载），历史可回看
-      mergeTweets(items).forEach((it) => hsList.appendChild(renderBrowseCard(it)));
+      items.forEach((it) => hsList.appendChild(renderBrowseCard(it)));
     } catch (e) {
       hsList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -3534,9 +3514,8 @@
      再由 switchView 拉起对应数据（首页即自动加载关注流，无需点刷新）。
      这里不再单独触发一次加载，否则「深链到首页」会重复请求一次时间线。
   */
-  // 读回上次会话缓存的推文详情：刷新后直接打开同一个 #/tweet/<id> 时命中缓存，
-  // 不必再向 X 请求一次。
-  dtRestore();
+  // 详情缓存已统一到全局单缓存 XTWEETS：刷新后重开同一 #/tweet/<id> 直接命中 XTWEETS，
+  // 无需单独读回一份本地详情缓存（XTWEETS 本身跨刷新/跨设备持久）。
 </script>
 </body>
 </html>
