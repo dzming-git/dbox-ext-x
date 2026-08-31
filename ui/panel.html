@@ -2125,7 +2125,6 @@
 
   // 渲染当前 product 的那一份缓存（热门/最新），不触发网络
   function renderSrchProduct() {
-    const ch = $('srch-cache-hint'); if (ch) ch.remove();
     const arr = srchProduct === 'Top' ? srchTopItems : srchLatestItems;
     srchAllItems = arr.slice();
     srchSeenIds = new Set();   // 去重集合在渲染过程中逐个加入，不要预先塞满（否则全部被跳过）
@@ -2241,13 +2240,6 @@
     } catch (_) {}
   }
 
-  function showSrchCacheHint() {
-    const ch = document.createElement('div');
-    ch.id = 'srch-cache-hint';
-    ch.innerHTML = '<button disabled style="width:100%;padding:8px;border:none;border-radius:9px;font-size:12.5px;cursor:default;background:#eef5fd;color:#1d9bf0">📦 本地缓存 ' + srchAllItems.length + ' 条 · 点刷新按钮获取最新</button>';
-    srchList.insertBefore(ch, srchList.firstChild);
-  }
-
   // 搜索位置记忆：与首页一致，交给框架 feed()（feed:search:anchor，跨设备同步）。
   let srchUserScrolled = false;
   let srchPosSaveTimer = null;
@@ -2289,7 +2281,6 @@
     try { await XSTATE.pull(); } catch (_) {}
     let snap;
     try { snap = XSTATE.get('search:last'); } catch (_) { return; }
-    const ch = $('srch-cache-hint'); if (ch) ch.remove();
     if (!snap || !snap.q) {
       srchList.innerHTML = '<div class="bm-empty">输入关键词搜索 X 推文。</div>';
       return;
@@ -2301,7 +2292,6 @@
     srchCursorTop = snap.cursorTop || null;
     srchCursorLatest = snap.cursorLatest || null;
     renderSrchProduct();
-    showSrchCacheHint();
     srchUserScrolled = false;   // 打开即尝试恢复上次搜索位置（与首页续读一致）
     restoreSearchScroll();
   }
