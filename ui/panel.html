@@ -152,6 +152,8 @@
   .xd-session-alert { position: sticky; top: 0; z-index: 30; margin: 6px 8px 0; }
   .xd-session-alert .xa-inner { background: #fdecec; color: #c0392b; border: 1px solid #f5c6c6; border-radius: 9px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; font-weight: 500; }
   .xd-session-alert .xa-sub { color: #a33; font-size: 11.5px; font-weight: 400; }
+  .xd-session-alert .xa-retry { display: block; margin-top: 8px; padding: 4px 12px; border: 1px solid #f5c6c6; border-radius: 6px; background: #fff; color: #c0392b; font-size: 12px; cursor: pointer; }
+  .xd-session-alert .xa-retry:disabled { opacity: .6; cursor: default; }
   .bm-folderbar { display: flex; gap: 6px; margin-bottom: 10px; }
   .bm-folderbar select, .bm-folderbar input { flex: 1; border: 1px solid #e3e6eb; border-radius: 8px; padding: 7px 8px; font-size: 12px; color: #0f1419; background: #fff; }
   .bm-folderbar button { border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; color: #536471; }
@@ -485,6 +487,8 @@
       }
       // 面板重新显示：与服务端对账主控权（可能已被其它设备接管），刷新状态灯
       if (XLEDGER) XLEDGER.refresh().then(updateMasterLight);
+      // 重开面板只切 CSS、不会重跑启动自检，这里补一次复检，让网络恢复后的旧告警消失
+      recheckSessionIfAlerted();
       // 形态切换（小窗<->全屏）后 iframe 视口尺寸变化：重铺当前视图内容，
       // 例如浏览流用 brAutoFill 补满变高后的视口；并派发 resize 让内部尺寸依赖重新计算。
       setTimeout(() => {
@@ -1843,23 +1847,49 @@
     return t ? fmtCdTime(new Date(t).toISOString()) : '';
   }
 
-  // X 登录态自检：打开面板时调一次 /check，Cookie 缺失/残缺/过期则置顶红条告警，
-  // 避免像之前那样「静默停在旧帖」让人误以为卡死。成功则隐藏告警条。
-  let _sessionCheckT = null;
+  // X 登录态 / 连通性自检：进入首页时调一次 /check，异常则置顶告警，正常则隐藏。
+  // 要点1：两类失败必须分开呈现。Cookie 缺失/残缺/过期才该引导去凭证库；网络或代理
+  // 抖动（如 WinError 10061 连接被拒）与登录态无关，一律说成「登录态失效」会误导
+  // 用户反复重注册 Cookie（后端已用 reason 区分，前端此前完全没用）。
+  // 要点2：告警要能自愈。面板是常驻 iframe，重开面板只切 CSS 不会重跑启动自检，
+  // 网络恢复后旧告警会一直挂着，故在定时轮询与面板重新显示时复检（仅告警可见时才发请求）。
+  let _sessionChecking = false;
   async function checkXSession() {
     const el = $('xd-session-alert');
-    if (!el) return;
+    if (!el || _sessionChecking) return;
+    _sessionChecking = true;
     try {
       const r = await req(`${API}/check`);
       const d = await r.json();
       if (d && d.ok) { el.style.display = 'none'; el.innerHTML = ''; return; }
-      const reason = (d && d.message) || 'X 登录态异常';
+      const reason = (d && d.reason) || '';
+      const msg = (d && d.message) || 'X 状态异常';
+      // 只有 Cookie 相关问题才让用户去凭证库；其余（网络/服务异常）引导重试
+      const cookieIssue = (reason === 'no_cookie' || reason === 'incomplete' || reason === 'expired');
+      const title = cookieIssue ? '⚠️ X 登录态失效' : '⚠️ 暂时连不上 X';
+      const sub = cookieIssue
+        ? '请到「凭证库」中重新注册有效的 x.com Cookie（需含 auth_token 与 ct0），再刷新本面板。'
+        : '这通常是网络或代理问题，与 Cookie 无关；网络恢复后本提示会自动消失，无需重新注册 Cookie。';
       el.style.display = '';
-      el.innerHTML = `<div class="xa-inner">⚠️ X 登录态失效：${esc2(reason)}<br><span class="xa-sub">请到「凭证库」中重新注册有效的 x.com Cookie（需含 auth_token 与 ct0），再刷新本面板。</span></div>`;
+      el.innerHTML = `<div class="xa-inner">${title}：${esc2(msg)}<br><span class="xa-sub">${sub}</span>`
+        + `<button class="xa-retry" type="button">重试</button></div>`;
+      const btn = el.querySelector('.xa-retry');
+      if (btn) btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        btn.disabled = true; btn.textContent = '检查中…';
+        checkXSession();
+      });
     } catch (_) {
       // 自检请求本身失败不弹（避免干扰），由刷新/加载失败提示兜底。
       el.style.display = 'none';
+    } finally {
+      _sessionChecking = false;
     }
+  }
+  // 仅当告警条正显示时才复检：网络恢复后自动清除，不必等用户手动刷新面板。
+  function recheckSessionIfAlerted() {
+    const el = $('xd-session-alert');
+    if (el && el.style.display !== 'none' && el.innerHTML) checkXSession();
   }
   async function refreshBrowseKeepPos() {
     if (brLoading) return;
@@ -2294,6 +2324,8 @@
   // P2-11 定时刷新关注流：每 3 分钟静默拉一次最新推文，插入到顶部并保持当前查看位置，
   // 不弹任何提示横幅，直接复用 prependNewTweets（新推文已置顶，用户上滑即见）。
   async function pollNewTweets() {
+    // 告警条可见时顺带复检：网络/代理恢复后让它自己消失（仅此时才发 /check 请求）
+    recheckSessionIfAlerted();
     if (brLoading) return;
     try {
       const r = await req(`${API}/timeline?count=20`);
