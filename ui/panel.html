@@ -1915,6 +1915,7 @@
       const d = await r.json();
       if (!d.success || !d.tweet) return;
       const item = mergeTweet(d.tweet);
+      persistTweetToFeed(d.tweet);   // 写回唯一持久化缓存：刷新/换设备不再回到旧内容
       if (card.parentNode) card.replaceWith(renderBrowseCard(item));
     } catch (_) {}
   }
@@ -2235,6 +2236,20 @@
       if (XFEED) {
         XFEED.merge(sortItemsByTime(mergeTweets(items || [])), !!append);
         if (brCursor) XFEED.setCursor(brCursor);
+      }
+    } catch (_) {}
+  }
+  // 把补全后的推文回流到唯一持久化缓存 XFEED（框架 feed()，union_by_id 同 id 整体替换）。
+  // 首页 / 搜索 / 收藏 / 历史 / 跨设备都从这一份读，写回它刷新才不会回到旧内容。
+  // 仅当该推文已存在于信息流时才更新，避免把搜索/收藏/回复等本不在首页信息流的条目插进首页。
+  function persistTweetToFeed(t) {
+    if (!t || !XFEED) return;
+    const tid = String(t.tweet_id || t.id || '');
+    if (!tid) return;
+    try {
+      const items = XFEED.items() || [];
+      if (items.some((it) => String(it.tweet_id || it.id) === tid)) {
+        saveBrowseCache([t], true);
       }
     } catch (_) {}
   }
@@ -3398,6 +3413,7 @@
       if (d.tweet) {
         // 详情是最完整的那一份：并入总库，顺带把列表里的同一条推文补全
         dtCurTweet = mergeTweet(d.tweet);
+        persistTweetToFeed(d.tweet);   // 回流到唯一持久化缓存：返回首页/刷新/换设备都见全文
         paintDetail(dtCurTweet, replies, d.next_cursor);
         dtCachePut(dtCurTweet, replies, d.next_cursor);   // 下次再打开直接命中
         recordHistory(dtCurTweet);  // P1-7：记录浏览历史（fire-and-forget）
