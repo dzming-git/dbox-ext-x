@@ -3002,6 +3002,116 @@
   let dtLoading = false;
   let dtFavBtn = null;
 
+  // 详情页缓存：以推文 id 为单位保存「完整详情 + 已取回的评论」。
+  // 推文详情页是一个 URL（#/tweet/<id>）→ 刷新页面、从收藏/历史/搜索里再次打开
+  // 同一条推文，都应该直接命中这里秒开、**一个网络请求都不发**；只有第一次打开
+  // 才真的去 X 取。想强制更新用详情页的「↻ 重新获取」。
+  const DT_CACHE = new Map();
+  const DT_CACHE_CAP = 200;
+  function dtCacheKey(id) { return String(id == null ? '' : id); }
+  function dtCacheGet(id) { return DT_CACHE.get(dtCacheKey(id)) || null; }
+  function dtCachePut(tweet, replies, cursor) {
+    const k = dtCacheKey(tweet && (tweet.tweet_id || tweet.id));
+    if (!k) return;
+    DT_CACHE.delete(k);
+    DT_CACHE.set(k, { tweet, replies: (replies || []).slice(), cursor: cursor || null });
+    while (DT_CACHE.size > DT_CACHE_CAP) DT_CACHE.delete(DT_CACHE.keys().next().value);
+    dtPersist();
+  }
+  function dtCacheDrop(id) { DT_CACHE.delete(dtCacheKey(id)); dtPersist(); }
+
+  // 详情缓存还要能跨刷新：页面刷新后重开同一条推文，同样应该命中缓存而不是再
+  // 求一次 X。落到 localStorage（只有几 MB），因此只存裁剪过的字段、双重限量
+  // （条数 + 字节数），超出就丢最旧的。
+  const DT_STORE_KEY = 'xd_detail_cache';
+  const DT_STORE_CAP = 40;
+  const DT_STORE_MAX_BYTES = 1500000;
+  const DT_STORE_REPLIES = 30;
+  function dtTrimAuthor(a) {
+    return a ? { screen_name: a.screen_name, name: a.name, avatar: a.avatar } : null;
+  }
+  function dtTrimMedia(list, n) {
+    return (list || []).slice(0, n).map((m) => ({
+      type: m.type, url: m.url, cover: m.cover || '', mp4: m.mp4 || '',
+    }));
+  }
+  function dtTrimTweet(t) {
+    if (!t) return null;
+    return {
+      tweet_id: t.tweet_id, text: t.text, created_at: t.created_at, url: t.url,
+      author: dtTrimAuthor(t.author),
+      media: dtTrimMedia(t.media, 4),
+      quoted: t.quoted ? {
+        tweet_id: t.quoted.tweet_id, text: t.quoted.text, url: t.quoted.url,
+        created_at: t.quoted.created_at, author: dtTrimAuthor(t.quoted.author),
+        media: dtTrimMedia(t.quoted.media, 4),
+      } : null,
+      retweeted_by: dtTrimAuthor(t.retweeted_by),
+      reply_count: t.reply_count, retweet_count: t.retweet_count,
+      favorite_count: t.favorite_count, quote_count: t.quote_count, view_count: t.view_count,
+    };
+  }
+  function dtTrimReply(rp) {
+    if (!rp) return null;
+    return {
+      tweet_id: rp.tweet_id, text: rp.text, created_at: rp.created_at,
+      author: dtTrimAuthor(rp.author), media: dtTrimMedia(rp.media, 1),
+    };
+  }
+  let _dtSaveTimer = null;
+  function dtPersist() {
+    if (_dtSaveTimer) return;
+    _dtSaveTimer = setTimeout(() => {
+      _dtSaveTimer = null;
+      try {
+        const arr = [];
+        for (const entry of DT_CACHE) {
+          arr.push({
+            id: entry[0],
+            tweet: dtTrimTweet(entry[1].tweet),
+            replies: (entry[1].replies || []).slice(0, DT_STORE_REPLIES).map(dtTrimReply).filter(Boolean),
+            cursor: entry[1].cursor || null,
+          });
+        }
+        let payload = arr.slice(-DT_STORE_CAP);
+        let s = JSON.stringify(payload);
+        while (s.length > DT_STORE_MAX_BYTES && payload.length > 5) {
+          payload = payload.slice(Math.max(5, Math.floor(payload.length * 0.7)));
+          s = JSON.stringify(payload);
+        }
+        localStorage.setItem(DT_STORE_KEY, s);
+      } catch (_) {}
+    }, 800);
+  }
+  // 启动时把上次的详情缓存读回内存（顺便并入推文总库，让列表也能用上完整字段）
+  function dtRestore() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(DT_STORE_KEY) || '[]');
+      if (!Array.isArray(arr)) return 0;
+      let n = 0;
+      for (const it of arr) {
+        if (!it || !it.id || !it.tweet) continue;
+        DT_CACHE.set(String(it.id), {
+          tweet: mergeTweet(it.tweet), replies: it.replies || [], cursor: it.cursor || null,
+        });
+        n++;
+      }
+      while (DT_CACHE.size > DT_CACHE_CAP) DT_CACHE.delete(DT_CACHE.keys().next().value);
+      return n;
+    } catch (_) { return 0; }
+  }
+
+  // 把详情主体 + 评论区一次性画出来（缓存命中与网络取回共用同一条渲染路径）
+  function paintDetail(tweet, replies, cursor) {
+    dtBody.innerHTML = '';
+    dtBody.appendChild(renderTweetDetailCard(tweet));
+    dtReplies.innerHTML = (replies && replies.length)
+      ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
+    (replies || []).forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+    dtCursor = cursor || null;
+    dtLoadmore.style.display = dtCursor ? '' : 'none';
+  }
+
   // 渲染推文详情的完整卡片
   function renderTweetDetailCard(t) {
     const a = t.author || {};
@@ -3112,11 +3222,18 @@
     card.querySelectorAll('.openx').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
     }));
-    // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
+    // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存），并重新拉取这条
+    // 推文的内容——详情页默认走详情缓存（秒开、不发请求），这里是强制更新的出口。
     card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
       reloadCardMedia(card);
       b.textContent = '获取中…';
+      const tid = t.tweet_id || b.dataset.tid;
+      if (tid) {
+        dtCacheDrop(tid);
+        openTweetDetail(String(tid), null).catch(() => {});
+        return;
+      }
       setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
     }));
     return card;
@@ -3158,6 +3275,15 @@
     if (location.hash !== wantHash) {
       navigate({ name: 'tweet', id: tweetId }, { silent: true, replace: wasActive });
     }
+    // 命中详情缓存 → 直接秒开，零请求（刷新页面或从别的入口再打开同一条推文
+    // 都走这条路；这种情况下内容已经在本地，再拉一遍 X 没有意义）
+    const hit = dtCacheGet(tweetId);
+    if (hit) {
+      dtCurTweet = hit.tweet;
+      paintDetail(hit.tweet, hit.replies, hit.cursor);
+      if (dtScroll) dtScroll.scrollTop = 0;
+      return;
+    }
     dtBody.innerHTML = '<div class="bm-empty">加载中…</div>';
     dtReplies.innerHTML = '';
     dtLoadmore.style.display = 'none';
@@ -3175,18 +3301,19 @@
         dtBody.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '')}</div>`;
         return;
       }
+      const replies = d.replies || [];
       if (d.tweet) {
         // 详情是最完整的那一份：并入总库，顺带把列表里的同一条推文补全
         dtCurTweet = mergeTweet(d.tweet);
-        dtBody.innerHTML = '';
-        dtBody.appendChild(renderTweetDetailCard(dtCurTweet));
+        paintDetail(dtCurTweet, replies, d.next_cursor);
+        dtCachePut(dtCurTweet, replies, d.next_cursor);   // 下次再打开直接命中
         recordHistory(dtCurTweet);  // P1-7：记录浏览历史（fire-and-forget）
+      } else {
+        dtReplies.innerHTML = replies.length ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
+        replies.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+        dtCursor = d.next_cursor || null;
+        dtLoadmore.style.display = dtCursor ? '' : 'none';
       }
-      const replies = d.replies || [];
-      dtReplies.innerHTML = replies.length ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
-      replies.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
-      dtCursor = d.next_cursor || null;
-      dtLoadmore.style.display = dtCursor ? '' : 'none';
     } catch (e) {
       if (!seed) dtBody.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -3200,9 +3327,13 @@
     try {
       const r = await req(`${API}/tweet/${encodeURIComponent(dtCurTweet.tweet_id)}?cursor=${encodeURIComponent(dtCursor)}`);
       const d = await r.json();
-      (d.replies || []).forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+      const added = d.replies || [];
+      added.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
       dtCursor = d.next_cursor || null;
       dtLoadmore.style.display = dtCursor ? '' : 'none';
+      // 追加进详情缓存：下次打开这条推文，已取回的评论也一起直接呈现
+      const hit = dtCacheGet(dtCurTweet.tweet_id);
+      if (hit) dtCachePut(dtCurTweet, hit.replies.concat(added), dtCursor);
     } catch (_) {} finally {
       dtLoading = false;
       if (dtMoreBtn) { dtMoreBtn.disabled = false; dtMoreBtn.innerHTML = '加载更多回复'; }
@@ -3294,6 +3425,9 @@
      再由 switchView 拉起对应数据（首页即自动加载关注流，无需点刷新）。
      这里不再单独触发一次加载，否则「深链到首页」会重复请求一次时间线。
   */
+  // 读回上次会话缓存的推文详情：刷新后直接打开同一个 #/tweet/<id> 时命中缓存，
+  // 不必再向 X 请求一次。
+  dtRestore();
 </script>
 </body>
 </html>
