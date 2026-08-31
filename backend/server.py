@@ -311,8 +311,16 @@ def create_blueprint(host):
     _media_dl_err = set()
 
     def _media_ext_ct(url, mtype):
-        """按 URL 后缀 / 显式 type 推断扩展名与 mimetype（用于边下边播的响应类型）。"""
-        path_ext = os.path.splitext(urlparse(url).path)[1].lower()
+        """按 URL 后缀 / 显式 type 推断扩展名与 mimetype（用于边下边播的响应类型）。
+
+        twimg 图片常带 X 的尺寸后缀（如 .../xxx.jpg:orig），若直接 splitext 会把
+        ":orig" 算进扩展名（得到 ".jpg:orig"），拼出的缓存文件名含冒号——Windows
+        文件名非法，open() 直接抛错，表现为「所有 :orig 图片一律加载失败」。
+        故先剥掉尺寸后缀再取扩展名。
+        """
+        path = urllib.parse.urlparse(url).path
+        path = re.sub(r':(orig|large|medium|small|thumb)$', '', path, flags=re.I)
+        path_ext = os.path.splitext(path)[1].lower()
         if path_ext == '.m3u8':
             ext = '.m3u8'
         elif mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
@@ -357,8 +365,14 @@ def create_blueprint(host):
                     pass
                 if os.path.getsize(tmp_path) > 0:
                     _cache_put_file(url, tmp_path, ext)
-            except Exception:
-                # 下载失败：清理半成品，别让 .part 污染缓存
+            except Exception as e:
+                # 下载失败：清理半成品，别让 .part 污染缓存。
+                # 必须打日志——此前静默吞异常，媒体一律失败却在日志里毫无痕迹，无法定位。
+                try:
+                    print(f'[x.media] 媒体下载失败 url={url} tmp={tmp_path} '
+                          f'err={type(e).__name__}: {e}', file=sys.stderr, flush=True)
+                except Exception:
+                    pass
                 try:
                     if os.path.exists(tmp_path):
                         os.remove(tmp_path)
