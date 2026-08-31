@@ -476,10 +476,23 @@
   // 对账完成后刷新指示灯，并按「服务端真相」重新定位（此时本地已是服务端快照）。
   // 硬栅栏反馈：位置写入因主控权已被其它设备抢占而被服务端拒绝 →
   // 与服务端对账后刷新指示灯（此时本设备已非主控，应显示「已让出」）。
+  // 主控被其它设备抢走、服务端锚点已更新到新位置：本设备若非主控，应强制把服务端
+  // 浏览位置应用到客户端（跟随主控），否则本机停在陈旧位置、且其本地锚点会在下次接管时
+  // 被误当成"当前位置"回写服务端、覆盖真实进度。用户正在看则不动（别拽用户）。
+  function followServerAnchorWhenNotMaster() {
+    if (!XLEDGER || !XFEED) return;
+    if (XLEDGER.mine()) return;       // 本机仍主控：以本地为准，不跟随
+    if (brUserScrolled) return;       // 用户正在滚动：别打断
+    if (activeView !== 'browse') return;
+    // 服务端已是最新（onStale 即在 pull 后触发），直接按本地缓存里的服务端锚点重定位
+    restoreBrowseScroll();
+  }
   if (XSTATE && XLEDGER) {
     XSTATE.onStale((key) => {
       if (XFEED && key !== XFEED.keys.anchor) return;
       XLEDGER.refresh().then(updateMasterLight);
+      // 锚点被别的设备更新＝主控已让出，强制把服务端位置拉到客户端
+      followServerAnchorWhenNotMaster();
     });
   }
   function acquireMaster(opts) {
@@ -2224,7 +2237,7 @@
     // 不传 timeOf/timeAttr：框架 feed() 便不会写入已读边界 read_at。
     // 已读置灰已下线（时间线可双向滚动、max 边界会把几乎整列判成已读，价值低且干扰阅读），
     // 位置续读由 anchor（条目 id + 卡内偏移）负责，无需已读边界参与。
-    onStale: () => { if (XLEDGER) XLEDGER.refresh().then(updateMasterLight); }
+    onStale: () => { if (XLEDGER) XLEDGER.refresh().then(updateMasterLight); followServerAnchorWhenNotMaster(); }
   }) : null;
 
   // 搜索位置续读：与首页（feed:main）一致，用框架 feed() 记「条目 id + 卡内偏移」锚点，跨设备同步。
@@ -2366,14 +2379,18 @@
   // 约 5s 后放弃；用户一旦自己滚动立即让位，绝不把正在看的用户拽回去。
   let _restoreIv = null;
   let brUserScrolled = false;
+  let brRestoring = false;   // 程序化定位（恢复锚点）期间抑制「滚动事件＝用户操作」误判，
+                             // 避免重定位把 scrollTop 改到顶部后误把"顶部"当成用户位置写回服务端
   function restoreBrowseScroll() {
     if (!XFEED || brUserScrolled) return;
-    if (XFEED.restore()) return;
+    brRestoring = true;
+    const done = () => { setTimeout(() => { brRestoring = false; }, 200); };
+    if (XFEED.restore()) { done(); return; }
     if (_restoreIv) clearInterval(_restoreIv);
     let tries = 0;
     _restoreIv = setInterval(() => {
-      if (brUserScrolled) { clearInterval(_restoreIv); _restoreIv = null; return; }
-      if ((XFEED && XFEED.restore()) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; }
+      if (brUserScrolled) { clearInterval(_restoreIv); _restoreIv = null; brRestoring = false; return; }
+      if ((XFEED && XFEED.restore()) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; brRestoring = false; }
     }, 320);
   }
 
@@ -2430,13 +2447,20 @@
     if (!inserted) return 0;
     brList.insertBefore(frag, brList.firstChild);
     const reanchor = () => {
-      if (opts.toTop) { cont.scrollTop = 0; return; }
+      // 抑制本次程序化定位引发的 scroll 事件（不当用户操作/不保存），窗口闭合后再放开
+      brRestoring = true;
+      if (opts.toTop) {
+        cont.scrollTop = 0;
+        setTimeout(() => { brRestoring = false; }, 200);
+        return;
+      }
       // anchorTid（如恢复的上次位置）优先；否则用插入前视口顶部的卡片稳住当前位置
       const anchor = opts.anchorTid || beforeTopTid;
-      if (!anchor) return;
+      if (!anchor) { brRestoring = false; return; }
       // 交给框架 feed()：按 id 定位并保留卡内偏移（跨设备一致）
       if (XFEED) XFEED.restore({ id: String(anchor), offset: 0 });
       else scrollCardToTop(anchor);
+      setTimeout(() => { brRestoring = false; }, 1300);
     };
     reanchor();
     requestAnimationFrame(reanchor);
@@ -2596,7 +2620,9 @@
       setBrBottom('hidden');
       preview = renderCachedBrowse();
       brCursor = null;
-      viewBrowse.scrollTop = 0;
+      // 注意：这里绝不能再 scrollTop=0。强制回顶部会触发 scroll 事件把 brUserScrolled
+      // 置真、并 scheduleSavePos 把"顶部"当主控锚点写回服务端，既跳走用户当前阅读位置、
+      // 又污染服务端真实进度。位置交由下方 reanchor / restoreBrowseScroll 按服务端锚点恢复。
       if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
@@ -2626,9 +2652,16 @@
           prependNewTweets(items, { toTop: false, anchorTid });
           saveBrowseCache(items, true);
         } else {
-          // 首次加载且无缓存：直接展示最新，滚到顶部
+          // 首次加载且无本地缓存：能恢复服务端锚点则定位回去，绝不无条件回顶部
+          // （回顶部会触发 scroll 事件把"顶部"当主控锚点写回服务端，污染真实位置）
           saveBrowseCache(items, true);
-          viewBrowse.scrollTop = 0;
+          if (anchorTid) {
+            prependNewTweets(items, { toTop: false, anchorTid });
+          } else {
+            brRestoring = true;
+            viewBrowse.scrollTop = 0;
+            setTimeout(() => { brRestoring = false; }, 200);
+          }
         }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
@@ -3033,6 +3066,7 @@
   if (brScroll) {
     let brScrollTimer = null;
     brScroll.addEventListener('scroll', () => {
+      if (brRestoring) return;          // 重定位（恢复锚点）引发的程序化滚动：不当作用户操作、不保存
       brUserScrolled = true;
       scheduleSavePos();
       if (brScrollTimer) return;
