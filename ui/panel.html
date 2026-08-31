@@ -1563,6 +1563,13 @@
   if (XSTATE) {
     XSTATE.pull().then(() => {
       try {
+        // 【关键】主动清洗服务端残留的脏数据：旧 dtCacheDrop 的 lww 推送已在
+        // user_state 表留下大量残缺推文条目（有 tweet_id 但 author.screen_name 缺失）。
+        // SDK.pull() 以服务端为权威整体替换本地 → 脏数据持续回染为 @unknown。
+        // 这里在渲染前先检测并清洗，用 lww 整组覆盖写回服务端（一次性根治）。
+        scrubTweetsCache().then((n) => {
+          if (n > 0) console.log(`[X] 已清洗 ${n} 条服务端脏数据（@unknown 壳条目）`);
+        });
         // 服务端为唯一真相源：用服务端快照「整体替换」本地缓存后再渲染。
         // 此前只做增量合并（仅补本地没有的），导致各设备保留自己的旧条目、
         // 永远收敛不到同一份——手机与电脑显示不一致的根因。
@@ -2267,6 +2274,39 @@
     if (!XTWEETS) return;
     try { XTWEETS.merge(mergeTweets(list || [])); } catch (_) {}
   }
+  // ---- 服务端脏数据清洗 ----
+  // 旧代码 dtCacheDrop 的 lww 推送已在服务端 user_state 表留下大量残缺推文条目
+  // （有 tweet_id 但 author.screen_name 缺失 → 渲染为 @unknown）。
+  // SDK.pull() 每次以服务端为权威整体替换本地缓存 → 脏数据持续回染。
+  //
+  // 本函数在 pull 完成后调用：遍历 XTWEETS.items() 检测残缺条目，过滤后用 lww 整组
+  // 覆盖写回服务端（一次性根治）。清洗是幂等的：干净数据不会触发写入。
+  let _scrubPending = false;
+  function scrubTweetsCache() {
+    if (!XTWEETS) return Promise.resolve(0);
+    const items = (XTWEETS.items() || []).slice();
+    if (!items.length) return Promise.resolve(0);
+    let dirty = 0;
+    const clean = items.filter((it) => {
+      const a = (it && it.author) || {};
+      // 残缺判定：screen_name 缺失就是脏数据（渲染为 @unknown）。
+      // 旧 dtCacheDrop 删写竞态产物特征：有 tweet_id 但 author 被清空或残缺。
+      // 即使有 text，没有 author 的推文也无法正常展示（@unknown + 点击异常）。
+      if (!a.screen_name) { dirty++; return false; }
+      return true;
+    });
+    if (!dirty) return Promise.resolve(0);
+    // 用 lww 整组覆盖写回服务端：union_by_id 只能追加/按 id 取新，
+    // 无法删除已有条目；必须 lww 整替才能把脏数据从服务端彻底清除。
+    try {
+      XSTATE.set(XTWEETS.keys.items, clean, { strategy: 'lww' });
+    } catch (_) {}
+    // 同步本地内存：XTWEETS 是 feed() 实例，其内部缓存已被 SDK.set 更新；
+    // 但 feed().items() 可能返回旧快照，这里显式 merge 确保一致性。
+    try { XTWEETS.merge(clean); } catch (_) {}
+    return Promise.resolve(dirty);
+  }
+
   // 按 tweet_id 从全局单缓存取一条完整推文（并入会话总库 TWEET_STORE，内存里也只有一份）
   // 防御服务端脏数据：旧代码 dtCacheDrop 的 lww 推送已在服务端留下残缺条目（缺 author.screen_name），
   // pull 拉回后若不拦截会渲染为 @unknown 且点击后触发异常链。这里对关键字段做校验，
@@ -2277,8 +2317,8 @@
     const it = (XTWEETS.items() || []).find((x) => String(x.tweet_id || x.id) === sid);
     if (!it) return null;
     const a = it.author || {};
-    // 服务端残留的脏数据特征：有 tweet_id 但 author 核心字段全空（旧 dtCacheDrop 删写竞态产物）
-    if (!it.text && !a.screen_name && !a.name) return null;
+    // 服务端残留的脏数据特征：有 tweet_id 但 author.screen_name 缺失 → 渲染 @unknown
+    if (!a.screen_name) return null;
     return mergeTweet(it);
   }
   // 详情页补全后回写：直接覆盖该推文的内容（正文/媒体）+ 评论分页 + 游标，确保
@@ -3407,8 +3447,8 @@
     const hit = dtCacheGet(tweetId);
     if (hit && !force) {
       const ha = (hit.tweet && hit.tweet.author) || {};
-      if (!hit.tweet.text && !ha.screen_name && !ha.name) {
-        // 缓存命中但内容残缺 → 降级为 force 重拉
+      if (!ha.screen_name) {
+        // 缓存命中但 author 残缺（@unknown）→ 降级为 force 重拉
       } else {
         dtCurTweet = hit.tweet;
         paintDetail(hit.tweet, hit.replies, hit.cursor);
