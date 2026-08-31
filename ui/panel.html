@@ -118,6 +118,7 @@
   .rt-note .rt-icon { color: #00ba7c; font-size: 13px; line-height: 1; }
   .rt-note .rt-avatar { width: 16px; height: 16px; border-radius: 50%; object-fit: cover; background: #e9eef2; flex: 0 0 auto; }
   .rt-note b { color: #536471; font-weight: 600; }
+  .rt-note .rt-handle { color: #8899a6; font-weight: 400; }
   .dt-name { font-weight: 600; font-size: 15px; color: #0f1419; }
   .dt-handle { color: #536471; font-size: 13px; }
   .dt-time { color: #8899a6; font-size: 13px; margin-left: auto; }
@@ -1628,10 +1629,14 @@
   // 纯转推提示：转发人的头像 + @id 一并显示；
   // 卡片主头像/名字仍是「被转发的原推作者」，这样转发人与被转发人都看得见。
   function rtNoteHtml(u) {
-    const who = esc2((u && (u.screen_name || u.name)) || '某人');
+    const handle = (u && u.screen_name) || '';
+    // 昵称优先（转发人的真实显示名）；昵称缺失或与 id 相同时只显示 @id，避免重复两遍。
+    const name = (u && u.name && u.name !== handle) ? u.name : '';
     const av = (u && u.avatar)
       ? `<img class="rt-avatar" src="${esc2(u.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : '';
-    return `<div class="rt-note"><span class="rt-icon">↻</span>${av}<b>@${who}</b> 转发</div>`;
+    const who = name ? `<b>${esc2(name)}</b>` : (handle ? '' : '<b>某人</b>');
+    const at = handle ? `<span class="rt-handle">@${esc2(handle)}</span>` : '';
+    return `<div class="rt-note"><span class="rt-icon">↻</span>${av}${who}${at} 转发</div>`;
   }
 
   // 引用转发（quote）的嵌套卡片 HTML：含头像/名字/正文/媒体
