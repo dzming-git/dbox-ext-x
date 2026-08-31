@@ -2461,16 +2461,49 @@
   let brUserScrolled = false;
   let brRestoring = false;   // 程序化定位（恢复锚点）期间抑制「滚动事件＝用户操作」误判，
                              // 避免重定位把 scrollTop 改到顶部后误把"顶部"当成用户位置写回服务端
+  let _brRestoreToken = 0;   // 抑制窗口令牌：reanchor 会被 ResizeObserver / 图片 load 反复
+                             // 调用，每次都起一个解除定时器，先到期的会提前解除保护（或
+                             // 反过来把窗口越拉越长）。用令牌保证只有「最后设置」的才有效。
+  // 统一的抑制窗口设置，替代散落各处的 `brRestoring=true + setTimeout`
+  function holdBrRestoring(ms) {
+    const t = ++_brRestoreToken;
+    brRestoring = true;
+    setTimeout(() => { if (t === _brRestoreToken) brRestoring = false; }, ms);
+  }
+  // 正常收尾：延迟解除抑制，覆盖 restore() 之后异步到达的 scroll 事件
+  function finishAutoRestore() {
+    if (_restoreIv) { clearInterval(_restoreIv); _restoreIv = null; }
+    holdBrRestoring(200);
+  }
+  // 用户接管：立即中断自动重定位（含重试 interval 与抑制窗口）
+  function cancelAutoRestore() {
+    if (_restoreIv) { clearInterval(_restoreIv); _restoreIv = null; }
+    _brRestoreToken++;      // 作废已排队的解除定时器
+    brRestoring = false;
+    // 级联取消框架 feed() 内部排队的补偿定位（restore 会排 60/200/500/1000ms 四次）。
+    // 框架自身的 wheel/touch 监听通常已先让位，这里再兜一层。
+    try { if (XFEED && XFEED.cancelRestore) XFEED.cancelRestore(); } catch (e) {}
+  }
+  // 标记「用户已自己滚动」。必须独立于 scroll 事件调用：scroll 在 brRestoring 窗口内
+  // 会被整段吞掉，而 reanchor 会把该窗口拉长到 1.3s 以上（期间 ResizeObserver 与图片
+  // load 还会不断续期），于是用户怎么滚都不算数、brUserScrolled 始终为假，
+  // 后续 pull 回调 / onStale / acquireMaster / loadBrowse 等 5 处恢复调用点
+  // 便反复把人拽回锚点（表现为「刷新后滑动，位置被连续自动拖回去好几次」）。
+  function markUserScrolled() {
+    if (brUserScrolled) return;
+    brUserScrolled = true;
+    cancelAutoRestore();
+  }
   function restoreBrowseScroll() {
     if (!XFEED || brUserScrolled) return;
-    brRestoring = true;
-    const done = () => { setTimeout(() => { brRestoring = false; }, 200); };
-    if (XFEED.restore()) { done(); return; }
-    if (_restoreIv) clearInterval(_restoreIv);
+    if (_restoreIv) return;        // 已有重试在跑，别再叠一个 interval 反复定位
+    holdBrRestoring(200);
+    if (XFEED.restore()) return;
     let tries = 0;
     _restoreIv = setInterval(() => {
-      if (brUserScrolled) { clearInterval(_restoreIv); _restoreIv = null; brRestoring = false; return; }
-      if ((XFEED && XFEED.restore()) || ++tries > 16) { clearInterval(_restoreIv); _restoreIv = null; brRestoring = false; }
+      if (brUserScrolled) { cancelAutoRestore(); return; }
+      if ((XFEED && XFEED.restore()) || ++tries > 16) { finishAutoRestore(); return; }
+      holdBrRestoring(360);        // 下一轮重试前继续保持抑制
     }, 320);
   }
 
@@ -2532,20 +2565,23 @@
     if (!inserted) return 0;
     brList.insertBefore(frag, brList.firstChild);
     const reanchor = () => {
-      // 抑制本次程序化定位引发的 scroll 事件（不当用户操作/不保存），窗口闭合后再放开
-      brRestoring = true;
+      // 用户已自己滚动就彻底停止程序化定位——本函数会被立即调用 + rAF + ResizeObserver
+      // (4s 内) + 每张图片 load 反复触发，若不检查就会在用户滚动后一次次把人拽回锚点。
+      if (brUserScrolled) return;
+      // 抑制本次程序化定位引发的 scroll 事件（不当用户操作/不保存），窗口闭合后再放开。
+      // 用 holdBrRestoring 统一设置：散落的 setTimeout 会互相提前解除或把窗口越拉越长。
       if (opts.toTop) {
+        holdBrRestoring(200);
         cont.scrollTop = 0;
-        setTimeout(() => { brRestoring = false; }, 200);
         return;
       }
       // anchorTid（如恢复的上次位置）优先；否则用插入前视口顶部的卡片稳住当前位置
       const anchor = opts.anchorTid || beforeTopTid;
-      if (!anchor) { brRestoring = false; return; }
+      if (!anchor) return;         // 无锚点就别平白开一个抑制窗口
+      holdBrRestoring(1300);
       // 交给框架 feed()：按 id 定位并保留卡内偏移（跨设备一致）
       if (XFEED) XFEED.restore({ id: String(anchor), offset: 0 });
       else scrollCardToTop(anchor);
-      setTimeout(() => { brRestoring = false; }, 1300);
     };
     reanchor();
     requestAnimationFrame(reanchor);
@@ -2742,10 +2778,10 @@
           saveBrowseCache(items, true);
           if (anchorTid) {
             prependNewTweets(items, { toTop: false, anchorTid });
-          } else {
-            brRestoring = true;
+          } else if (!brUserScrolled) {
+            // 无锚点才回顶部；用户已经自己滚过就绝不动他的位置
+            holdBrRestoring(200);
             viewBrowse.scrollTop = 0;
-            setTimeout(() => { brRestoring = false; }, 200);
           }
         }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
@@ -3152,7 +3188,7 @@
     let brScrollTimer = null;
     brScroll.addEventListener('scroll', () => {
       if (brRestoring) return;          // 重定位（恢复锚点）引发的程序化滚动：不当作用户操作、不保存
-      brUserScrolled = true;
+      markUserScrolled();
       scheduleSavePos();
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
@@ -3162,6 +3198,24 @@
         if (nearBottom) loadBrowse(false);
       }, 250);
     });
+    // 真实用户输入通道：滚轮 / 触摸 / 键盘翻页。
+    // 只靠 scroll 事件不够——程序化重定位期间 brRestoring 为真（reanchor 可把它拉长
+    // 到 1.3s 以上，且被 ResizeObserver 与图片 load 不断续期），scroll 会被整段吞掉，
+    // 用户怎么滚都不算数。于是「刷新后立刻滑动」时 brUserScrolled 始终为假，
+    // pull 回调 / onStale / acquireMaster / loadBrowse 等 5 处恢复调用点便会
+    // 反复把人拽回锚点。真实输入不受抑制窗口影响，直接让位。
+    const SCROLL_KEYS = ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End',
+                         ' ', 'Spacebar'];
+    const onUserInput = () => markUserScrolled();
+    ['wheel', 'touchstart', 'touchmove'].forEach((t) => {
+      brScroll.addEventListener(t, onUserInput, { passive: true });
+    });
+    // 键盘翻页绑 document：滚动容器本身未必持有焦点
+    document.addEventListener('keydown', (e) => {
+      if (activeView !== 'browse') return;
+      if (SCROLL_KEYS.indexOf(e.key) < 0) return;
+      markUserScrolled();
+    }, { passive: true });
   }
 
   // 通用下拉刷新：在滚动容器顶部下拉（触摸）触发 onRefresh。
