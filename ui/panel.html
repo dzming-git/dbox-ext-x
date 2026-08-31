@@ -2493,9 +2493,28 @@
     }
   }
 
+  // 底部状态条：加载中转圈 / 到底「没有更多了」/ 失败「点击重试」（点击＝loadBrowse(false)）。
+  // 自动无限滚动期间也让它常驻可见，避免用户以为「卡住、不知道在不在加载」。
+  function setBrBottom(state) {
+    if (state === 'hidden') { brLoadmore.style.display = 'none'; return; }
+    brLoadmore.style.display = '';
+    if (state === 'loading') {
+      brMoreBtn.disabled = true;
+      brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…';
+    } else if (state === 'end') {
+      brMoreBtn.disabled = true;
+      brMoreBtn.innerHTML = '没有更多了';
+    } else if (state === 'error') {
+      brMoreBtn.disabled = false;
+      brMoreBtn.innerHTML = '加载失败，点击重试';
+    }
+  }
+
   async function loadBrowse(reset = true) {
     if (brLoading) return;
     brLoading = true;
+    const isOlder = !reset;
+    let olderErr = false;
     const openMode = !!(reset && brOpenMode);
     brOpenMode = false;
     let preview = false;
@@ -2506,14 +2525,14 @@
       // 故意不 await：先让「打开即秒开」用本地缓存把首屏渲染出来，缩短白屏；
       // 但取锚点定位前必须等它落地（见下方 await syncP），否则用的是本机旧锚点。
       syncP = acquireMaster();
-      brLoadmore.style.display = 'none';
+      setBrBottom('hidden');
       preview = renderCachedBrowse();
       brCursor = null;
       viewBrowse.scrollTop = 0;
       if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
-      if (brMoreBtn) { brMoreBtn.disabled = true; brMoreBtn.innerHTML = '<span class="spinner"></span>加载中…'; }
+      setBrBottom('loading');   // 自动加载也常驻显示转圈动画
     }
     try {
       if (reset) {
@@ -2545,7 +2564,6 @@
         }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
-        brLoadmore.style.display = 'none';   // 自动加载，隐藏手动按钮
       } else {
         // 上拉加载更旧：X 关注流游标会返回大量重叠内容，单次只多出 2-3 条。
         // 一次上拉连续翻多页，攒够一批真正新的推文再结束，做到「等一次、看很多」。
@@ -2554,11 +2572,17 @@
     } catch (e) {
       if (reset && !brList.querySelector('.bm-card'))
         brList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+      else if (isOlder) olderErr = true;   // 加载失败：底部显示「点击重试」
     } finally {
       if (openMode) showBgLoading(false);
       brLoading = false;
-      if (brMoreBtn) { brMoreBtn.disabled = false; brMoreBtn.innerHTML = '加载更多'; }
-      // 无脑上滑：内容不足一屏（还无法触发滚动）时自动续加载，直到填满或没有更多
+      // 底部状态：失败重试 / 到底 / 仍有更多则隐藏（由滚动或下方自动续拉接管）
+      if (olderErr) setBrBottom('error');
+      else if (brList.querySelector('.bm-empty.err')) setBrBottom('hidden');
+      else if (!brCursor) setBrBottom('end');
+      else setBrBottom('hidden');
+      // 加载完成后若仍在底部（或内容不足一屏），继续拉下一页，
+      // 与滚动监听形成双保险，避免「加载中触发的那次被防抖吃掉」导致停住不加载。
       setTimeout(brAutoFill, 200);
     }
   }
@@ -2599,17 +2623,18 @@
       }
       if (appendedTotal >= BATCH_TARGET) break;
     }
-    brLoadmore.style.display = 'none';
     if (appendedTotal && allItems.length) saveBrowseCache(allItems, true);
   }
 
   // 无脑上滑：若关注流尚未填满可视区（scrollHeight<=clientHeight 无法滚动触发
-  // 无限滚动），则自动继续加载下一页，保证用户只要一直上滑就有新推文，无需点按钮。
+  // 自动续拉：加载完成后兜底检查——内容不足一屏，或仍贴着底部附近，
+  // 就继续加载下一页。与滚动监听形成双保险，避免「加载中触发的那次被防抖吃掉」而停住。
   function brAutoFill() {
     if (brLoading || !brCursor) return;
     const cont = viewBrowse;
     if (!cont) return;
-    if (cont.scrollHeight <= cont.clientHeight + 8) {
+    const nearBottom = cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 400;
+    if (nearBottom || cont.scrollHeight <= cont.clientHeight + 8) {
       loadBrowse(false);
     }
   }
@@ -2620,6 +2645,7 @@
   const srchMoreBtn = $('srch-more');
   const srchInput = $('srch-input');
   let srchLoading = false;
+  let srchOlderErr = false;
   let srchCursor = null;
   let srchSeenIds = new Set();
   let srchQuery = '';
@@ -2675,7 +2701,23 @@
       srchList.appendChild(card);
       i++;
     });
-    srchLoadmore.style.display = srchCursor ? '' : 'none';
+    srchLoadmore.style.display = 'none';
+  }
+
+  // 底部状态条（搜索）：与首页 setBrBottom 同款，常驻可见避免「以为卡住」。
+  function setSrchBottom(state) {
+    if (state === 'hidden') { srchLoadmore.style.display = 'none'; return; }
+    srchLoadmore.style.display = '';
+    if (state === 'loading') {
+      srchMoreBtn.disabled = true;
+      srchMoreBtn.innerHTML = '<span class="spinner"></span>加载中…';
+    } else if (state === 'end') {
+      srchMoreBtn.disabled = true;
+      srchMoreBtn.innerHTML = '没有更多了';
+    } else if (state === 'error') {
+      srchMoreBtn.disabled = false;
+      srchMoreBtn.innerHTML = '加载失败，点击重试';
+    }
   }
 
   async function loadSearch(reset = true) {
@@ -2686,11 +2728,10 @@
     if (!reset && q !== srchQuery) reset = true; // 关键词变了，视为全新搜索
     if (reset) { srchCursor = null; srchSeenIds.clear(); srchQuery = q; }
     if (reset) {
-      srchLoadmore.style.display = 'none';
+      setSrchBottom('hidden');
       srchList.innerHTML = '<div class="bm-empty">正在搜索…</div>';
-    } else if (srchMoreBtn) {
-      srchMoreBtn.disabled = true;
-      srchMoreBtn.innerHTML = '<span class="spinner"></span>加载中…';
+    } else {
+      setSrchBottom('loading');
     }
     try {
       if (reset) {
@@ -2718,9 +2759,14 @@
     } catch (e) {
       if (reset && !srchList.querySelector('.bm-card'))
         srchList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+      else if (!reset) srchOlderErr = true;   // 加载更旧失败：底部显示「点击重试」
     } finally {
       srchLoading = false;
-      if (srchMoreBtn) { srchMoreBtn.disabled = false; srchMoreBtn.innerHTML = '加载更多'; }
+      if (srchOlderErr) setSrchBottom('error');
+      else if (srchList.querySelector('.bm-empty.err')) setSrchBottom('hidden');
+      else if (!srchCursor) setSrchBottom('end');
+      else setSrchBottom('hidden');
+      setTimeout(srchAutoFill, 200);
     }
   }
 
@@ -2755,7 +2801,17 @@
         if (appendedTotal >= BATCH_TARGET) break;
       } catch (e) { break; }
     }
-    srchLoadmore.style.display = srchCursor ? '' : 'none';
+  }
+
+  // 搜索自动续拉：与 brAutoFill 同逻辑，加载完若仍贴底或内容不足一屏则继续。
+  function srchAutoFill() {
+    if (srchLoading || !srchCursor) return;
+    const cont = viewSearch;
+    if (!cont) return;
+    const nearBottom = cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 400;
+    if (nearBottom || cont.scrollHeight <= cont.clientHeight + 8) {
+      loadSearch(false);
+    }
   }
 
   // 搜索结果本地缓存 + 多设备同步：热门/最新两份一起存；store 用框架 XSTATE（lww）。
