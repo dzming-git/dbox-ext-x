@@ -2255,11 +2255,18 @@
     try { XTWEETS.merge(mergeTweets(list || [])); } catch (_) {}
   }
   // 按 tweet_id 从全局单缓存取一条完整推文（并入会话总库 TWEET_STORE，内存里也只有一份）
+  // 防御服务端脏数据：旧代码 dtCacheDrop 的 lww 推送已在服务端留下残缺条目（缺 author.screen_name），
+  // pull 拉回后若不拦截会渲染为 @unknown 且点击后触发异常链。这里对关键字段做校验，
+  // 残缺条目返回 null 让调用方自行处理（列表过滤掉 / 详情走网络重拉）。
   function tweetCacheGet(id) {
     if (!XTWEETS || id == null) return null;
     const sid = String(id);
     const it = (XTWEETS.items() || []).find((x) => String(x.tweet_id || x.id) === sid);
-    return it ? mergeTweet(it) : null;
+    if (!it) return null;
+    const a = it.author || {};
+    // 服务端残留的脏数据特征：有 tweet_id 但 author 核心字段全空（旧 dtCacheDrop 删写竞态产物）
+    if (!it.text && !a.screen_name && !a.name) return null;
+    return mergeTweet(it);
   }
   // 详情页补全后回写：直接覆盖该推文的内容（正文/媒体）+ 评论分页 + 游标，确保
   // 「详情拉到的全文」压过列表里的截断版——union_by_id 按 created_at 同序时不会覆盖，
@@ -3360,12 +3367,20 @@
     // 都走这条路；这种情况下内容已经在本地，再拉一遍 X 没有意义）
     // force=true 用于「重新获取」：不删缓存、只强制重拉网络并覆盖写回，
     // 避免删缓存的 lww 推送在服务端先把这条顶掉、刷新时又被 pull 覆盖回来导致消失。
+    // 额外防御：即使命中缓存，若条目残缺（服务端 dtCacheDrop 遗留的脏数据），也降级
+    // 为强制重拉——网络拿回完整数据后 persistTweetToFeed+dtCachePut 会覆盖写回服务端，
+    // 逐步清洗掉已落盘的脏数据。
     const hit = dtCacheGet(tweetId);
     if (hit && !force) {
-      dtCurTweet = hit.tweet;
-      paintDetail(hit.tweet, hit.replies, hit.cursor);
-      if (dtScroll) dtScroll.scrollTop = 0;
-      return;
+      const ha = (hit.tweet && hit.tweet.author) || {};
+      if (!hit.tweet.text && !ha.screen_name && !ha.name) {
+        // 缓存命中但内容残缺 → 降级为 force 重拉
+      } else {
+        dtCurTweet = hit.tweet;
+        paintDetail(hit.tweet, hit.replies, hit.cursor);
+        if (dtScroll) dtScroll.scrollTop = 0;
+        return;
+      }
     }
     dtBody.innerHTML = '<div class="bm-empty">加载中…</div>';
     dtReplies.innerHTML = '';
