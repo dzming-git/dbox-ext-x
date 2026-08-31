@@ -85,6 +85,9 @@
   .lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; cursor: pointer; touch-action: none; overscroll-behavior: contain; }
   .lightbox.active { display: flex; }
   .lightbox img, .lightbox video { max-width: 92%; max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+  .lightbox .lb-stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; }
+  .lightbox .lb-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; will-change: transform; }
+  .lightbox .lb-layer.lb-anim { transition: transform .3s ease, opacity .3s ease; }
   .lightbox .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; cursor: pointer; border: none; border-radius: 50%; background: rgba(0,0,0,.4); color: #fff; font-size: 28px; opacity: 0; transition: opacity .2s; user-select: none; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
   .lightbox:hover .nav { opacity: .7; }
   .lightbox .nav:hover { opacity: 1; }
@@ -369,7 +372,7 @@
   <!-- Lightbox：点击图片放大 -->
   <div class="lightbox" id="lb">
     <button class="nav prev" id="lb-prev" aria-label="上一张"></button>
-    <img id="lb-img" alt="" />
+    <div class="lb-stage" id="lb-stage"></div>
     <button class="nav next" id="lb-next" aria-label="下一张"></button>
     <div class="counter" id="lb-counter"></div>
   </div>
@@ -803,46 +806,33 @@
   // 关闭预览 → 回到空闲状态（表单保留），缓存不清除
   $('pv-cancel').onclick = () => { showIdle(); };
 
-  /* ---- Lightbox：点击图片放大查看 + 左右切换（图片/视频） ---- */
+  /* ---- Lightbox：点击图片放大查看 + 左右切换（图片/视频，带层叠过渡） ---- */
   const lbEl = $('lb');
-  const lbImg = $('lb-img');
+  const lbStage = $('lb-stage');
   const lbCounter = $('lb-counter');
-  function showLightbox(idx) {
-    _lbIdx = idx;
-    renderLightbox();
-    if (!lbEl.classList.contains('active')) enterDrill('lb');   // 拦截浏览器后退
-    lbEl.classList.add('active');
-  }
-  function renderLightbox() {
-    const item = _lbItems[_lbIdx];
-    if (!item) return;
-    // 清理上一项（停止播放、销毁 hls 实例，避免多个视频同时播放/内存泄漏）
-    const oldVid = lbEl.querySelector('video');
-    if (oldVid) { try { oldVid._hls && oldVid._hls.destroy(); } catch (e) {} oldVid.pause(); oldVid.remove(); }
-    const oldNote = lbEl.querySelector('.lb-note');
-    if (oldNote) oldNote.remove();
-    lbImg.style.display = 'none';
-    lbImg.removeAttribute('src');
 
+  // 构建某一项的「媒体层」：图片直接 <img>；视频走 hls.js/直链，不可播时回退封面 + 下载提示。
+  // 返回独立的 .lb-layer 元素，便于切换时在 stage 内叠放旧层与新层做过渡。
+  function lbBuildLayer(item) {
+    const layer = document.createElement('div');
+    layer.className = 'lb-layer';
     if (item.type === 'video') {
       const m3u8 = item.m3u8 || '';
       const mp4 = item.src || '';
-      // 优先 m3u8（hls.js：自适应码率，全屏自动升最高清）；其次直链 mp4；都没有才回退封面 + 下载
       if (m3u8 && window.Hls && window.Hls.isSupported()) {
         const v = document.createElement('video');
         v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
         v.preload = 'metadata';
         v.addEventListener('click', (e) => e.stopPropagation());
-        lbEl.insertBefore(v, lbCounter);
+        layer.appendChild(v);
         const hls = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: false });
         hls.loadSource(m3u8);
         hls.attachMedia(v);
         hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
-        // 全屏强制最高 level 保证清晰度（hls.js 小窗下会选低码率，全屏不升档导致糊）
         const syncLevel = () => {
           if (hls.levels && hls.levels.length) {
             hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
-              ? hls.levels.length - 1 : -1; // 全屏最高清，退出恢复 ABR 自动
+              ? hls.levels.length - 1 : -1;
           }
         };
         v.addEventListener('fullscreenchange', syncLevel);
@@ -856,18 +846,18 @@
         v.preload = 'metadata';
         v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
         v.addEventListener('click', (e) => e.stopPropagation());
-        lbEl.insertBefore(v, lbCounter);
+        layer.appendChild(v);
       } else {
-        // 既无 m3u8 也无直链：显示封面 + 下载提示
-        lbImg.style.display = '';
-        lbImg.src = item.cover || '';
+        const img = document.createElement('img');
+        img.src = item.cover || '';
+        layer.appendChild(img);
         const note = document.createElement('div');
         note.className = 'lb-note';
         note.innerHTML = `<div class="lb-note-tip">该视频暂无法在线预览，可下载后查看。</div>`
           + (item.mi !== undefined ? `<button class="lb-dl" id="lb-dl-video">⬇ 下载此视频</button>` : '');
-        lbEl.appendChild(note);
+        layer.appendChild(note);
         if (item.mi !== undefined) {
-          $('lb-dl-video').addEventListener('click', (e) => {
+          note.querySelector('#lb-dl-video').addEventListener('click', (e) => {
             e.stopPropagation();
             showStatus();
             setProgress(0, '开始下载视频…');
@@ -876,19 +866,94 @@
         }
       }
     } else {
-      lbImg.style.display = '';
-      lbImg.src = item.src;
+      const img = document.createElement('img');
+      img.src = item.src;
+      layer.appendChild(img);
     }
+    return layer;
+  }
+
+  let lbCurLayer = null;     // stage 中当前显示的层
+  let _lbAnimating = false;  // 过渡进行中：屏蔽重复触发，避免层叠错乱
+
+  function _lbUpdateChrome() {
     const total = _lbItems.length;
     lbCounter.textContent = total > 1 ? `${_lbIdx + 1} / ${total}` : '';
     const hide = total <= 1;
     $('lb-prev').style.display = hide ? 'none' : 'flex';
     $('lb-next').style.display = hide ? 'none' : 'flex';
   }
+
+  // 即时渲染（初始打开 / 视频项切换）：清掉旧层（含销毁 hls）后直接挂新层
+  function renderLightbox() {
+    const item = _lbItems[_lbIdx];
+    if (!item) return;
+    const oldVid = lbStage.querySelector('video');
+    if (oldVid) { try { oldVid._hls && oldVid._hls.destroy(); } catch (e) {} oldVid.pause(); }
+    lbStage.innerHTML = '';
+    const layer = lbBuildLayer(item);
+    lbStage.appendChild(layer);
+    lbCurLayer = layer;
+    _lbUpdateChrome();
+  }
+
+  // 层叠过渡：旧层滑出、新层从对侧滑入；过渡期间两张图同时存在于 stage（即「同时存在」）。
+  // 全部用 px 计算，可与手指拖动释放后的当前位移无缝衔接继续滑出。
+  function lbAnimateTransition(dir, startX) {
+    _lbAnimating = true;
+    const W = lbStage.clientWidth || lbEl.clientWidth || 1;
+    const outLayer = lbCurLayer;
+    const inLayer = lbBuildLayer(_lbItems[_lbIdx]);
+    inLayer.classList.add('lb-anim');
+    outLayer.classList.add('lb-anim');
+    outLayer.style.transition = '';   // 清掉拖动时残留的 inline none，让类上的过渡生效
+    lbStage.appendChild(inLayer);
+    inLayer.style.transform = `translateX(${dir * W}px)`;
+    outLayer.style.transform = `translateX(${startX}px)`;
+    outLayer.style.opacity = '1';
+    void lbStage.offsetWidth;         // 强制重排，让初始位置先生效再开始过渡
+    inLayer.style.transform = 'translateX(0)';
+    outLayer.style.transform = `translateX(${-dir * W}px)`;
+    outLayer.style.opacity = '0';
+    let done = false;
+    const finish = () => {
+      if (done) return; done = true;
+      inLayer.removeEventListener('transitionend', finish);
+      if (outLayer.parentNode) {
+        const ov = outLayer.querySelector('video');
+        if (ov) { try { ov._hls && ov._hls.destroy(); } catch (e) {} ov.pause(); }
+        outLayer.parentNode.removeChild(outLayer);
+      }
+      inLayer.classList.remove('lb-anim');
+      inLayer.style.transform = ''; inLayer.style.opacity = '';
+      lbCurLayer = inLayer;
+      _lbAnimating = false;
+    };
+    inLayer.addEventListener('transitionend', finish);
+    setTimeout(finish, 380);          // 无 transitionend 时的兜底（图片层可能不派发）
+  }
+
   function lbStep(dir) {
-    if (_lbItems.length <= 1) return;
-    _lbIdx = (_lbIdx + dir + _lbItems.length) % _lbItems.length;
+    if (_lbItems.length <= 1 || _lbAnimating) return;
+    const cur = _lbItems[_lbIdx];
+    const newIdx = (_lbIdx + dir + _lbItems.length) % _lbItems.length;
+    const next = _lbItems[newIdx];
+    // 视频/文档项不参与层叠过渡，维持原即时切换（避免 hls 实例在过渡中错乱）
+    if (cur.type !== 'image' || next.type !== 'image') {
+      _lbIdx = newIdx;
+      renderLightbox();
+      return;
+    }
+    _lbIdx = newIdx;
+    _lbUpdateChrome();
+    lbAnimateTransition(dir, 0);
+  }
+
+  function showLightbox(idx) {
+    _lbIdx = idx;
     renderLightbox();
+    if (!lbEl.classList.contains('active')) enterDrill('lb');   // 拦截浏览器后退
+    lbEl.classList.add('active');
   }
   $('lb-prev').addEventListener('click', (e) => { e.stopPropagation(); lbStep(-1); });
   $('lb-next').addEventListener('click', (e) => { e.stopPropagation(); lbStep(1); });
@@ -984,12 +1049,10 @@
   let _lbSwiped = false;
   let _lbSX = 0, _lbSY = 0, _lbSwiping = false, _lbLocked = false;
   function _lbMediaEl() {
-    if (lbImg.style.display !== 'none') return lbImg;
-    const v = lbEl.querySelector('video');
-    return v || lbImg;
+    return lbCurLayer || lbStage.firstElementChild || lbEl;
   }
   lbEl.addEventListener('touchstart', (e) => {
-    if (_lbItems.length <= 1) return;
+    if (_lbItems.length <= 1 || _lbAnimating) return;
     const t = e.touches[0];
     _lbSX = t.clientX; _lbSY = t.clientY;
     _lbSwiping = true; _lbLocked = false;
@@ -998,7 +1061,7 @@
     _lbSwiped = false;
   }, { passive: true });
   lbEl.addEventListener('touchmove', (e) => {
-    if (!_lbSwiping || _lbItems.length <= 1) return;
+    if (!_lbSwiping || _lbItems.length <= 1 || _lbAnimating) return;
     const t = e.touches[0];
     const dx = t.clientX - _lbSX, dy = t.clientY - _lbSY;
     // 一旦判定为横向滑动，即锁定并吞掉浏览器默认手势（核心防后退手段）
@@ -1020,8 +1083,19 @@
     if (_lbLocked && Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
       e.preventDefault();          // 阻止随后合成的 click 关闭灯箱
       _lbSwiped = true;
-      m.style.transition = ''; m.style.transform = '';
-      lbStep(dx < 0 ? 1 : -1);
+      const dir = dx < 0 ? 1 : -1;
+      // 拖到阈值即切换；以当前位移 dx 作为旧层起点，从手指处无缝继续滑出
+      _lbIdx = (_lbIdx + dir + _lbItems.length) % _lbItems.length;
+      const prevItem = _lbItems[(_lbIdx - dir + _lbItems.length) % _lbItems.length];
+      const nextItem = _lbItems[_lbIdx];
+      if (prevItem.type === 'image' && nextItem.type === 'image') {
+        _lbUpdateChrome();
+        lbAnimateTransition(dir, dx);
+      } else {
+        // 涉及视频/文档：复位拖拽并重渲染（即时切换，无层叠过渡）
+        m.style.transition = ''; m.style.transform = '';
+        renderLightbox();
+      }
     } else {
       // 未达阈值：回弹归位
       m.style.transition = 'transform .2s ease';
