@@ -1291,6 +1291,45 @@ def _unwrap_tweet(node):
     return node
 
 
+def _nested_tweet(tweet, *keys):
+    """按多个候选键名取嵌套推文（X 的字段名有单数 / 复数两套），并剥掉包装层。
+
+    X 不同接口、不同时期对「被转发 / 被引用」的字段名并不统一：
+    retweeted_status_results / quoted_status_results（复数，旧）与
+    retweeted_status_result / quoted_status_result（单数，现行）。只认其中一种
+    会导致嵌套原推取不到，进而退化成扁平化 RT——原推作者的头像与昵称都不在
+    响应里，只能拿 handle 顶替。
+    """
+    if not isinstance(tweet, dict):
+        return None
+    for k in keys:
+        container = tweet.get(k) or {}
+        if not isinstance(container, dict):
+            continue
+        node = container.get('result')
+        if not isinstance(node, dict):
+            node = container.get('tweet')
+        node = _unwrap_tweet(node)
+        if isinstance(node, dict) and node.get('__typename') == 'Tweet':
+            return node
+    return None
+
+
+def _mention_name(tweet_legacy, handle):
+    """从推文的 user_mentions 里按 screen_name 取显示名（大小写不敏感）。
+
+    扁平化 RT 的响应里没有原推对象，显示名只能从这里捞；捞不到返回 None，
+    由调用方留空——不可用 handle 顶替，否则界面上会把 id 当成昵称显示。
+    """
+    try:
+        for u in ((tweet_legacy.get('entities') or {}).get('user_mentions') or []):
+            if (u.get('screen_name') or '').lower() == (handle or '').lower():
+                return u.get('name') or None
+    except Exception:
+        pass
+    return None
+
+
 def _extract_quoted(qtweet):
     """从被引用的原推里提取作者/正文/媒体（用于「引用转发」嵌套展示）。
 
@@ -1373,34 +1412,24 @@ def _extract_bookmark_tweets(data):
             #    仅当原推作者与转发者不同时才算「真正转推」（排除自嵌套）。
             retweeted_by = None
             quoted = None
-            _rt = _unwrap_tweet(((outer.get('retweeted_status_results') or {})
-                                 .get('result')) or {})
-            if (isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet'
+            _rt = _nested_tweet(outer, 'retweeted_status_results', 'retweeted_status_result')
+            if (_rt is not None
                     and _screen_of(_rt) and _screen_of(_rt) != _ou_screen):
                 result = _rt
                 retweeted_by = rt_by
             else:
-                # 2) 引用转发（引用某推）：被引原推放在 quoted_status_results.result，
+                # 2) 引用转发（引用某推）：被引原推放在 quoted_status_* 里，
                 #    其图片/视频之前未被解析，这里提取出来做嵌套展示。
-                #    兼容单数字段名 quoted_status_result，并剥掉可见性包装层——
-                #    否则被引原推会被静默丢弃（用户只看得到引用者自己的评论）。
-                _q = ((((outer.get('quoted_status_results') or {})
-                        .get('result'))
-                       or ((outer.get('quoted_status_result') or {}).get('result'))
-                       or {}))
-                _q = _unwrap_tweet(_q)
-                if (isinstance(_q, dict) and _q.get('__typename') == 'Tweet'
+                _q = _nested_tweet(outer, 'quoted_status_results', 'quoted_status_result')
+                if (_q is not None
                         and _screen_of(_q) and _screen_of(_q) != _ou_screen):
                     quoted = _extract_quoted(_q)
 
             # 2.5) 纯转推的原推本身又是引用转发时，同样把它的被引原推带出来，
             #      否则这类「转发 + 评论」组合仍会丢掉原贴。
             if quoted is None:
-                _q2 = _unwrap_tweet((((result.get('quoted_status_results') or {})
-                                      .get('result'))
-                                     or ((result.get('quoted_status_result') or {}).get('result'))
-                                     or {}))
-                if isinstance(_q2, dict) and _q2.get('__typename') == 'Tweet':
+                _q2 = _nested_tweet(result, 'quoted_status_results', 'quoted_status_result')
+                if _q2 is not None:
                     quoted = _extract_quoted(_q2)
 
             legacy = result.get('legacy') or {}
@@ -1421,8 +1450,11 @@ def _extract_bookmark_tweets(data):
             # 主作者：扁平化 RT 用解析出的原推 handle（无头像/显示名）；其余从原推 user 推导。
             # 注意：必须在扁平化分支之后、且不可被下面的赋值覆盖，否则会回到「显示转发者」。
             if flat_rt_handle is not None:
+                # 扁平化 RT 的响应里没有原推对象，头像无从获取；显示名尽量从
+                # entities.user_mentions 里取回来，取不到就留空——绝不能用
+                # handle 顶替显示名，否则界面上会把 id 当成昵称显示。
                 author = {
-                    'name': flat_rt_handle,
+                    'name': _mention_name(legacy, flat_rt_handle) or '',
                     'screen_name': flat_rt_handle,
                     'avatar': None,
                     'verified': False,
@@ -1564,9 +1596,9 @@ def _extract_tweet_obj(r):
     _ou = (((r.get('core') or {}).get('user_results') or {}).get('result')) or {}
     rt_by = _author_dict(_ou.get('legacy') or _ou, _ou.get('core') or {}, _ou)
     _ou_screen = (_ou.get('legacy') or _ou).get('screen_name')
-    _rt = _unwrap_tweet(((r.get('retweeted_status_results') or {}).get('result')) or {})
+    _rt = _nested_tweet(r, 'retweeted_status_results', 'retweeted_status_result')
     _rt_screen = None
-    if isinstance(_rt, dict) and _rt.get('__typename') == 'Tweet':
+    if _rt is not None:
         _rtu = (((_rt.get('core') or {}).get('user_results') or {}).get('result')) or {}
         _rt_screen = (_rtu.get('legacy') or _rtu).get('screen_name')
     flat_rt_handle = None
@@ -1607,8 +1639,9 @@ def _extract_tweet_obj(r):
     # 扁平化 RT：主作者用解析出的原推 handle（无头像/显示名），与浏览/收藏路径一致，
     # 避免异步详情抓取（详情接口常缺嵌套原推）把主体回退成转发者、造成「过几秒跳回转发者」的回退。
     if flat_rt_handle is not None:
+        # 同浏览路径：头像无从获取，显示名取不到就留空，不可用 handle 顶替。
         author = {
-            'name': flat_rt_handle,
+            'name': _mention_name(legacy, flat_rt_handle) or '',
             'screen_name': flat_rt_handle,
             'avatar': None,
             'verified': False,
@@ -1620,11 +1653,8 @@ def _extract_tweet_obj(r):
         retweeted_by = None
     # 引用转发：把被引原推一并带出，详情页才能同时展示「转发人的评论 + 原贴」
     quoted = None
-    _q = ((((r.get('quoted_status_results') or {}).get('result'))
-           or ((r.get('quoted_status_result') or {}).get('result'))
-           or {}))
-    _q = _unwrap_tweet(_q)
-    if isinstance(_q, dict) and _q.get('__typename') == 'Tweet':
+    _q = _nested_tweet(r, 'quoted_status_results', 'quoted_status_result')
+    if _q is not None:
         quoted = _extract_quoted(_q)
     return {
         'tweet_id': r.get('rest_id'),

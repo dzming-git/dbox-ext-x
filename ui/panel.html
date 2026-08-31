@@ -1385,7 +1385,7 @@
       <div class="head">
         ${a.avatar ? `<img class="avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
-          <div class="name">${esc2(a.name || a.screen_name || '未知用户')}</div>
+          ${(a.name && a.name !== a.screen_name) ? `<div class="name">${esc2(a.name)}</div>` : ''}
           <div class="handle">@${esc2(a.screen_name || 'unknown')}</div>
         </div>
         <div class="time">${esc2(fmtTime(item.created_at))}</div>
@@ -1645,7 +1645,7 @@
         <div class="q-head">
           ${a.avatar ? `<img class="q-avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
           <div>
-            <div class="q-name" data-link="${esc2(profileUrl)}">${esc2(a.name || a.screen_name || '未知用户')}</div>
+            ${(a.name && a.name !== a.screen_name) ? `<div class="q-name" data-link="${esc2(profileUrl)}">${esc2(a.name)}</div>` : ''}
             <div class="q-handle">@${esc2(a.screen_name || 'unknown')}</div>
           </div>
         </div>
@@ -1669,7 +1669,7 @@
       <div class="head">
         ${a.avatar ? `<img class="avatar" data-link="${esc2(profileUrl)}" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
-          <div class="name" data-link="${esc2(profileUrl)}">${esc2(a.name || a.screen_name || '未知用户')}</div>
+          ${(a.name && a.name !== a.screen_name) ? `<div class="name" data-link="${esc2(profileUrl)}">${esc2(a.name)}</div>` : ''}
           <div class="handle">@${esc2(a.screen_name || 'unknown')}</div>
         </div>
         <div class="time">${esc2(fmtTime(item.created_at))}</div>
@@ -2620,7 +2620,7 @@
       <div class="dt-head">
         ${a.avatar ? `<img class="dt-avatar" src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div>
-          <div class="dt-name" data-link="${esc2(profileUrl)}">${esc2(a.name || a.screen_name || '未知用户')}</div>
+          ${(a.name && a.name !== a.screen_name) ? `<div class="dt-name" data-link="${esc2(profileUrl)}">${esc2(a.name)}</div>` : ''}
           <div class="dt-handle">@${esc2(a.screen_name || 'unknown')}</div>
         </div>
         <div class="dt-time">${esc2(fmtTime(t.created_at))}</div>
@@ -2710,7 +2710,7 @@
       ${a.avatar ? `<img src="${esc2(a.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
       <div class="rv">
         <div class="head">
-          <span class="rname">${esc2(a.name || a.screen_name || '未知')}</span>
+          ${(a.name && a.name !== a.screen_name) ? `<span class="rname">${esc2(a.name)}</span>` : ''}
           <span class="rhandle">@${esc2(a.screen_name || 'unknown')}</span>
           <span class="dt-time">${esc2(fmtTime(rp.created_at))}</span>
         </div>
