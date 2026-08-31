@@ -613,6 +613,30 @@ def extract_from_html(html, cookie_header, tweet_id=''):
     return media
 
 
+def _video_aspect(m):
+    """从 media 实体提取视频宽高（X 的 video_info.aspect_ratio = [w, h]）。
+
+    供前端在渲染时预留空间：否则封面/视频加载完成前容器高度为 0、加载后突然撑开，
+    既造成滚动过程中的布局抖动，也让点播瞬间「先塌成小框、再变大」。
+    """
+    vi = m.get('video_info') if isinstance(m.get('video_info'), dict) else {}
+    ar = vi.get('aspect_ratio') or []
+    w = h = 0
+    try:
+        w = int(ar[0]) if len(ar) > 0 else 0
+        h = int(ar[1]) if len(ar) > 1 else 0
+    except (TypeError, ValueError):
+        w = h = 0
+    if not (w > 0 and h > 0):   # 退化：部分响应把尺寸放在 original_info
+        oi = m.get('original_info') if isinstance(m.get('original_info'), dict) else {}
+        try:
+            w = int(oi.get('width') or 0)
+            h = int(oi.get('height') or 0)
+        except (TypeError, ValueError):
+            w = h = 0
+    return {'w': w, 'h': h} if (w > 0 and h > 0) else {}
+
+
 def pick_m3u8(urls):
     """优先选具体分辨率的分片列表（含 /vid/WxH/），否则取第一个。"""
     for u in urls:
@@ -756,11 +780,12 @@ def extract_from_api(tweet_id, cookie_header, opener):
                 mp4s = [v for v in variants
                         if v.get('content_type') == 'video/mp4' and v.get('url')]
                 best_mp4 = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
-                media.append({'type': 'video',
-                              'url': pick_m3u8(m3u8),
-                              'label': '视频/动图',
-                              'cover': ent.get('media_url_https') or ent.get('media_url') or '',
-                              'mp4': (best_mp4.get('url') or '') if best_mp4 else ''})
+                media.append(dict({'type': 'video',
+                                   'url': pick_m3u8(m3u8),
+                                   'label': '视频/动图',
+                                   'cover': ent.get('media_url_https') or ent.get('media_url') or '',
+                                   'mp4': (best_mp4.get('url') or '') if best_mp4 else ''},
+                                  **_video_aspect(ent)))
         elif mtype == 'document':
             # X 文档附件：记录下载地址与媒体 id，供下载阶段抓取实际文档
             media.append({'type': 'document',
@@ -1257,7 +1282,8 @@ def _normalize_media(tweet_legacy):
             best = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
             mp4 = best.get('url') if best else None
             cover = m.get('media_url_https') or m.get('media_url')
-            media.append({'type': 'video', 'cover': cover, 'url': mp4})
+            media.append(dict({'type': 'video', 'cover': cover, 'url': mp4},
+                              **_video_aspect(m)))
     return media
 
 
@@ -1282,13 +1308,13 @@ def _normalize_note_tweet_media(nt_media_list):
             m3u8s = [v['url'] for v in variants
                      if v.get('content_type') == 'application/x-mpegURL']
             cover = m.get('media_url_https') or m.get('media_url') or ''
-            media.append({
+            media.append(dict({
                 'type': 'video',
                 'url': pick_m3u8(m3u8s) if m3u8s else (best.get('url') if best else ''),
                 'label': '视频/动图',
                 'cover': cover,
                 'mp4': (best.get('url') or '') if best else '',
-            })
+            }, **_video_aspect(m)))
     return media
 
 
@@ -1937,9 +1963,9 @@ def _normalize_legacy_media(media_list):
                     if v.get('content_type') == 'video/mp4' and v.get('url')]
             best = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
             cover = m.get('media_url_https') or m.get('media_url') or ''
-            media.append({'type': 'video', 'cover': cover,
-                          'url': best.get('url') if best else '',
-                          'label': '视频/动图'})
+            media.append(dict({'type': 'video', 'cover': cover,
+                               'url': best.get('url') if best else '',
+                               'label': '视频/动图'}, **_video_aspect(m)))
     return media
 
 

@@ -131,6 +131,8 @@
      够不着，必须自带一份，否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
   .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; }
   .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
+  /* 封面缩略图（<img>）：与上面的 video 同规则，保证点播前后尺寸一致、不跳动 */
+  .dt-media .dt-video > img { width: 100%; max-height: 70vh; display: block; object-fit: contain; background: #000; }
   .dt-media .dt-video .bm-play { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; font-size: 18px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
   .dt-media .dt-video.playing .bm-play { display: none; }
   .dt-media .dt-video .bm-vclose { position: absolute; top: 8px; right: 8px; z-index: 3; width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
@@ -1047,6 +1049,7 @@
     if (rec.el && rec.el._thumbHtml !== undefined) {
       rec.el.innerHTML = rec.el._thumbHtml;
       rec.el.classList.remove('playing');
+      rec.el.style.height = '';   // 解除冻结，高度交还封面自行撑开
     }
     if (_inlineVid && _inlineVid.el === rec.el) _inlineVid = null;
   }
@@ -1056,6 +1059,12 @@
     if (mediaEl.classList.contains('playing')) return;
     if (_inlineVid) stopInlineVideo(_inlineVid);   // 同时只播一个
     if (mediaEl._thumbHtml === undefined) mediaEl._thumbHtml = mediaEl.innerHTML;
+    // 冻结容器高度：单图/单视频（m1）的 .bm-media 高度是「由内容撑开」的，
+    // 一旦 innerHTML 清空就塌陷，video 的 height:100% 失去基准 → 先黑成一条，
+    // 等 loadedmetadata 拿到内在尺寸后才撑开，即「加载前框变小、加载后框变大」。
+    // 把当前实测高度钉住，可让点播前后尺寸完全一致（停止时还原）。
+    const _rect = mediaEl.getBoundingClientRect();
+    if (_rect.height > 0) mediaEl.style.height = Math.round(_rect.height) + 'px';
     mediaEl.classList.add('playing');
     const v = document.createElement('video');
     v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false; v.preload = 'metadata';
@@ -1676,7 +1685,14 @@
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
         const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
+        // 缩略图用 <img> 承载封面，不再用 <video src="" poster>：无 src 的 <video>
+        // 内在尺寸恒为 300×150（HTML 规范默认值），poster 只绘制在元素上、不改变
+        // 元素尺寸，竖屏封面会被塞进这个小横框（「框很小」）；而 <img> 有自然尺寸，
+        // 容器能按封面真实比例撑开。
+        // 带上封面真实宽高：浏览器据此推导 aspect-ratio，在封面（lazy）尚未加载
+        // 时就能预留正确空间，避免滚动与点播时容器塌陷抖动（消除 CLS 的标准做法）。
+        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
@@ -1936,6 +1952,17 @@
     wrap.appendChild(btn);
   }
 
+  // 视频封面加载失败：不能走 _onImgErr——那会把容器变成 80px 小框 + 🖼 + 重试按钮，
+  // 破坏「点封面即播放」。这里只隐藏破图、给容器补一个 16:9 占位，▶ 仍可点播。
+  function _onVideoCoverErr(img) {
+    img.style.visibility = 'hidden';
+    const wrap = img.parentElement;
+    if (wrap && !wrap.dataset.coverErr && !wrap.style.aspectRatio) {
+      wrap.dataset.coverErr = '1';
+      wrap.style.aspectRatio = '16 / 9';
+    }
+  }
+
   // 以推文（卡片）为单位，强制重新获取该卡所有媒体：给每个媒体 URL 追加
   // force=1，让代理忽略本地 LRU、重新从上游拉取并覆盖坏缓存。
   function _forceReloadSrc(src) {
@@ -1986,7 +2013,14 @@
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
         const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
+        // 缩略图用 <img> 承载封面，不再用 <video src="" poster>：无 src 的 <video>
+        // 内在尺寸恒为 300×150（HTML 规范默认值），poster 只绘制在元素上、不改变
+        // 元素尺寸，竖屏封面会被塞进这个小横框（「框很小」）；而 <img> 有自然尺寸，
+        // 容器能按封面真实比例撑开。
+        // 带上封面真实宽高：浏览器据此推导 aspect-ratio，在封面（lazy）尚未加载
+        // 时就能预留正确空间，避免滚动与点播时容器塌陷抖动（消除 CLS 的标准做法）。
+        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
@@ -3389,8 +3423,12 @@
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
         if (!mp4 && !m3u8) return '';
         const poster = mediaUrl(m.cover || '', 'image');
+        // 同卡片缩略图：用 <img> 承载封面以获得真实比例，避免 <video> 固有的
+        // 300×150 小框（无 src 时 poster 不改变元素尺寸）
+        // 同样带上封面真实宽高以预留空间（消除加载过程中的布局跳动）
+        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
         return `<div class="bm-media dt-video" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}">`
-          + `<video src=""${poster ? ` poster="${esc2(poster)}"` : ''} muted playsinline></video>`
+          + (poster ? `<img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/>` : '')
           + `<span class="bm-play">▶</span></div>`;
       }
       return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />` : '';
