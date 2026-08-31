@@ -206,6 +206,18 @@ def create_blueprint(host):
     _CACHE_MAX_BYTES = 512 * 1024 * 1024                    # 512MB 上限
     os.makedirs(_CACHE_LRU_DIR, exist_ok=True)
 
+    # 清理上次运行残留的 .part：服务重启会中断进行中的下载，留下半截文件。
+    # 这些残骸既占空间，又会让后续请求误以为「正在下载」而一直空转。
+    try:
+        for _fn in os.listdir(_CACHE_LRU_DIR):
+            if _fn.endswith('.part'):
+                try:
+                    os.remove(os.path.join(_CACHE_LRU_DIR, _fn))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     _LRU_LOCK = threading.Lock()
     _lru_meta = OrderedDict()   # key -> {"ext": str, "size": int, "type": str}
     _lru_total = 0
@@ -273,7 +285,7 @@ def create_blueprint(host):
                 return None
             return path, val.get('ext', '')
 
-    def _cache_put_file(url, tmp_path, ext):
+    def _cache_put_file(url, tmp_path, ext, keep_on_fail=False):
         """把已落盘的临时文件登记进 LRU 缓存（流式代理用）。
 
         与 _cache_put 的区别：不要求整份字节已在内存里。视频动辄几十上百 MB，先
@@ -288,13 +300,26 @@ def create_blueprint(host):
             if key in _lru_meta:
                 _lru_total -= _lru_meta[key].get('size', 0)
                 del _lru_meta[key]
-            try:
-                os.replace(tmp_path, path)
-            except Exception:
+            # 若 .part 此刻仍被流式响应的读句柄占用，Windows 下 os.replace 会抛错。
+            # 生成器在没有新数据时会主动关闭句柄，这里重试若干次以覆盖那个窗口；
+            # 此前一次失败即放弃，.part 永远残留、缓存永不生效。
+            replaced = False
+            for _attempt in range(12):
                 try:
-                    os.remove(tmp_path)
+                    os.replace(tmp_path, path)
+                    replaced = True
+                    break
                 except Exception:
-                    pass
+                    time.sleep(0.15)
+            if not replaced:
+                # keep_on_fail：若仍被流式响应的读句柄占用，就不要删除。
+                # 删掉会让已下完的字节白费、本次请求拿到残缺数据；保留下来，
+                # 由响应的 finally（句柄已释放）补做改名登记。
+                if not keep_on_fail:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
                 return None
             sz = os.path.getsize(path)
             _lru_meta[key] = {'ext': ext, 'size': sz}
@@ -308,7 +333,15 @@ def create_blueprint(host):
     # 完整下载完登记 LRU 缓存，之后走上面的 send_file 分支（同样支持 Range）。
     _media_dl_lock = threading.Lock()
     _media_dl_active = set()
-    _media_dl_err = set()
+    # 失败记录：url -> 失败时刻。必须带 TTL，不能永久拉黑——
+    # 此前用 set 永久记录，且唯一的清除语句写死在 _start_media_download() 内，
+    # 而 media() 在调用它之前就先 return 502 了，那行永远执行不到，
+    # 结果是「URL 失败一次就永远 502」，代理后来恢复也再不会重试。
+    _media_dl_err = {}                       # url -> float(timestamp)
+    _MEDIA_ERR_TTL = 45.0                    # 失败 45 秒后允许再次尝试
+    # 并发下载上限：代理（Clash 等）在突发并发下会 ERRNO2 / 10053，
+    # 收藏列表一次性加载十几张图时极易被掐断，故串行化到 4 路。
+    _media_dl_sem = threading.Semaphore(4)
 
     def _media_ext_ct(url, mtype):
         """按 URL 后缀 / 显式 type 推断扩展名与 mimetype（用于边下边播的响应类型）。
@@ -335,59 +368,89 @@ def create_blueprint(host):
               else 'video/mp4' if ext == '.mp4' else mimetypes.guess_type(url)[0] or 'image/jpeg')
         return ext, ct
 
+    _MEDIA_DL_TRIES = 3          # 单次代理抖动（ERRNO2 / 10053）很常见，允许重试
+
     def _start_media_download(url, tmp_path, ext):
-        """后台把上游 twimg 读到 .part，完成后登记 LRU 缓存；同一 url 并发只跑一个线程。"""
+        """后台把上游 twimg 读到 .part，完成后登记 LRU 缓存；同一 url 并发只跑一个线程。
+
+        失败后可重试：代理在并发突发时会掐断连接，单次失败即永久放弃会让图片
+        长时间出不来（此前一次失败就永久拉黑）。
+        """
         with _media_dl_lock:
             if url in _media_dl_active:
                 return
             _media_dl_active.add(url)
-            _media_dl_err.discard(url)
+            _media_dl_err.pop(url, None)
         def run():
+            last_err = None
             try:
-                cookie = _x_cookie_header()
-                headers = xrun.build_headers(cookie, with_bearer=True)
-                opener = xrun.make_opener(None)
-                # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket
-                xrun._apply_socks()
-                try:
-                    up = opener.open(urllib.request.Request(url, headers=headers), timeout=90)
-                finally:
-                    xrun._restore_socks()
-                with open(tmp_path, 'wb') as f:
-                    while True:
-                        chunk = up.read(65536)
-                        if not chunk:
+                for attempt in range(_MEDIA_DL_TRIES):
+                    try:
+                        # 并发闸门：整段下载（含连接与读流）都在信号量内，
+                        # 避免收藏列表一次性拉十几张图把代理打垮。
+                        with _media_dl_sem:
+                            cookie = _x_cookie_header()
+                            headers = xrun.build_headers(cookie, with_bearer=True)
+                            opener = xrun.make_opener(None)
+                            # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket
+                            xrun._apply_socks()
+                            try:
+                                up = opener.open(urllib.request.Request(
+                                    url, headers=headers), timeout=60)
+                            finally:
+                                xrun._restore_socks()
+                            try:
+                                with open(tmp_path, 'wb') as f:
+                                    while True:
+                                        chunk = up.read(65536)
+                                        if not chunk:
+                                            break
+                                        f.write(chunk)
+                            finally:
+                                try:
+                                    up.close()
+                                except Exception:
+                                    pass
+                        if os.path.getsize(tmp_path) > 0:
+                            # 已有字节就别删：此刻可能有流式响应正读着这个 .part，
+                            # Windows 下改名会失败，保留等响应的 finally 补登记。
+                            _cache_put_file(url, tmp_path, ext, keep_on_fail=True)
+                            last_err = None
                             break
-                        f.write(chunk)
-                try:
-                    up.close()
-                except Exception:
-                    pass
-                if os.path.getsize(tmp_path) > 0:
-                    _cache_put_file(url, tmp_path, ext)
-            except Exception as e:
-                # 下载失败：清理半成品，别让 .part 污染缓存。
-                # 必须打日志——此前静默吞异常，媒体一律失败却在日志里毫无痕迹，无法定位。
-                try:
-                    print(f'[x.media] 媒体下载失败 url={url} tmp={tmp_path} '
-                          f'err={type(e).__name__}: {e}', file=sys.stderr, flush=True)
-                except Exception:
-                    pass
-                try:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
-                except Exception:
-                    pass
-                with _media_dl_lock:
-                    _media_dl_err.add(url)
+                        raise RuntimeError('下载结果为空')
+                    except Exception as e:
+                        last_err = e
+                        # 清理半成品，别让 .part 污染缓存
+                        try:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                        except Exception:
+                            pass
+                        if attempt < _MEDIA_DL_TRIES - 1:
+                            time.sleep(1.2 * (attempt + 1))   # 退避后重试
+                            continue
             finally:
+                if last_err is not None:
+                    # 必须打日志——此前静默吞异常，媒体一律失败却在日志里毫无痕迹，无法定位
+                    try:
+                        print(f'[x.media] 媒体下载失败({_MEDIA_DL_TRIES}次后) url={url} '
+                              f'tmp={tmp_path} err={type(last_err).__name__}: {last_err}',
+                              file=sys.stderr, flush=True)
+                    except Exception:
+                        pass
+                    with _media_dl_lock:
+                        _media_dl_err[url] = time.time()
                 with _media_dl_lock:
                     _media_dl_active.discard(url)
         threading.Thread(target=run, daemon=True).start()
 
-    def _serve_media_partial(tmp_path, ct, req, url):
+    def _serve_media_partial(tmp_path, ct, req, url, ext):
         """从正在增长的 .part 渐进读取并响应：支持 Range（进度条可拖动）；
-        未带 Range 的首次请求走分块流（连接保持，边下边播）。"""
+        未带 Range 的首次请求走分块流（连接保持，边下边播）。
+
+        ext 用于推出下载完成后 .part 改名登记成的正式缓存文件名——
+        流式响应必须接着从正式文件读完剩余字节，否则图片只有半张。
+        """
         range_header = (req.headers.get('Range') or '').strip()
         rm = re.match(r'bytes=(\d+)-(\d*)$', range_header)
         if rm:
@@ -443,7 +506,9 @@ def create_blueprint(host):
             resp.headers['Accept-Ranges'] = 'bytes'
             resp.headers['Content-Range'] = 'bytes %d-%d/%d' % (start, start + total - 1, cur)
             resp.headers['Content-Length'] = str(total)
-            resp.headers['Cache-Control'] = 'private, max-age=86400'
+            # 边下边播的分片并非完整资源，绝不能被浏览器长期缓存：
+            # 一旦本次只传出部分/空内容，浏览器会把它当有效图片缓存住。
+            resp.headers['Cache-Control'] = 'no-cache'
             resp.headers['Content-Disposition'] = 'inline'
             return resp
 
@@ -454,32 +519,88 @@ def create_blueprint(host):
                 if url in _media_dl_err:
                     return
                 time.sleep(0.1); waited += 0.1
+            # 下载完成后 .part 会被 os.replace 改名为正式缓存文件。
+            # 此时必须接着从正式文件把剩余字节读完再收尾——此前 .part 一消失
+            # 就 break，浏览器只拿到已读到的那部分，图片表现为半张/残缺。
+            final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
+            pos = 0
+            idle = 0.0
+            f = None
+            cur_path = None
             try:
-                f = open(tmp_path, 'rb')
-            except Exception:
-                return
-            try:
-                pos = 0
                 while True:
-                    if not os.path.exists(tmp_path):
-                        break  # 下载完成（.part 已改名）或失败被清理
-                    cur = os.path.getsize(tmp_path)
+                    # 优先读 .part；若已被改名登记，则切到正式文件继续读
+                    if os.path.exists(tmp_path):
+                        target = tmp_path
+                    elif os.path.exists(final_path):
+                        target = final_path
+                    else:
+                        break   # 下载失败被清理
+                    cur = os.path.getsize(target)
                     if pos < cur:
-                        f.seek(pos)
-                        chunk = f.read(cur - pos)
+                        if f is None or cur_path != target:
+                            if f is not None:
+                                try:
+                                    f.close()
+                                except Exception:
+                                    pass
+                            try:
+                                f = open(target, 'rb')
+                            except Exception:
+                                break
+                            cur_path = target
+                        try:
+                            f.seek(pos)
+                            chunk = f.read(cur - pos)
+                        except Exception:
+                            break
                         if chunk:
                             pos += len(chunk)
+                            idle = 0.0
                             yield chunk
                             continue
+                    # 已切到正式文件且已读到末尾：下载完成，可以收尾
+                    if not os.path.exists(tmp_path) and os.path.exists(final_path) \
+                            and pos >= os.path.getsize(final_path):
+                        break
+                    # 当前已无新数据：必须主动关闭文件句柄再等待。
+                    # Windows 不允许对被打开的文件做 os.replace/remove，
+                    # 而下载线程写完后要靠 os.replace 把 .part 改名登记进缓存；
+                    # 此前句柄全程持有，改名必然失败，结果是文件下完了却永远
+                    # 停在 .part、缓存永远不生效（图片每次重下或直接空白）。
+                    if f is not None:
+                        try:
+                            f.close()
+                        except Exception:
+                            pass
+                        f = None
+                        cur_path = None
                     time.sleep(0.1)
+                    idle += 0.1
+                    # 长时间毫无进展：多半下载线程仍在重试退避，
+                    # 继续空转无意义，收尾让下一次请求去命中缓存。
+                    if idle > 15.0:
+                        break
             finally:
+                if f is not None:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+                # 句柄已释放：若 .part 还残留（下载线程改名时正被我们占用），
+                # 此刻补做改名登记，避免文件永远停在 .part、缓存永远不生效。
                 try:
-                    f.close()
+                    if os.path.exists(tmp_path):
+                        _cache_put_file(url, tmp_path, ext)
                 except Exception:
                     pass
         resp = Response(stream_with_context(gen()), mimetype=ct)
         resp.headers['Accept-Ranges'] = 'bytes'
-        resp.headers['Cache-Control'] = 'private, max-age=86400'
+        # 流式传输的是「正在增长的文件」，可能中途失败而只传出空/半个 body。
+        # 此前这里给的是 max-age=86400，浏览器会把那次失败的空响应缓存 1 天，
+        # 于是即便服务端后来修好了，用户刷新也永远是空白图。改为不缓存，
+        # 下次重新请求即可命中已下完的本地缓存（走上面 send_file 长缓存分支）。
+        resp.headers['Cache-Control'] = 'no-cache'
         resp.headers['Content-Disposition'] = 'inline'
         return resp
 
@@ -1258,32 +1379,61 @@ def create_blueprint(host):
             return jsonify({'success': False, 'message': '仅允许代理 twimg 媒体'}), 403
 
         mtype = (request.args.get('type') or '').lower()
+        # force=1：绕过本地 LRU 缓存、忽略失败黑名单，强制重新从上游取图。
+        # 用于「某张图被坏缓存（旧 bug 期写入的空/残缺响应）卡住、怎么刷新都不出」时，
+        # 以推文为单位重新获取——前端给该媒体 URL 追加 &force=1 即可覆盖坏缓存。
+        force = request.args.get('force') in ('1', 'true', 'yes')
         # 命中缓存：直接用本地文件响应（send_file 自动支持 Range）
-        hit = _cache_get(url)
-        if hit is not None:
-            path, ext = hit
-            if os.path.isfile(path):
-                # m3u8 不在 mimetypes 默认表里，必须显式兜底：否则缓存命中时会被
-                # 当成 image/jpeg 返回，hls.js 拿不到播放列表。
-                ct = mimetypes.guess_type(path)[0] or (
-                    'application/vnd.apple.mpegurl' if ext == '.m3u8'
-                    else 'video/mp4' if ext == '.mp4' else 'image/jpeg')
-                resp = send_file(path, mimetype=ct, conditional=True,
-                                 max_age=86400)
-                resp.headers['Cache-Control'] = 'private, max-age=86400'
-                return resp
+        if not force:
+            hit = _cache_get(url)
+            if hit is not None:
+                path, ext = hit
+                if os.path.isfile(path):
+                    # m3u8 不在 mimetypes 默认表里，必须显式兜底：否则缓存命中时会被
+                    # 当成 image/jpeg 返回，hls.js 拿不到播放列表。
+                    ct = mimetypes.guess_type(path)[0] or (
+                        'application/vnd.apple.mpegurl' if ext == '.m3u8'
+                        else 'video/mp4' if ext == '.mp4' else 'image/jpeg')
+                    resp = send_file(path, mimetype=ct, conditional=True,
+                                     max_age=86400)
+                    resp.headers['Cache-Control'] = 'private, max-age=86400'
+                    return resp
 
         # 未命中：后台把上游读到 .part，响应从 .part 渐进读取并支持 Range，
         # 实现「边下边播 + 进度条可拖动」。完整下载完登记 LRU 缓存，之后走上面的
         # send_file 分支（同样支持 Range）。缓存命中（已下完）走上面的 send_file 分支。
         ext, ct = _media_ext_ct(url, mtype)
         tmp_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext + '.part')
-        # 同一 url 已失败过：直接报错，避免再次无谓等待
-        with _media_dl_lock:
-            if url in _media_dl_err:
-                return jsonify({'success': False, 'message': '代理失败（已记录）'}), 502
+        # 同一 url 近期失败过：直接报错，避免再次无谓等待。
+        # 但记录带 TTL（_MEDIA_ERR_TTL），过期即放行重试——否则代理恢复后
+        # 该 url 会被永久判死，表现为「怎么刷新图片都不出来」。
+        # force 模式下不读黑名单，直接重试。
+        if not force:
+            with _media_dl_lock:
+                _err_ts = _media_dl_err.get(url)
+            if _err_ts is not None:
+                if (time.time() - _err_ts) < _MEDIA_ERR_TTL:
+                    return jsonify({'success': False, 'message': '代理失败（稍后自动重试）'}), 502
+                with _media_dl_lock:
+                    _media_dl_err.pop(url, None)
+
         _start_media_download(url, tmp_path, ext)
-        return _serve_media_partial(tmp_path, ct, request, url)
+        # 给下载线程一点启动时间：若已确定失败，返回 502 而不是 200 空流。
+        # 流式响应一旦发出头就改不了状态码，浏览器 <img> 收到 200 空 body
+        # 只会静默显示破图，既无法触发 onerror 重试也让用户以为是坏了。
+        _t0 = time.time()
+        while (time.time() - _t0) < 3.0:
+            with _media_dl_lock:
+                _failed = url in _media_dl_err
+            if _failed:
+                return jsonify({'success': False, 'message': '代理失败'}), 502
+            try:
+                if os.path.getsize(tmp_path) > 0:
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        return _serve_media_partial(tmp_path, ct, request, url, ext)
 
     @bp.route('/media/cache', methods=['GET', 'DELETE'])
     @host.login_required

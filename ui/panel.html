@@ -759,7 +759,7 @@
         const playable = m.mp4 || (m.url || '').endsWith('.mp4');
         thumb = `<div class="thumb">
           ${cover
-            ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="_onImgErr(this)" />`
+            ? `<img src="${esc(mediaUrl(cover, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />`
             : '<div class="placeholder">视频</div>'}
           <button class="play" data-i="${i}">▶</button>
           <div class="note" hidden>该视频需下载后播放</div>
@@ -770,8 +770,10 @@
       } else if (m.type === 'document') {
         thumb = '<div class="thumb"><div class="placeholder">📄 文档附件</div></div>';
       } else {
+        // 必须走 mediaUrl() 代理：直接用原始 pbs.twimg.com 地址会被网络拦截，
+        // 图片永远加载不出来（浏览卡 renderBmCard 一直走代理，这里此前漏了）。
         thumb = `<div class="thumb">
-          <img src="${esc(m.url)}" alt="" loading="lazy" onerror="_onImgErr(this)" />
+          <img src="${esc(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />
         </div>`;
       }
       const label = m.label || (m.type === 'video' ? '视频' : m.type === 'document' ? '文档' : '图片');
@@ -791,7 +793,7 @@
           btn.hidden = true;
           return;
         }
-        const src = m.mp4 || m.url;
+        const src = mediaUrl(m.mp4 || m.url, 'video');
         wrap.innerHTML = `<video src="${esc(src)}" controls autoplay playsinline></video>`;
       });
     });
@@ -809,12 +811,13 @@
           mi: i,                       // 原始媒体索引，用于单独下载
           src: mp4,                    // 直链 mp4（高清，经 /media 缓存）；空则回退 m3u8
           m3u8: m3u8,                  // HLS 流（经 /media 代理），hls.js 播放
-          cover: m.cover || '',
+          cover: mediaUrl(m.cover || '', 'image'),
           label: m.label || '视频',
           playable: !!(mp4 || m3u8),
         });
       } else if (m.type !== 'document') {
-        if (m.url) _lbItems.push({ type: 'image', src: m.url, label: m.label || '图片' });
+        // 灯箱大图同样必须走代理，否则点开放大后是一张空图
+        if (m.url) _lbItems.push({ type: 'image', src: mediaUrl(m.url, 'image'), label: m.label || '图片' });
       }
     });
 
@@ -1372,9 +1375,18 @@
   }
 
   // 把 twimg 媒体 URL 转成本地代理缓存接口：点开即缓存，回看命中本地字节。
-  function mediaUrl(url, type) {
+  // v=2 是缓存清除版本号：此前服务端给流式响应发过 max-age=86400，
+  // 失败的空 body 被浏览器当成有效图片缓存了 1 天，导致刷新也永远是空白。
+  // 换个 URL 即可让浏览器重新请求（服务端已改为流式 no-cache）。
+  // 若将来再出现同类缓存污染，把这里的数字 +1 即可。
+  const MEDIA_CACHE_BUST = '2';
+
+  function mediaUrl(url, type, opts) {
     if (!url || !/twimg\.com|pbs\.twimg/.test(url)) return url || '';
-    return `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}`;
+    let s = `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}&v=${MEDIA_CACHE_BUST}`;
+    // force：绕过服务端坏缓存、强制重新从上游取图（以推文为单位重新获取时用）。
+    if (opts && opts.force) s += `&force=1&_=${Date.now()}`;
+    return s;
   }
 
   function renderBmCard(item, inFolder) {
@@ -1407,8 +1419,10 @@
       <div class="actions">
         ${inFolder
           ? `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
+             <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
              <button class="del" data-tid="${esc2(tid)}">移出收藏夹</button>`
           : `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
+             <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
              <button class="add" data-tid="${esc2(tid)}">加入收藏夹</button>`}
       </div>`;
     // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
@@ -1461,10 +1475,17 @@
           const d = await r.json();
           if (!d.success) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入失败: ' + (d.message || '')); }
         } catch (e) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入异常: ' + e.message); }
-      }));
-    }
-    return card;
-  }
+        }));
+        }
+        // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
+        card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        reloadCardMedia(card);
+        b.textContent = '获取中…';
+        setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
+        }));
+        return card;
+        }
 
   async function loadXBookmarks() {
     bmXList.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
@@ -1610,13 +1631,39 @@
     btn.addEventListener('click', (e) => {
       e.stopPropagation(); e.preventDefault();
       wrap.classList.remove('img-err');
-      // 追加随机参数绕过缓存，强制重新请求
-      img.src = img.src + (_imgErrT++ ? '' : '');
+      // 追加 force=1 绕过服务端坏缓存（仅改 URL 字符串不会重新请求，必须换 URL）
+      const sep = img.src.includes('?') ? '&' : '?';
+      img.src = img.src + sep + 'force=1&_=' + Date.now();
       btn.remove();
     });
     wrap.appendChild(btn);
   }
-  let _imgErrT = 0;
+
+  // 以推文（卡片）为单位，强制重新获取该卡所有媒体：给每个媒体 URL 追加
+  // force=1，让代理忽略本地 LRU、重新从上游拉取并覆盖坏缓存。
+  function _forceReloadSrc(src) {
+    if (!src) return src;
+    const sep = src.includes('?') ? '&' : '?';
+    return src + sep + 'force=1&_=' + Date.now();
+  }
+  function reloadCardMedia(cardEl) {
+    if (!cardEl) return;
+    // .bm-media 包裹的媒体（浏览/收藏/搜索/详情视频）
+    cardEl.querySelectorAll('.bm-media').forEach((el) => {
+      const img = el.querySelector('img');
+      if (img) img.src = _forceReloadSrc(img.src);
+      const v = el.querySelector('video');
+      if (v) {
+        const poster = v.getAttribute('poster');
+        if (poster) v.setAttribute('poster', _forceReloadSrc(poster));
+        if (v.src) v.src = _forceReloadSrc(v.src);
+      }
+    });
+    // 详情页裸 <img>（未包在 .bm-media 内）
+    cardEl.querySelectorAll('.dt-media > img, .media > img').forEach((img) => {
+      img.src = _forceReloadSrc(img.src);
+    });
+  }
 
   // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
   function cardMediaInner(mediaList) {
@@ -1714,6 +1761,7 @@
       ${item.quoted ? quotedHtml(item.quoted) : ''}
       <div class="actions">
         <button class="fav ${favSet.has(tid) ? 'on' : ''}" data-tid="${esc2(tid)}">${favSet.has(tid) ? '★ 已收藏' : '☆ 收藏'}</button>
+        <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
         <button class="dl" data-tid="${esc2(tid)}">⬇ 下载</button>
       </div>`;
     // 点击图片/视频缩略图 → lightbox 大图/播放视频（不是打开帖子）。
@@ -1792,6 +1840,13 @@
       downloadTweet(tweetUrl)
         .then((ok) => { b.textContent = ok ? '已下载 ✓' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
         .catch(() => { b.textContent = '下载失败'; downloadedTweetIds.delete(t); b.disabled = false; });
+    }));
+    // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
+    card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      reloadCardMedia(card);
+      b.textContent = '获取中…';
+      setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
     }));
     return card;
   }
@@ -2672,6 +2727,7 @@
       </div>
       <div class="dt-actions">
         <button class="fav ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${isFav ? '★ 已收藏' : '☆ 收藏'}</button>
+        <button class="refetch" data-tid="${esc2(t.tweet_id)}">↻ 重新获取</button>
         <button class="dl" data-url="${esc2(t.url || '')}">⬇ 下载</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
       </div>`;
@@ -2730,6 +2786,13 @@
     // 打开原文（明确点击才跳 X）
     card.querySelectorAll('.openx').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
+    }));
+    // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
+    card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      reloadCardMedia(card);
+      b.textContent = '获取中…';
+      setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
     }));
     return card;
   }
