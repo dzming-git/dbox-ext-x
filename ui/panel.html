@@ -224,6 +224,14 @@
   .bm-card .media.m3 img, .bm-card .media.m3 video,
   .bm-card .media.m4 img, .bm-card .media.m4 video { width: 100%; height: 100%; object-fit: cover; display: block; }
   .bm-card .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
+  /* 图片加载失败：显示重试按钮，不再静默隐藏 */
+  .bm-media.img-err { display: flex; align-items: center; justify-content: center; }
+  .bm-media.img-err::before { content: '🖼'; font-size: 24px; opacity: .25; }
+  .bm-media .img-retry { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px; background: rgba(255,255,255,.85);
+    border: none; color: #536471; font-size: 12px; cursor: pointer; z-index: 1; }
+  .bm-media .img-retry:hover { background: rgba(255,255,255,.95); }
+  .bm-media .img-retry span { font-size: 20px; }
   /* 引用转发（转发 + 评论）：被转发的原推以嵌套卡片整体呈现，
      引用者与被引用者的头像、@id 都要看得见，避免只看得到评论看不到原贴 */
   .quoted { margin: 2px 0 6px; border: 1px solid #e3e6eb; border-radius: 10px; padding: 8px 10px; background: #fafbfc; cursor: pointer; }
@@ -748,7 +756,7 @@
         const playable = m.mp4 || (m.url || '').endsWith('.mp4');
         thumb = `<div class="thumb">
           ${cover
-            ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\\'placeholder\\'>封面加载失败</div>'" />`
+            ? `<img src="${esc(cover)}" alt="" loading="lazy" onerror="_onImgErr(this)" />`
             : '<div class="placeholder">视频</div>'}
           <button class="play" data-i="${i}">▶</button>
           <div class="note" hidden>该视频需下载后播放</div>
@@ -760,7 +768,7 @@
         thumb = '<div class="thumb"><div class="placeholder">📄 文档附件</div></div>';
       } else {
         thumb = `<div class="thumb">
-          <img src="${esc(m.url)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\\'placeholder\\'>图片加载失败</div>'" />
+          <img src="${esc(m.url)}" alt="" loading="lazy" onerror="_onImgErr(this)" />
         </div>`;
       }
       const label = m.label || (m.type === 'video' ? '视频' : m.type === 'document' ? '文档' : '图片');
@@ -1377,7 +1385,7 @@
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
@@ -1588,6 +1596,25 @@
   // 从 localStorage 恢复已收藏集合（小屏全屏共享）
   try { (JSON.parse(localStorage.getItem(BROWSE_FAV_KEY) || '[]') || []).forEach((t) => favSet.add(t)); } catch (_) {}
 
+  // 图片加载失败：显示重试按钮（替代原来静默 visibility:hidden）
+  function _onImgErr(img) {
+    const wrap = img.parentElement;
+    if (!wrap || wrap.classList.contains('img-err')) return;
+    wrap.classList.add('img-err');
+    const btn = document.createElement('button');
+    btn.className = 'img-retry';
+    btn.innerHTML = '<span>↻</span>重新加载';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); e.preventDefault();
+      wrap.classList.remove('img-err');
+      // 追加随机参数绕过缓存，强制重新请求
+      img.src = img.src + (_imgErrT++ ? '' : '');
+      btn.remove();
+    });
+    wrap.appendChild(btn);
+  }
+  let _imgErrT = 0;
+
   // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
   function cardMediaInner(mediaList) {
     const medias = (mediaList || []).slice(0, 4);
@@ -1600,7 +1627,7 @@
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><video src="" poster="${esc2(poster)}" muted playsinline></video><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="this.style.visibility='hidden'" /></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
     return html ? `<div class="media ${mCls}">${html}</div>` : '';
   }
@@ -2614,7 +2641,7 @@
           + `<video src=""${poster ? ` poster="${esc2(poster)}"` : ''} muted playsinline></video>`
           + `<span class="bm-play">▶</span></div>`;
       }
-      return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" />` : '';
+      return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />` : '';
     }).join('');
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
     const isFav = favSet.has(t.tweet_id);
