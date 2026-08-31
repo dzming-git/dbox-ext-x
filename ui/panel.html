@@ -1368,6 +1368,25 @@
                       history: 'history', cache: 'cache', download: 'download',
                       browse: 'browse', download: 'download' };
 
+  // 历史兼容：宿主曾把面板已编码的 hash 再编码一次（Vue Router 的 encodeHash
+  // 会对 % 再编码成 %25）。这类旧链接解一层后仍是「整串百分号编码」，
+  // 若不再解一层，用户刷新时就会拿编码串当关键词去搜，结果与原来完全不同。
+  // 只在整串都形如 %XX（可夹杂 URL 安全字符）时才继续解，避免误伤真正含 %
+  // 的搜索词——「100%」解出来是 100%，不匹配 %XX 模式，不会被多解一层。
+  function _deepDecode(v) {
+    let out = v;
+    let guard = 0;
+    while (guard++ < 2) {
+      if (!/^(?:%[0-9A-Fa-f]{2}|[A-Za-z0-9\-_.~])+$/.test(out)) break;
+      if (!/%[0-9A-Fa-f]{2}/.test(out)) break;
+      let next;
+      try { next = decodeURIComponent(out); } catch (_) { break; }
+      if (next === out) break;
+      out = next;
+    }
+    return out;
+  }
+
   function parseRoute(hashStr) {
     const raw = String(hashStr || '').replace(/^#/, '');
     if (!raw) return null;
@@ -1380,7 +1399,9 @@
         if (!kv) return;
         const p = kv.split('=');
         try {
-          params[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || '').replace(/\+/g, ' '));
+          const key = decodeURIComponent(p[0]);
+          const val = decodeURIComponent((p[1] || '').replace(/\+/g, ' '));
+          params[key] = _deepDecode(val);
         } catch (_) {}
       });
     }
