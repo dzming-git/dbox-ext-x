@@ -304,7 +304,9 @@ def create_blueprint(host):
             # 生成器在没有新数据时会主动关闭句柄，这里重试若干次以覆盖那个窗口；
             # 此前一次失败即放弃，.part 永远残留、缓存永不生效。
             replaced = False
-            for _attempt in range(12):
+            # 重试次数从 12 提到 40（约 6 秒）：流式响应的读句柄释放往往慢于
+            # 1.8 秒，此前窗口太短导致改名失败、.part 永久残留、缓存永不生效。
+            for _attempt in range(40):
                 try:
                     os.replace(tmp_path, path)
                     replaced = True
@@ -399,6 +401,16 @@ def create_blueprint(host):
                                     url, headers=headers), timeout=60)
                             finally:
                                 xrun._restore_socks()
+                            # 记下上游声明的长度，用于事后校验完整性。
+                            # 代理（Clash 等）掐断连接时 up.read() 会提前返回空，
+                            # 若只凭「size>0」就判成功，残缺文件会被登记进 LRU 缓存
+                            # 并【永久污染】——该媒体此后永远只能拿到截断内容，
+                            # 怎么刷新都救不回来（实测 40MB 视频被截成 128KB 入库）。
+                            try:
+                                _declared = int(
+                                    up.headers.get('Content-Length') or 0) or None
+                            except Exception:
+                                _declared = None
                             try:
                                 with open(tmp_path, 'wb') as f:
                                     while True:
@@ -411,13 +423,20 @@ def create_blueprint(host):
                                     up.close()
                                 except Exception:
                                     pass
-                        if os.path.getsize(tmp_path) > 0:
-                            # 已有字节就别删：此刻可能有流式响应正读着这个 .part，
-                            # Windows 下改名会失败，保留等响应的 finally 补登记。
-                            _cache_put_file(url, tmp_path, ext, keep_on_fail=True)
-                            last_err = None
-                            break
-                        raise RuntimeError('下载结果为空')
+                        _got = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                        # 只有「拿全了」才算成功；上游未给长度（chunked）时退化为原判定
+                        if _got > 0 and (_declared is None or _got >= _declared):
+                            # 必须检查登记结果：_cache_put_file 在改名失败时返回 None
+                            # 且不抛异常，若不看返回值就当成功，.part 会永久残留、
+                            # 缓存永不生效 —— 此后每次请求都要重新下载
+                            # （实测图片因此加载极慢：直连 0.55s vs 经服务 40s+）。
+                            if _cache_put_file(url, tmp_path, ext,
+                                               keep_on_fail=True) is not None:
+                                last_err = None
+                                break
+                            raise RuntimeError('登记缓存失败(.part 改名被占用)')
+                        raise RuntimeError(
+                            f'下载不完整: 实得 {_got} 字节 / 上游声明 {_declared}')
                     except Exception as e:
                         last_err = e
                         # 清理半成品，别让 .part 污染缓存
@@ -457,27 +476,35 @@ def create_blueprint(host):
             start = int(rm.group(1))
             end = int(rm.group(2)) if rm.group(2) else None
             waited = 0.0
-            # 必须等 .part「已有足够字节」，而不是只等文件出现。
-            # 下载线程是在连接建立后才 open(tmp_path,'wb')，文件被创建的瞬间 size 仍为 0，
-            # 首个 64KB chunk 要等网络送达；而 <video>/<img> 的首个请求必带 Range: bytes=0-。
-            # 此前只等 os.path.exists()，于是「文件已建、字节未到」这段窗口（慢代理/大文件
-            # 可达数秒）必然落到下面的 cur==0 分支返回 416 → 视频黑屏停在 0:00（图片则破图）。
-            # 刷新后后台线程早已下完并登记 LRU 缓存、走 send_file 分支返回完整内容，
-            # 于是「刷新后就好了」——与 m3u8 的同类 bug 完全同源。
+            # 等待条件有两条，缺一不可：
+            # 1) 必须等「已有足够字节」，而不是只等文件出现——下载线程是连接建立后
+            #    才 open(tmp_path,'wb')，文件被创建的瞬间 size 仍为 0，首个 64KB chunk
+            #    要等网络送达；而 <video>/<img> 的首个请求必带 Range: bytes=0-，
+            #    只等 exists() 会撞上「文件已建、字节未到」的窗口 → cur==0 → 416。
+            # 2) 必须同时盯【正式缓存文件】——下载完成后 .part 会被 os.replace 改名
+            #    登记成正式文件，此后 tmp_path 已不存在，只盯 .part 会永远等不到，
+            #    硬等满 30 秒后必然 416（实测图片首次请求正是如此：等满 38 秒返 416，
+            #    紧接着的第二次请求命中缓存立即 206）。
+            _final_fp = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             while waited < 30:
                 if url in _media_dl_err:
                     return jsonify({'success': False, 'message': '代理失败'}), 502
+                _src = tmp_path if os.path.exists(tmp_path) else (
+                    _final_fp if os.path.exists(_final_fp) else None)
                 try:
-                    cur = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                    cur = os.path.getsize(_src) if _src else 0
                 except OSError:
                     cur = 0
                 if cur > start:
                     break
                 time.sleep(0.1); waited += 0.1
-            if url in _media_dl_err and not os.path.exists(tmp_path):
+            if url in _media_dl_err and not (
+                    os.path.exists(tmp_path) or os.path.exists(_final_fp)):
                 return jsonify({'success': False, 'message': '代理失败'}), 502
+            _src = tmp_path if os.path.exists(tmp_path) else (
+                _final_fp if os.path.exists(_final_fp) else None)
             try:
-                cur = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+                cur = os.path.getsize(_src) if _src else 0
             except OSError:
                 cur = 0
             if cur == 0 or start >= cur:
@@ -491,36 +518,68 @@ def create_blueprint(host):
             total = actual_end - start + 1
 
             def gen():
+                """定量发送 [start, start+total) 这段字节。
+
+                关键修复：中途 .part 被下载线程改名为正式缓存文件后，必须接着读
+                正式文件——此前一旦改名就 return，浏览器只拿到改名那一刻之前的
+                字节（实测出现 206 响应却是 0 字节）。
+                """
+                f = None
+                cur_path = None
+                sent = 0
                 try:
-                    f = open(tmp_path, 'rb')
-                except Exception:
-                    return
-                try:
-                    sent = 0
                     while sent < total:
-                        if not os.path.exists(tmp_path):
-                            return
-                        avail = os.path.getsize(tmp_path)
+                        # 优先读 .part；若已被改名登记，则切到正式文件继续读
+                        if os.path.exists(tmp_path):
+                            target = tmp_path
+                        elif os.path.exists(_final_fp):
+                            target = _final_fp
+                        else:
+                            break   # 下载失败被清理
+                        if f is None or cur_path != target:
+                            if f is not None:
+                                try:
+                                    f.close()
+                                except Exception:
+                                    pass
+                            try:
+                                f = open(target, 'rb')
+                            except Exception:
+                                break
+                            cur_path = target
+                        try:
+                            avail = os.path.getsize(target)
+                        except OSError:
+                            break
                         readable = avail - (start + sent)
                         if readable <= 0:
                             time.sleep(0.05)
                             continue
                         to_read = min(total - sent, readable)
-                        f.seek(start + sent)
-                        chunk = f.read(to_read)
+                        try:
+                            f.seek(start + sent)
+                            chunk = f.read(to_read)
+                        except Exception:
+                            break
                         if not chunk:
                             time.sleep(0.05)
                             continue
                         sent += len(chunk)
                         yield chunk
                 finally:
-                    try:
-                        f.close()
-                    except Exception:
-                        pass
+                    if f is not None:
+                        try:
+                            f.close()
+                        except Exception:
+                            pass
             resp = Response(stream_with_context(gen()), status=206, mimetype=ct)
             resp.headers['Accept-Ranges'] = 'bytes'
-            resp.headers['Content-Range'] = 'bytes %d-%d/%d' % (start, start + total - 1, cur)
+            # 注意：这条「边下边播」分支给出的总长是【当前已下大小】，对 mp4 意味着
+            # 浏览器会认为文件已完整、拿到的是截断文件。mp4/m3u8 已在 media() 中
+            # 改为等下载完整后走 send_file 分支返回，正常情况下不会落到这里；
+            # 这里仅作为超时/失败的降级路径，保持原有的定量语义。
+            resp.headers['Content-Range'] = 'bytes %d-%d/%d' % (
+                start, start + total - 1, cur)
             resp.headers['Content-Length'] = str(total)
             # 边下边播的分片并非完整资源，绝不能被浏览器长期缓存：
             # 一旦本次只传出部分/空内容，浏览器会把它当有效图片缓存住。
@@ -1435,18 +1494,26 @@ def create_blueprint(host):
 
         _start_media_download(url, tmp_path, ext)
 
-        # m3u8 是「播放列表」文本索引，残缺即废：只下到一半的播放列表缺分片信息，
-        # hls.js 解析必然失败，表现为视频永久停在 0:00；而刷新时该文件已完整下载
-        # 并登记进缓存、走上面的 send_file 分支返回完整内容，于是「刷新后就能播」。
-        # 边下边播对 mp4/图片是对的（可渐进呈现），但对 m3u8 必须等下载完整再返回。
-        # m3u8 通常仅数 KB，等待完全可行。
-        if ext == '.m3u8':
+        # mp4 / m3u8 都必须「等下载完整再返回」，绝不能边下边播。
+        # 二者都是「残缺即废」的容器格式：
+        #  · m3u8 是文本播放列表索引，只下到一半就缺分片信息，hls.js 解析必失败；
+        #  · mp4 的 moov atom（元数据）常位于文件【末尾】；更关键的是边下边播响应
+        #    会把 Content-Range 的总长谎报成「当时已下的字节数」，浏览器据此认为
+        #    文件已完整下载，实际拿到的是截断文件 → 必然无法起播。
+        #    实测（缓存清空后首次请求）：只拿到完整文件的 82.5%
+        #    —— 458752 字节 / Content-Range: bytes 0-458751/458752，
+        #       而完整文件是 555925 字节。
+        # 刷新时文件早已完整进缓存、走上面的 send_file 分支返回完整内容，
+        # 于是「刷新后就能播」——这正是该问题【必现】而非偶发竞态的原因。
+        # 此前只对 m3u8 做了处理（误判「边下边播对 mp4 才对」），mp4 漏了。
+        # Flask 以 threaded=True 运行，等待只占用本请求线程，不会阻塞整个服务。
+        if ext in ('.mp4', '.m3u8'):
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             _mt0 = time.time()
-            while (time.time() - _mt0) < 20.0:
+            while (time.time() - _mt0) < 60.0:
                 with _media_dl_lock:
-                    _m3u8_failed = url in _media_dl_err
-                if _m3u8_failed:
+                    _dl_failed = url in _media_dl_err
+                if _dl_failed:
                     break
                 if os.path.exists(final_path):
                     try:
@@ -1460,25 +1527,20 @@ def create_blueprint(host):
             # 超时/已失败：回落到既有的边下边播路径，保留原有降级行为
             return _serve_media_partial(tmp_path, ct, request, url, ext)
 
-        # 给下载线程一点启动时间：若已确定失败，返回 502 而不是 200 空流。
-        # 流式响应一旦发出头就改不了状态码，浏览器 <img> 收到 200 空 body
-        # 只会静默显示破图，既无法触发 onerror 重试也让用户以为是坏了。
-        #
-        # 视频（mp4）还要多等一层：mp4 的 moov atom（元数据）通常在文件开头几十 KB，
-        # 此前只等「有 1 字节」就放行，于是 Content-Range 把资源总长谎报成当时已下的
-        # 几 KB，播放器解析不出 moov → 黑屏停在 0:00；刷新时文件早已下完并登记缓存、
-        # 走上面的 send_file 分支返回完整内容，于是「刷新后就能播」（与 m3u8 同源）。
+        # 图片：渐进呈现是对的，给下载线程一点启动时间即可放行。
+        # 但同样要盯【正式缓存文件】——下载完成后 .part 已被改名登记，tmp_path
+        # 随之不存在，只等 tmp_path 会白白空等满 8 秒再掉进流式路径（慢一拍）。
+        # 若已确定失败则直接返回 502 而不是 200 空流——流式响应一旦发出头就
+        # 改不了状态码，浏览器 <img> 收到 200 空 body 只会静默显示破图，
+        # 既无法触发 onerror 重试也让用户以为是坏了。
         _final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
-        _min_bytes = 131072 if ext == '.mp4' else 1      # 视频等够 128KB 头部再放行
         _t0 = time.time()
-        _last_sz = -1
-        _stable = 0.0
         while (time.time() - _t0) < 8.0:
             with _media_dl_lock:
                 _failed = url in _media_dl_err
             if _failed:
                 return jsonify({'success': False, 'message': '代理失败'}), 502
-            # 已下完并登记：直接返回完整文件（真实长度，播放器能正确解析与拖动）
+            # 已下完并登记：直接返回完整文件
             if os.path.exists(_final_path):
                 try:
                     resp = send_file(_final_path, mimetype=ct, conditional=True,
@@ -1488,19 +1550,10 @@ def create_blueprint(host):
                 except Exception:
                     break
             try:
-                _sz = os.path.getsize(tmp_path)
-            except OSError:
-                _sz = 0
-            if _sz >= _min_bytes:
-                break
-            # 小文件：大小连续 300ms 无增长即认为已下完，避免白白空等到 8 秒超时
-            if _sz > 0 and _sz == _last_sz:
-                _stable += 0.1
-                if _stable >= 0.3:
+                if os.path.getsize(tmp_path) > 0:
                     break
-            else:
-                _stable = 0.0
-            _last_sz = _sz
+            except OSError:
+                pass
             time.sleep(0.1)
         return _serve_media_partial(tmp_path, ct, request, url, ext)
 
