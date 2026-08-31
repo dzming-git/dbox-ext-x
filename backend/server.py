@@ -29,6 +29,10 @@ from collections import OrderedDict
 from flask import Blueprint, request, g, jsonify, Response, stream_with_context
 import importlib.util as _ilu
 
+# X 反爬令牌（x-client-transaction-id）生成。与本页面同包，用相对导入——
+# 插件内裸名导入在宿主进程会 ModuleNotFoundError，进而导致整个蓝图 404。
+from .x_client_tx import get_transaction_id
+
 # run.py 仅依赖标准库（无重型副作用），可直接 import 复用其 X API 能力。
 # 注意：不能用裸 `import run`，否则会和 pixiv 的 run.py 抢占全局 sys.modules['run']，
 # 导致先加载的一方被后加载方覆盖（典型症状：module 'run' has no attribute 'get_tweet_thread'）。
@@ -914,9 +918,23 @@ def create_blueprint(host):
             count = min(int(request.args.get('count', 20)), 50)
             cursor = request.args.get('cursor') or None
             product = (request.args.get('product') or 'Top').strip()
+            # 搜索接口必须带 X 的反爬令牌，否则一律 404；令牌按最终请求路径现算。
+            # 抓首页取令牌材料要用「网页浏览」那套头（不带 Bearer，否则 /home 会 401）
+            _home_headers = xrun.build_headers(cookie, with_bearer=False)
+
+            def _txid(method, path):
+                return get_transaction_id(_home_headers, method, path, ua=xrun.UA)
+
             items, next_cursor = xrun.search_tweets(
-                cookie, request.args.get('q').strip(), count, cursor, product)
+                cookie, request.args.get('q').strip(), count, cursor, product,
+                txid_func=_txid)
         except Exception as e:
+            # 404 基本都指向 X 的反爬校验（拿不到令牌或令牌不被接受），
+            # 给个能定位方向的提示，避免用户只看到一个干巴巴的状态码
+            if '404' in str(e):
+                return jsonify({'success': False, 'message': (
+                    '搜索失败: X 拒绝了请求（404）。通常是反爬令牌失效或 X 前端改版，'
+                    '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
             return jsonify({'success': False,
                             'message': '搜索失败: ' + str(e)}), 502
         return jsonify({'success': True, 'items': items,

@@ -52,7 +52,7 @@ except Exception:
     winreg = None
 
 UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/124.0 Safari/537.36')
+      '(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36')
 
 # 当前代理配置（dict 或 None），由 main() 写入，供 fetch 时挂载 SOCKS。
 _PROXY_CFG = None
@@ -917,12 +917,18 @@ def _discover_search_qid(opener, cookie_header):
     return None
 
 
-def search_tweets(cookie_header, query, count=20, cursor=None, product='Top'):
+def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
+                  extra_headers=None, txid_func=None):
     """按关键词/用户句柄搜索 X 推文（SearchTimeline）。
 
     product 可选 'Top'（热门）或 'Latest'（最新），对应 X 搜索页两种排序。
     返回 (items, next_cursor)。复用 _extract_bookmark_tweets 解析（把
     search_by_raw_query.search_timeline 包装成其兼容的 bookmark_timeline_v2 结构）。
+
+    txid_func(method, path)：可选的回调，用来生成 X 反爬头 x-client-transaction-id。
+    GraphQL 搜索接口缺该头会直接返回 404（实测：带上即 200 且有数据）。但生成它
+    依赖第三方库，而 run.py 被设计为仅依赖标准库（它还会以子进程方式被直接执行），
+    所以由调用方注入；放在此处按「最终 URL」取 path，才能保证令牌与真实请求路径一致。
     """
     global _GQL_SEARCH_QID
     opener = make_opener(None)
@@ -936,7 +942,8 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top'):
         "count": count,
         "querySource": "typed_query",
         "product": product if product in ('Top', 'Latest') else 'Top',
-        "withGrokTranslatedBio": True,
+        # 与浏览器真实请求保持一致（此前是 True，X 网页端实际发 False）
+        "withGrokTranslatedBio": False,
         "withQuickPromoteEligibilityTweetFields": False,
     }
     if cursor:
@@ -948,7 +955,19 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top'):
         url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_SEARCH_OPN}'
                f'?variables={urllib.parse.quote(json.dumps(variables, ensure_ascii=False))}'
                f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES, ensure_ascii=False))}')
-        raw = fetch_text(url, opener, headers, timeout=30)
+        h = headers
+        if extra_headers or txid_func:
+            h = dict(headers)
+            if extra_headers:
+                h.update(extra_headers)
+            if txid_func:
+                try:
+                    tid = txid_func('GET', urllib.parse.urlparse(url).path)
+                    if tid:
+                        h['x-client-transaction-id'] = tid
+                except Exception:
+                    pass   # 取不到令牌就照常发，交由服务端返回的错误兜底
+        raw = fetch_text(url, opener, h, timeout=30)
         return json.loads(raw)
 
     try:
