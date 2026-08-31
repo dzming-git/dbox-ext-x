@@ -1618,6 +1618,16 @@ def _extract_bookmark_tweets(data):
                 tid = _canonical_tweet_id(legacy, result.get('rest_id'))
             else:
                 tid = result.get('rest_id')
+            # 回复（评论）：带上被回复的推文 id 与作者，供详情页展示上下文与
+            # 「查看完整帖子」入口。搜索常直接搜到评论；本路径写入缓存后，
+            # 详情页命中缓存时同样需要该字段，故与 _extract_tweet_obj 保持一致。
+            in_reply_to = None
+            _irt_id = str(legacy.get('in_reply_to_status_id_str') or '')
+            if _irt_id:
+                in_reply_to = {
+                    'tweet_id': _irt_id,
+                    'screen_name': legacy.get('in_reply_to_screen_name') or '',
+                }
             out.append({
                 'tweet_id': tid,
                 'text': legacy.get('full_text', ''),
@@ -1628,6 +1638,7 @@ def _extract_bookmark_tweets(data):
                 'media': media,
                 'retweeted_by': retweeted_by,
                 'quoted': quoted,
+                'in_reply_to': in_reply_to,
                 'url': 'https://x.com/{}/status/{}'.format(
                     author.get('screen_name') or 'unknown', tid),
             })
@@ -1841,6 +1852,17 @@ def _extract_tweet_obj(r):
         if _card_media:
             media = _card_media
 
+    # 回复（评论）：带上被回复的推文 id 与作者 handle。
+    # 搜索经常直接搜到评论本身，用户点开后需要能「查看完整帖子」回到原贴；
+    # 详情页据此展示上下文条与跳转入口。
+    in_reply_to = None
+    _irt_id = str(legacy.get('in_reply_to_status_id_str') or '')
+    if _irt_id:
+        in_reply_to = {
+            'tweet_id': _irt_id,
+            'screen_name': legacy.get('in_reply_to_screen_name') or '',
+        }
+
     return {
         'tweet_id': tid,
         'text': text,
@@ -1854,6 +1876,7 @@ def _extract_tweet_obj(r):
         'author': author,
         'retweeted_by': retweeted_by,
         'quoted': quoted,
+        'in_reply_to': in_reply_to,
         'media': media,
         'url': 'https://x.com/{}/status/{}'.format(
             author.get('screen_name') or u_screen or 'unknown', tid),
