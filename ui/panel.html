@@ -1172,11 +1172,11 @@
     } else if (v === 'cache') {
       loadCache();
     } else if (v === 'search') {
-      // 先秒开本地缓存（上次搜索结果），没有再提示去搜索；刷新/换设备不再空白
-      if (!srchList.querySelector('.bm-card')) restoreSearch();
+      // 打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）
+      restoreSearch();
     } else if (v === 'bookmarks') {
-      // 先秒开本地缓存（X 拉取失败也不会空白），需要最新再点「从 X 同步收藏」
-      if (!bmXList.querySelector('.bm-card') && !bmShowingFolder) restoreBookmarks();
+      // 打开即拉取共享缓存并渲染（多设备同步：先 pull 再显示）
+      restoreBookmarks();
     }
   }
 
@@ -1391,9 +1391,10 @@
     }
   }
 
-  // 收藏列表本地缓存 + 多设备同步：打开即秒开，不必每次都从 X 重拉（X 拉取失败也不空白）
-  function restoreBookmarks() {
-    if (!XSTATE || bmShowingFolder || bmXList.querySelector('.bm-card')) return;
+  // 收藏列表本地缓存 + 多设备同步：打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）
+  async function restoreBookmarks() {
+    if (!XSTATE || bmShowingFolder) return;
+    try { await XSTATE.pull(); } catch (_) {}
     let cached;
     try { cached = XSTATE.get('bm:list'); } catch (_) { return; }
     if (!cached || !cached.length) return;
@@ -2084,7 +2085,12 @@
   let srchSeenIds = new Set();
   let srchQuery = '';
   let srchProduct = 'Top';  // 'Top' 热门 / 'Latest' 最新
-  let srchAllItems = [];   // 当前搜索已加载的全部条目（用于本地缓存 + 多设备同步）
+  // 热门 + 最新 两套结果各存一份：一次搜索同时爬取并缓存，切模式不重新抓取
+  let srchTopItems = [];
+  let srchLatestItems = [];
+  let srchCursorTop = null;
+  let srchCursorLatest = null;
+  let srchAllItems = [];   // 当前展示的那一份（= 上面某一产品的引用副本）
 
   function setSrchProduct(p) {
     if (srchProduct === p) return;
@@ -2093,7 +2099,39 @@
     const latestBtn = $('srch-prod-latest');
     if (topBtn) topBtn.className = 'sm' + (p === 'Top' ? ' primary' : '');
     if (latestBtn) latestBtn.className = 'sm' + (p === 'Latest' ? ' primary' : '');
-    if (srchQuery) loadSearch(true);  // 已有搜索时切模式重新搜
+    if (srchQuery) renderSrchProduct();  // 已有搜索时切模式只展示已缓存的另一份，不重新抓取
+  }
+
+  async function fetchSearch(q, product, cursor) {
+    let url = `${API}/search?q=${encodeURIComponent(q)}&count=50&product=${encodeURIComponent(product)}`;
+    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+    const r = await req(url);
+    const d = await r.json();
+    if (!d.success) throw new Error(d.message || '搜索失败');
+    return { items: d.items || [], next_cursor: d.next_cursor || null };
+  }
+
+  // 渲染当前 product 的那一份缓存（热门/最新），不触发网络
+  function renderSrchProduct() {
+    const ch = $('srch-cache-hint'); if (ch) ch.remove();
+    const arr = srchProduct === 'Top' ? srchTopItems : srchLatestItems;
+    srchAllItems = arr.slice();
+    srchSeenIds = new Set();   // 去重集合在渲染过程中逐个加入，不要预先塞满（否则全部被跳过）
+    srchCursor = srchProduct === 'Top' ? srchCursorTop : srchCursorLatest;
+    srchList.innerHTML = '';
+    if (!arr.length) srchList.innerHTML = '<div class="bm-empty">该模式暂无缓存，点「搜索」重新获取。</div>';
+    let i = 0;
+    sortItemsByTime(arr).forEach((it) => {
+      const id = it.tweet_id || it.id;
+      if (!id || srchSeenIds.has(String(id))) return;
+      srchSeenIds.add(String(id));
+      const card = renderBrowseCard(it);
+      card.classList.add('card-enter');
+      card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
+      srchList.appendChild(card);
+      i++;
+    });
+    srchLoadmore.style.display = srchCursor ? '' : 'none';
   }
 
   async function loadSearch(reset = true) {
@@ -2112,36 +2150,22 @@
     }
     try {
       if (reset) {
-        let url = `${API}/search?q=${encodeURIComponent(q)}&count=50&product=${encodeURIComponent(srchProduct)}`;
-        const r = await req(url);
-        const d = await r.json();
-        if (!d.success) {
-          if (reset && !srchList.querySelector('.bm-card'))
-            srchList.innerHTML = `<div class="bm-empty err">搜索失败: ${esc2(d.message || '未知错误')}</div>`;
+        // 热门 + 最新 并行爬取，一次性缓存两份；之后切模式不再打扰 X
+        const [topD, latestD] = await Promise.all([
+          fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
+          fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
+        ]);
+        srchTopItems = (topD && topD.items) || [];
+        srchLatestItems = (latestD && latestD.items) || [];
+        srchCursorTop = (topD && topD.next_cursor) || null;
+        srchCursorLatest = (latestD && latestD.next_cursor) || null;
+        if (!srchTopItems.length && !srchLatestItems.length) {
+          const msg = (topD && topD.err) || (latestD && latestD.err) || '未知错误';
+          srchList.innerHTML = `<div class="bm-empty err">搜索失败: ${esc2(msg)}</div>`;
           return;
         }
-        const items = d.items || [];
-        const ch = $('srch-cache-hint'); if (ch) ch.remove();  // 真实结果到达，移除缓存提示
-        srchList.innerHTML = '';
-        srchSeenIds.clear();
-        srchAllItems = [];
-        srchCursor = null;
-        if (!items.length) srchList.innerHTML = '<div class="bm-empty">没有搜到相关推文。</div>';
-        let i = 0;
-        sortItemsByTime(items).forEach((it) => {
-          const id = it.tweet_id || it.id;
-          if (!id || srchSeenIds.has(String(id))) return;
-          srchSeenIds.add(String(id));
-          srchAllItems.push(it);
-          const card = renderBrowseCard(it);
-          card.classList.add('card-enter');
-          card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
-          srchList.appendChild(card);
-          i++;
-        });
-        srchCursor = d.next_cursor || null;
-        srchLoadmore.style.display = srchCursor ? '' : 'none';
-        cacheSearch();   // 落本地缓存并同步其它设备，刷新/换设备不再空白
+        renderSrchProduct();
+        cacheSearch();   // 落本地缓存并同步其它设备，刷新/换设备都看到这一份
       } else {
         await loadSearchOlderBatch();
       }
@@ -2154,84 +2178,83 @@
     }
   }
 
-  // 搜索上拉加载更旧结果（批量）：与 loadOlderBatch 同理，一次上拉翻多页攒够一批，
-  // 避免 X 游标重叠导致每次只多出 2-3 条、频繁等待。
+  // 搜索上拉加载更旧结果（批量）：按当前 product 翻页，追加到对应那份缓存
   async function loadSearchOlderBatch() {
     const BATCH_TARGET = 40;
     const MAX_PAGES = 6;
-    let appendedTotal = 0, pages = 0, allItems = [];
+    const targetArr = srchProduct === 'Top' ? srchTopItems : srchLatestItems;
+    let appendedTotal = 0, pages = 0;
     while (srchCursor && pages < MAX_PAGES) {
       pages++;
-      const url = `${API}/search?q=${encodeURIComponent(srchQuery)}&count=50&product=${encodeURIComponent(srchProduct)}&cursor=${encodeURIComponent(srchCursor)}`;
-      const r = await req(url);
-      const d = await r.json();
-      if (!d.success) break;
-      const items = d.items || [];
-      if (!items.length) { srchCursor = null; break; }
-      allItems = allItems.concat(items);
-      let appended = 0;
-      sortItemsByTime(items).forEach((it) => {
-        const id = it.tweet_id || it.id;
-        if (!id || srchSeenIds.has(String(id))) return;
-        srchSeenIds.add(String(id));
-        srchAllItems.push(it);
-        const card = renderBrowseCard(it);
-        card.classList.add('card-enter');
-        card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
-        srchList.appendChild(card);
-        appended++; appendedTotal++;
-      });
-      srchCursor = d.next_cursor || null;
-      cacheSearch();
-      if (appended === 0) {
-        if (!srchCursor) break;
-        continue;
-      }
-      if (appendedTotal >= BATCH_TARGET) break;
+      try {
+        const d = await fetchSearch(srchQuery, srchProduct, srchCursor);
+        const items = d.items || [];
+        if (!items.length) { srchCursor = null; break; }
+        let appended = 0;
+        sortItemsByTime(items).forEach((it) => {
+          const id = it.tweet_id || it.id;
+          if (!id || srchSeenIds.has(String(id))) return;
+          srchSeenIds.add(String(id));
+          targetArr.push(it);
+          const card = renderBrowseCard(it);
+          card.classList.add('card-enter');
+          card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
+          srchList.appendChild(card);
+          appended++; appendedTotal++;
+        });
+        srchCursor = d.next_cursor || null;
+        if (srchProduct === 'Top') srchCursorTop = srchCursor; else srchCursorLatest = srchCursor;
+        cacheSearch();
+        if (appended === 0) { if (!srchCursor) break; continue; }
+        if (appendedTotal >= BATCH_TARGET) break;
+      } catch (e) { break; }
     }
     srchLoadmore.style.display = srchCursor ? '' : 'none';
   }
 
-  // 搜索结果本地缓存 + 多设备同步：store 用框架 XSTATE（lww 策略），刷新/换设备不再空白
+  // 搜索结果本地缓存 + 多设备同步：热门/最新两份一起存；store 用框架 XSTATE（lww）。
+  // 任一设备搜索后所有设备共用这份缓存，直到有人发起下一次搜索。
   function cacheSearch() {
     if (!XSTATE || !srchQuery) return;
     try {
       XSTATE.set('search:last', {
-        q: srchQuery, product: srchProduct,
-        items: srchAllItems.slice(0, 200), cursor: srchCursor, ts: Date.now()
+        q: srchQuery,
+        top: srchTopItems.slice(0, 200),
+        latest: srchLatestItems.slice(0, 200),
+        cursorTop: srchCursorTop,
+        cursorLatest: srchCursorLatest,
+        ts: Date.now()
       }, { strategy: 'lww' });
     } catch (_) {}
   }
 
-  function restoreSearch() {
-    if (!XSTATE || srchList.querySelector('.bm-card')) return;  // 已有内容不覆盖
+  function showSrchCacheHint() {
+    const ch = document.createElement('div');
+    ch.id = 'srch-cache-hint';
+    ch.innerHTML = '<button disabled style="width:100%;padding:8px;border:none;border-radius:9px;font-size:12.5px;cursor:default;background:#eef5fd;color:#1d9bf0">📦 本地缓存 ' + srchAllItems.length + ' 条 · 点刷新按钮获取最新</button>';
+    srchList.insertBefore(ch, srchList.firstChild);
+  }
+
+  // 打开搜索视图：先与服务端对账，拿到「任一设备最近一次搜索」这份共享缓存再渲染；
+  // 这是多设备同步的关键一步——必须 pull，否则只会读本地旧缓存（换设备看到的是别人早先的数据）。
+  async function restoreSearch() {
+    if (!XSTATE) return;
+    try { await XSTATE.pull(); } catch (_) {}
     let snap;
     try { snap = XSTATE.get('search:last'); } catch (_) { return; }
-    if (!snap || !snap.items || !snap.items.length) return;
-    srchInput.value = snap.q || '';
-    srchQuery = snap.q || '';
-    srchProduct = snap.product || 'Top';
-    const topBtn = $('srch-prod-top'), latestBtn = $('srch-prod-latest');
-    if (topBtn) topBtn.className = 'sm' + (srchProduct === 'Top' ? ' primary' : '');
-    if (latestBtn) latestBtn.className = 'sm' + (srchProduct === 'Latest' ? ' primary' : '');
-    srchAllItems = (snap.items || []).slice();
-    srchCursor = snap.cursor || null;
-    srchSeenIds = new Set(srchAllItems.map((it) => String(it.tweet_id || it.id)));
-    srchList.innerHTML = '';
-    let i = 0;
-    srchAllItems.forEach((it) => {
-      const card = renderBrowseCard(it);
-      card.classList.add('card-enter');
-      card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
-      srchList.appendChild(card);
-      i++;
-    });
-    srchLoadmore.style.display = srchCursor ? '' : 'none';
-    // 顶部提示：当前展示的是本地缓存，可点刷新按钮获取最新
-    const hint = document.createElement('div');
-    hint.id = 'srch-cache-hint';
-    hint.innerHTML = '<button disabled style="width:100%;padding:8px;border:none;border-radius:9px;font-size:12.5px;cursor:default;background:#eef5fd;color:#1d9bf0">📦 本地缓存 ' + srchAllItems.length + ' 条 · 点刷新按钮获取最新</button>';
-    srchList.insertBefore(hint, srchList.firstChild);
+    const ch = $('srch-cache-hint'); if (ch) ch.remove();
+    if (!snap || !snap.q) {
+      srchList.innerHTML = '<div class="bm-empty">输入关键词搜索 X 推文。</div>';
+      return;
+    }
+    srchInput.value = snap.q;
+    srchQuery = snap.q;
+    srchTopItems = (snap.top || []).slice();
+    srchLatestItems = (snap.latest || []).slice();
+    srchCursorTop = snap.cursorTop || null;
+    srchCursorLatest = snap.cursorLatest || null;
+    renderSrchProduct();
+    showSrchCacheHint();
   }
 
   function doSearch() {
