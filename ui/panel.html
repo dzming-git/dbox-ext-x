@@ -1706,6 +1706,18 @@
     onStale: () => { if (XLEDGER) XLEDGER.refresh().then(updateMasterLight); }
   }) : null;
 
+  // 搜索位置续读：与首页（feed:main）一致，用框架 feed() 记「条目 id + 卡内偏移」锚点，跨设备同步。
+  // 内容缓存仍走 search:last（lww，按关键词整体替换），位置单独用 feed:search:anchor 管理；
+  // 仅在「内容缓存更新（新搜索/刷新/切模式）」时重置，避免旧位置指向新内容。
+  const XSEARCHFEED = XSTATE ? XSTATE.feed('search', {
+    container: viewSearch,
+    itemSelector: '.bm-card',
+    idAttr: 'data-tid',
+    anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
+    throttle: 200,
+    autoBind: false,       // 滚动由本面板统一处理（还要兼顾自动加载）
+  }) : null;
+
   function saveBrowseCache(items, append) {
     try {
       // 内容缓存交给框架 feed()（union_by_id，服务端权威），不再自写 localStorage 缓存
@@ -2099,7 +2111,7 @@
     const latestBtn = $('srch-prod-latest');
     if (topBtn) topBtn.className = 'sm' + (p === 'Top' ? ' primary' : '');
     if (latestBtn) latestBtn.className = 'sm' + (p === 'Latest' ? ' primary' : '');
-    if (srchQuery) renderSrchProduct();  // 已有搜索时切模式只展示已缓存的另一份，不重新抓取
+    if (srchQuery) { renderSrchProduct(); resetSearchPos(); }  // 已有搜索时切模式只展示已缓存的另一份（不同内容集→位置回顶部）
   }
 
   async function fetchSearch(q, product, cursor) {
@@ -2166,6 +2178,7 @@
         }
         renderSrchProduct();
         cacheSearch();   // 落本地缓存并同步其它设备，刷新/换设备都看到这一份
+        resetSearchPos(); // 新搜索=内容整体替换，浏览位置回到顶部（避免旧位置指向新内容）
       } else {
         await loadSearchOlderBatch();
       }
@@ -2235,6 +2248,40 @@
     srchList.insertBefore(ch, srchList.firstChild);
   }
 
+  // 搜索位置记忆：与首页一致，交给框架 feed()（feed:search:anchor，跨设备同步）。
+  let srchUserScrolled = false;
+  let srchPosSaveTimer = null;
+  function saveSearchPos() {
+    if (!XSEARCHFEED || activeView !== 'search') return;
+    const cont = viewSearch;
+    if (!cont || getComputedStyle(cont).display === 'none') return;
+    XSEARCHFEED.saveAnchor();
+  }
+  function scheduleSaveSearchPos() {
+    if (srchPosSaveTimer) return;
+    srchPosSaveTimer = setTimeout(() => { srchPosSaveTimer = null; saveSearchPos(); }, 200);
+  }
+  // 内容缓存更新（新搜索/刷新/切模式）→ 浏览位置回到顶部并清空锚点，避免旧位置指向新内容
+  function resetSearchPos() {
+    const cont = viewSearch;
+    if (cont) cont.scrollTop = 0;
+    if (XSEARCHFEED) XSEARCHFEED.clearAnchor();
+    srchUserScrolled = false;
+  }
+  // 恢复到上次搜索位置：交给框架 feed()（按 id 定位 + 卡内偏移，带补偿重定位）；
+  // 用户一旦自己滚动立即让位，绝不把正在看的用户拽回去。
+  let _srchRestoreIv = null;
+  function restoreSearchScroll() {
+    if (!XSEARCHFEED || srchUserScrolled) return;
+    if (XSEARCHFEED.restore()) return;
+    if (_srchRestoreIv) clearInterval(_srchRestoreIv);
+    let tries = 0;
+    _srchRestoreIv = setInterval(() => {
+      if (srchUserScrolled) { clearInterval(_srchRestoreIv); _srchRestoreIv = null; return; }
+      if ((XSEARCHFEED && XSEARCHFEED.restore()) || ++tries > 16) { clearInterval(_srchRestoreIv); _srchRestoreIv = null; }
+    }, 320);
+  }
+
   // 打开搜索视图：先与服务端对账，拿到「任一设备最近一次搜索」这份共享缓存再渲染；
   // 这是多设备同步的关键一步——必须 pull，否则只会读本地旧缓存（换设备看到的是别人早先的数据）。
   async function restoreSearch() {
@@ -2255,6 +2302,8 @@
     srchCursorLatest = snap.cursorLatest || null;
     renderSrchProduct();
     showSrchCacheHint();
+    srchUserScrolled = false;   // 打开即尝试恢复上次搜索位置（与首页续读一致）
+    restoreSearchScroll();
   }
 
   function doSearch() {
@@ -2273,6 +2322,8 @@
   if (srchScroll) {
     let srchScrollTimer = null;
     srchScroll.addEventListener('scroll', () => {
+      srchUserScrolled = true;
+      scheduleSaveSearchPos();
       if (srchScrollTimer) return;
       srchScrollTimer = setTimeout(() => {
         srchScrollTimer = null;
