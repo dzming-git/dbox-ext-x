@@ -2275,13 +2275,6 @@
     if (idx >= 0) items[idx] = merged; else items.push(merged);
     try { XSTATE.set(XTWEETS.keys.items, items, { strategy: 'lww' }); } catch (_) {}
   }
-  // 从全局单缓存删除一条（详情「重新获取」用：清掉本地副本，下次打开重新请求网络）
-  function tweetCacheDrop(id) {
-    if (!XTWEETS || id == null) return;
-    const sid = String(id);
-    const out = (XTWEETS.items() || []).filter((x) => String(x.tweet_id || x.id) !== sid);
-    try { XSTATE.set(XTWEETS.keys.items, out, { strategy: 'lww' }); } catch (_) {}
-  }
   // 把推文数组收敛成「成员 id + 排序」的轻量列表（各视图只存这个，不重复存内容）
   function toMembership(list) {
     return (list || []).map((it) => ({ tweet_id: it.tweet_id || it.id, created_at: it.created_at }));
@@ -3182,7 +3175,6 @@
   function dtCachePut(tweet, replies, cursor) {
     tweetCachePutDetail(tweet, replies, cursor);
   }
-  function dtCacheDrop(id) { tweetCacheDrop(id); }
 
   // 详情缓存已统一到全局单缓存 XTWEETS（见上方 feed('tweets')），不再有独立的
   // localStorage 详情缓存，故删除原 DT_CACHE / dtPersist / dtRestore 等本地持久化逻辑。
@@ -3311,14 +3303,16 @@
     }));
     // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存），并重新拉取这条
     // 推文的内容——详情页默认走详情缓存（秒开、不发请求），这里是强制更新的出口。
+    // 注意：不再 dtCacheDrop 删除缓存——删缓存的 lww 推送会在服务端先把这条顶掉，
+    // 若随后很快刷新、补回的推送还压在防抖里没发出，pull 会拿服务端缺这条的快照覆盖
+    // 本地，推文就"消失"。改为 force 强拉网络并覆盖写回（upsert），服务端始终含这条。
     card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
       reloadCardMedia(card);
       b.textContent = '获取中…';
       const tid = t.tweet_id || b.dataset.tid;
       if (tid) {
-        dtCacheDrop(tid);
-        openTweetDetail(String(tid), null).catch(() => {});
+        openTweetDetail(String(tid), null, true).catch(() => {});
         return;
       }
       setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
@@ -3347,7 +3341,7 @@
     return div;
   }
 
-  async function openTweetDetail(tweetId, seed) {
+  async function openTweetDetail(tweetId, seed, force) {
     // 列表里若有正在原地点播的视频，进详情前必须先停掉并销毁 hls 实例：
     // 详情层会盖住整个面板，视频虽被遮住但解码与声音仍在继续（被遮挡不会自动
     // 暂停），表现为「推文都点开了，视频还在响」。
@@ -3364,8 +3358,10 @@
     }
     // 命中详情缓存 → 直接秒开，零请求（刷新页面或从别的入口再打开同一条推文
     // 都走这条路；这种情况下内容已经在本地，再拉一遍 X 没有意义）
+    // force=true 用于「重新获取」：不删缓存、只强制重拉网络并覆盖写回，
+    // 避免删缓存的 lww 推送在服务端先把这条顶掉、刷新时又被 pull 覆盖回来导致消失。
     const hit = dtCacheGet(tweetId);
-    if (hit) {
+    if (hit && !force) {
       dtCurTweet = hit.tweet;
       paintDetail(hit.tweet, hit.replies, hit.cursor);
       if (dtScroll) dtScroll.scrollTop = 0;
