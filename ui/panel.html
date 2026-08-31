@@ -1066,7 +1066,8 @@
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
     mediaEl.appendChild(close);
-    v.play().catch(() => {});   // 在点击激活内启动带声音自动播放
+    // 注意：不在这里调 v.play()——此时 src 尚未设置（下面才赋），调用必失败并被吞掉。
+    // 各分支（HLS / mp4）在源就绪后各自触发 play。
     if (m3u8 && window.Hls && window.Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
       hls.loadSource(m3u8); hls.attachMedia(v);
@@ -1085,6 +1086,32 @@
     } else if (mp4) {
       v.src = mp4;
       v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
+      // mp4 直链加载失败时（代理超时/403/网络断开/CORS），<video> 会静默进入死锁：
+      // 黑屏 + 0:00 + 播放按钮点了没反应（error 事件不冒泡、原生控件无错误提示）。
+      // 这里监听 error 事件，自动重试一次（覆盖瞬时网络抖动），仍失败则给用户明确提示。
+      let _mp4Errs = 0;
+      const _onMp4Error = () => {
+        _mp4Errs++;
+        if (_mp4Errs <= 1) {
+          // 首次错误：清空 src 后重新赋值触发重新加载（覆盖瞬时抖动/代理首次未命中）
+          const prev = v.src;
+          v.src = '';
+          v.load();
+          // 微任务延迟确保 src='' 已生效
+          setTimeout(() => { if (_inlineVid && _inlineVid.v === v) { v.src = prev; v.load(); } }, 50);
+        } else {
+          // 重试仍失败：在播放器内显示错误提示，让用户知道不是卡了而是源不可用
+          if (v.parentNode) {
+            const errEl = document.createElement('div');
+            errEl.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#f66;font-size:13px;z-index:2';
+            errEl.textContent = '视频加载失败（可点击关闭后重试）';
+            v.parentNode.appendChild(errEl);
+            // 5 秒后自动淡出提示（不影响用户操作）
+            setTimeout(() => { try { errEl.remove(); } catch (_) {} }, 5000);
+          }
+        }
+      };
+      v.addEventListener('error', _onMp4Error);
       _inlineVid = { el: mediaEl, v, hls: null, close };
     } else {
       mediaEl.innerHTML = mediaEl._thumbHtml; mediaEl.classList.remove('playing');  // 无可用源：还原缩略图
