@@ -1261,6 +1261,79 @@ def _normalize_media(tweet_legacy):
     return media
 
 
+def _normalize_note_tweet_media(nt_media_list):
+    """从 note_tweet.result.media 提取媒体列表（结构不同于 legacy.extended_entities）。
+
+    note_tweet 的 media 是扁平数组，每项可能含 media_url_https / type 等字段。
+    """
+    media = []
+    for m in (nt_media_list or []):
+        kind = m.get('type', '')
+        if kind == 'photo' or kind == 'image':
+            url = m.get('media_url_https') or m.get('media_url') or m.get('url')
+            if url:
+                media.append({'type': 'image', 'url': url + ':orig' if ':orig' not in url else url,
+                              'label': '图片'})
+        elif kind in ('video', 'animated_gif'):
+            variants = m.get('video_info', {}).get('variants', []) if isinstance(m.get('video_info'), dict) else []
+            mp4s = [v for v in variants
+                    if v.get('content_type') == 'video/mp4' and v.get('url')]
+            best = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
+            m3u8s = [v['url'] for v in variants
+                     if v.get('content_type') == 'application/x-mpegURL']
+            cover = m.get('media_url_https') or m.get('media_url') or ''
+            media.append({
+                'type': 'video',
+                'url': pick_m3u8(m3u8s) if m3u8s else (best.get('url') if best else ''),
+                'label': '视频/动图',
+                'cover': cover,
+                'mp4': (best.get('url') or '') if best else '',
+            })
+    return media
+
+
+def _extract_card_media(card, card_2):
+    """从 tweet 的 card / card_2 字段提取媒体（某些推文格式把图片放在这里）。
+
+    返回标准 media 列表或空列表。
+    """
+    # 尝试多个可能的 card 位置
+    for c in (card, card_2):
+        if not isinstance(c, dict):
+            continue
+        # card 内部可能有 media 或 image 字段
+        for key in ('media', 'images', 'media_entities', 'binding_values'):
+            val = c.get(key)
+            if isinstance(val, list) and val:
+                result = []
+                for item in val:
+                    if isinstance(item, dict):
+                        url = (item.get('media_url_https')
+                               or item.get('media_url')
+                               or item.get('url')
+                               or item.get('image_value', {}).get('image_value', '')
+                               or '')
+                        if url:
+                            result.append({'type': 'image', 'url': url + ':orig' if ':orig' not in url else url,
+                                          'label': '图片'})
+                if result:
+                    return result
+            elif isinstance(val, dict):
+                # binding_values 可能是字典，值是 {string_value/image_value} 结构
+                for k, v in val.items():
+                    if isinstance(v, dict):
+                        iv = v.get('image_value', {})
+                        if isinstance(iv, str) and iv:
+                            return [{'type': 'image', 'url': iv + ':orig' if ':orig' not in iv else iv,
+                                     'label': '图片'}]
+                        elif isinstance(iv, dict):
+                            iurl = iv.get('url', '') or iv.get('image_url', '')
+                            if iurl:
+                                return [{'type': 'image', 'url': iurl + ':orig' if ':orig' not in iurl else iurl,
+                                         'label': '图片'}]
+    return []
+
+
 def _author_dict(user_legacy, user_core, user):
     """从多种 user 结构里归一化出 author 字典。"""
     return {
@@ -1693,9 +1766,33 @@ def _extract_tweet_obj(r):
     # 与浏览/收藏路径保持一致——同一条原推到处都只有一个 id、一份缓存。
     tid = (_canonical_tweet_id(legacy, r.get('rest_id'))
            if flat_rt_handle is not None else r.get('rest_id'))
+
+    # ---- 文本提取：优先 note_tweet（longform 推文的完整正文） ----
+    # X 对长推文 / 含特殊格式的推文会把完整文本放在 note_tweet 里，
+    # legacy.full_text 反而是截断的（末尾带 …）。检测规则：
+    #   note_tweet 存在且其 text 比 legacy.full_text 更长 → 用 note_tweet 的
+    text = legacy.get('full_text', '')
+    _nt = (((r.get('note_tweet') or {}).get('note_tweet_results') or {}).get('result') or {})
+    _nt_text = (_nt.get('text') or '').strip()
+    if len(_nt_text) > len(text):
+        text = _nt_text
+
+    # ---- 媒体提取：合并 legacy + note_tweet + card 中的媒体 ----
+    media = _normalize_media(legacy)
+    # note_tweet 内联媒体（longform 推文可能把图片放在这里而非 legacy.extended_entities）
+    if not media:
+        _nt_media = _nt.get('media') or []
+        if _nt_media:
+            media = _normalize_note_tweet_media(_nt_media)
+    # card 中也可能包含媒体（某些推文格式）
+    if not media:
+        _card_media = _extract_card_media(r.get('card'), r.get('card_2'))
+        if _card_media:
+            media = _card_media
+
     return {
         'tweet_id': tid,
-        'text': legacy.get('full_text', ''),
+        'text': text,
         'created_at': legacy.get('created_at'),
         'favorite_count': legacy.get('favorite_count'),
         'retweet_count': legacy.get('retweet_count'),
@@ -1706,10 +1803,153 @@ def _extract_tweet_obj(r):
         'author': author,
         'retweeted_by': retweeted_by,
         'quoted': quoted,
-        'media': _normalize_media(legacy),
+        'media': media,
         'url': 'https://x.com/{}/status/{}'.format(
             author.get('screen_name') or u_screen or 'unknown', tid),
     }
+
+
+def _is_text_truncated(text):
+    """检测文本是否被截断（末尾带 … 或 U+2026 HORIZONTAL ELLIPSIS）。
+
+    X 的 GraphQL 对部分推文返回截断文本，以 …（或 Unicode U+2026）结尾。
+    """
+    if not text:
+        return False
+    stripped = text.rstrip()
+    # 检查常见的截断标记
+    return (stripped.endswith('…')
+            or stripped.endswith('\u2026')  # HORIZONTAL ELLIPSIS
+            or stripped.endswith('...')
+            or (stripped[-1] in ('@', '#', 'h') and len(stripped) < 200))  # 被截断的 mention/hashtag
+
+
+def _extract_media_from_html(html):
+    """从推文 HTML 页面提取媒体 URL 列表（作为 GraphQL 媒体缺失时的兜底）。
+
+    从 <img> 标签（推文内图片）和 <video> 标签中提取 src。
+    返回标准 media 列表格式。
+    """
+    if not html:
+        return []
+    media = []
+    # 提取推文内的图片（data-testid="tweetPhoto" 容器内的 img）
+    img_pattern = re.compile(r'<img[^>]+src="(https://pbs\.twimg\.com/media/[^"]+)"', re.I)
+    seen = set()
+    for m in img_pattern.finditer(html):
+        url = m.group(1)
+        if url not in seen:
+            seen.add(url)
+            media.append({'type': 'image', 'url': url + ':orig' if ':orig' not in url else url,
+                          'label': '图片'})
+    # 提取视频缩略图（通常也是 pbs.twimg.com）
+    vid_pattern = re.compile(r'<video[^>]*poster="(https://pbs\.twimg\.com/[^"]+)"', re.I)
+    for m in vid_pattern.finditer(html):
+        poster = m.group(1)
+        if poster not in seen:
+            seen.add(poster)
+            media.append({'type': 'video', 'cover': poster, 'url': '', 'label': '视频'})
+    return media
+
+
+def _extract_og_description(html):
+    """从 HTML 中提取 og:description 内容（去除作者名前缀和 X 后缀）。"""
+    if not html:
+        return ''
+    m = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']',
+                  html, re.IGNORECASE)
+    if not m:
+        return ''
+    desc = m.group(1)
+    # og:description 形如 "作者名 (@username): 正文 …" 或 "作者名 on X: 正文"
+    # 去掉前缀 "xxx: " 或 "xxx on X: "
+    desc = re.sub(r'^[^:]+\s*:\s*', '', desc, count=1)
+    desc = re.sub(r'\s+(on|@)\s*X\s*:\s*', ' ', desc)
+    # 去掉末尾的 "…", "..." 等
+    desc = re.sub(r'[…\.]{3}\s*$', '', desc).strip()
+    return desc
+
+
+def _extract_pbs_media_from_html(html):
+    """从推文 HTML 页面中提取 pbs.twimg.com/media 图片 URL。
+
+    X 的 SPA 页面（即使是初始 HTML）会在 script 标签或 data 属性中包含
+    推文媒体的完整 URL。URL 中的 & 可能被编码为 &amp;。
+    返回标准媒体列表或空列表。
+    """
+    if not html:
+        return []
+    # 先解码 HTML 实体（&amp; -> & 等）
+    import html as _html_mod
+    decoded = _html_mod.unescape(html)
+    # 匹配 pbs.twimg.com/media/ 后跟 ID 和可选扩展名/参数
+    pattern = r'pbs\.twimg\.com/media/([A-Za-z0-9_-]+)(?::[a-z]+)?(?:\.[a-z]+)?(?:\?[^\s"\'<>]*)?'
+    matches = re.findall(pattern, decoded, re.DOTALL)
+    seen = set()
+    media = []
+    for mid in matches:
+        if mid in seen:
+            continue
+        seen.add(mid)
+        url = f'https://pbs.twimg.com/media/{mid}:orig'
+        media.append({'type': 'image', 'url': url, 'label': '图片'})
+    return media
+
+
+def _normalize_legacy_media(media_list):
+    """将 statuses/show.json 返回的 extended_entities.media 转换为标准格式。"""
+    media = []
+    for m in (media_list or []):
+        kind = m.get('type')
+        if kind == 'photo':
+            url = m.get('media_url_https') or m.get('media_url') or ''
+            if url:
+                media.append({'type': 'image', 'url': url + ':orig' if ':orig' not in url else url,
+                              'label': '图片'})
+        elif kind in ('video', 'animated_gif'):
+            variants = (m.get('video_info') or {}).get('variants', [])
+            mp4s = [v for v in variants
+                    if v.get('content_type') == 'video/mp4' and v.get('url')]
+            best = max(mp4s, key=lambda v: v.get('bitrate') or 0) if mp4s else None
+            cover = m.get('media_url_https') or m.get('media_url') or ''
+            media.append({'type': 'video', 'cover': cover,
+                          'url': best.get('url') if best else '',
+                          'label': '视频/动图'})
+    return media
+
+
+def _resolve_pic_url(short_url, opener=None, max_redirects=5):
+    """解析 pic.twitter.com / t.co 短链，返回实际的 pbs.twimg.com 图片 URL。
+
+    返回实际 URL 或空字符串（解析失败时）。
+    """
+    if not short_url:
+        return ''
+    # 如果已经是完整图片 URL，直接返回
+    if 'pbs.twimg.com' in short_url:
+        return short_url
+    try:
+        _opener = opener or make_opener(None)
+        req = urllib.request.Request(short_url, headers={'User-Agent': UA})
+        # 不自动跟随重定向，手动获取 Location 头
+        resp = _opener.open(req, timeout=8)
+        final_url = resp.url
+        resp.close()
+        # 如果最终 URL 是 pbs.twimg.com，返回它
+        if 'pbs.twimg.com' in final_url:
+            return final_url
+        return ''  # 不是图片 URL
+    except urllib.error.HTTPError as e:
+        # 301/302 重定向：从 Location 头获取
+        if e.code in (301, 302, 303, 307, 308):
+            location = e.headers.get('Location', '')
+            if location:
+                if max_redirects > 0:
+                    return _resolve_pic_url(location, opener, max_redirects - 1)
+                return location
+        return ''
+    except Exception:
+        return ''
 
 
 def get_tweet_thread(tweet_id, cookie_header, cursor=None):
@@ -1781,6 +2021,24 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None):
             if rp['tweet_id'] == tweet_id:
                 focal = replies.pop(i)
                 break
+
+    # ---- 截断文本修复：用 oEmbed API 兜底补全 ----
+    # X 的 GraphQL TweetDetail 对部分推文返回截断的 legacy.full_text（末尾带 …），
+    # 且不包含 note_tweet / card 等完整文本字段。
+    # 兜底策略：调用 oEmbed API 获取完整正文（公开接口，无需特殊认证）。
+    if focal and _is_text_truncated(focal.get('text', '')):
+        try:
+            tweet_url = focal.get('url') or f'https://x.com/i/status/{tweet_id}'
+            oembed_url = f'https://publish.twitter.com/oembed?url={urllib.parse.quote(tweet_url)}'
+            oembed_raw = fetch_text(oembed_url, opener, {'User-Agent': UA}, timeout=10)
+            oembed_data = json.loads(oembed_raw) if oembed_raw else {}
+            oembed_html = (oembed_data.get('html') or '')
+            oembed_text = re.sub(r'<[^>]+>', '', oembed_html).strip() if oembed_html else ''
+            if oembed_text and len(oembed_text) > len(focal.get('text', '')):
+                focal['text'] = oembed_text
+        except Exception as e:
+            log(f'截断文本兜底提取失败（{tweet_id}）: {e}', level='warn')
+
     return {'tweet': focal, 'replies': replies, 'next_cursor': next_cursor}
 
 
