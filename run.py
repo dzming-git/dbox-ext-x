@@ -2529,6 +2529,20 @@ def extract_author_from_html(html):
     return None
 
 
+def _strip_trailing_media_links(text):
+    """去掉正文末尾 X 自动追加的媒体卡片链接（t.co 短链）。
+
+    X 推文带媒体时，full_text 末尾会被追加一个指向该媒体（video/photo）的 t.co 短链；
+    这些媒体已作为资源附件入库，不应再贴在帖子正文里。作者主动在正文中分享的链接
+    位于正文中间、不在末尾，不会被误删。
+
+    仅删除末尾连续的 t.co 短链（通常恰好一个，对应整组媒体），保留其余内容。
+    """
+    if not text:
+        return text
+    return re.sub(r'(?:https?://t\.co/\S+\s*)+$', '', text, flags=re.IGNORECASE).strip()
+
+
 def extract_media(url, cookie_header, proxy_cfg):
     """解析推文，返回 (媒体列表, 推文文字, 作者信息)。
 
@@ -3055,7 +3069,9 @@ def main():
         sys.exit(1)
 
     # 推文文字作为帖子正文；标题仅当用户在加载脚本中填写了 title 参数才设置，否则帖子无标题
-    post_content = (tweet_text or '').strip()
+    # 去掉末尾 X 自动追加的媒体卡片链接（t.co 短链指向视频/图片）：媒体已作为资源附件入库，
+    # 不应再作为文字贴在正文里（作者主动分享的链接在正文中间，不受影响）。
+    post_content = _strip_trailing_media_links(tweet_text or '')
     post_title = title_param
     if post_title:
         log(f'使用自定义标题: {post_title}')
