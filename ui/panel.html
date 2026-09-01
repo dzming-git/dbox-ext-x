@@ -1874,25 +1874,10 @@
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
-    const mediaHtml = medias.map((m, idx) => {
-      if (m.type === 'video') {
-        const poster = mediaUrl(m.cover || m.url || '', 'image');
-        const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
-        const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
-        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
-        // 缩略图用 <img> 承载封面，不再用 <video src="" poster>：无 src 的 <video>
-        // 内在尺寸恒为 300×150（HTML 规范默认值），poster 只绘制在元素上、不改变
-        // 元素尺寸，竖屏封面会被塞进这个小横框（「框很小」）；而 <img> 有自然尺寸，
-        // 容器能按封面真实比例撑开。
-        // 带上封面真实宽高：浏览器据此推导 aspect-ratio，在封面（lazy）尚未加载
-        // 时就能预留正确空间，避免滚动与点播时容器塌陷抖动（消除 CLS 的标准做法）。
-        // 缺失时兜底 320x180（≈16:9）：X 部分推文视频不返回 aspect_ratio，无尺寸 + lazy
-        // 会导致容器高度塌成 ≈0（只剩 ▶ 一行高）。
-        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
-      }
-      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
-    }).join('');
+    // 媒体渲染统一交给 cardMediaInner：浏览/搜索/用户列表/收藏夹/「重新获取」
+    // 全部共用同一份逻辑，避免散落多处的副本相互偏离（此前用户列表就因没走
+    // cardMediaInner 而漏掉 .media.m1 包裹，导致视频 CSS 规则全部失效）。
+    const mediaHtml = cardMediaInner(medias);
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
     card.className = 'bm-card';
@@ -1907,7 +1892,7 @@
         <div class="time">${esc2(fmtTime(item.created_at))}</div>
       </div>
       <div class="text">${esc2(item.text || '')}</div>
-      ${mediaHtml ? `<div class="media">${mediaHtml}</div>` : ''}
+      ${mediaHtml}
       <div class="actions">
         ${inFolder
           ? `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
