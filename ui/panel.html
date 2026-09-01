@@ -262,6 +262,8 @@
   .bm-card .media.m1 { grid-template-columns: 1fr; }
   /* 单图：保持原图比例完整显示，限高 320px 不裁切，背景浅灰填充 */
   .bm-card .media.m1 .bm-media { max-height: 320px; background: #f3f5f7; }
+  /* 视频安全网：即使封面未加载 / 尺寸缺失，也保证最小可见高度（防塌成一行） */
+  .bm-card .media.m1 .bm-media[data-type="video"] { min-height: 120px; }
   .bm-card .media.m1 .bm-media img, .bm-card .media.m1 .bm-media video {
     width: auto; max-width: 100%; max-height: 320px;
     object-fit: contain; display: block; margin: 0 auto;
@@ -1878,7 +1880,9 @@
         // 容器能按封面真实比例撑开。
         // 带上封面真实宽高：浏览器据此推导 aspect-ratio，在封面（lazy）尚未加载
         // 时就能预留正确空间，避免滚动与点播时容器塌陷抖动（消除 CLS 的标准做法）。
-        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
+        // 缺失时兜底 320x180（≈16:9）：X 部分推文视频不返回 aspect_ratio，无尺寸 + lazy
+        // 会导致容器高度塌成 ≈0（只剩 ▶ 一行高）。
+        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
@@ -2206,7 +2210,9 @@
         // 容器能按封面真实比例撑开。
         // 带上封面真实宽高：浏览器据此推导 aspect-ratio，在封面（lazy）尚未加载
         // 时就能预留正确空间，避免滚动与点播时容器塌陷抖动（消除 CLS 的标准做法）。
-        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
+        // 缺失时兜底 320x180（≈16:9）：X 部分推文视频不返回 aspect_ratio，无尺寸 + lazy
+        // 会导致容器高度塌成 ≈0（只剩 ▶ 一行高）。
+        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
       return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
@@ -3631,7 +3637,8 @@
         // 同卡片缩略图：用 <img> 承载封面以获得真实比例，避免 <video> 固有的
         // 300×150 小框（无 src 时 poster 不改变元素尺寸）
         // 同样带上封面真实宽高以预留空间（消除加载过程中的布局跳动）
-        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
+        // 缺失时兜底 320x180（≈16:9），同卡片缩略图
+        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
         return `<div class="bm-media dt-video" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}">`
           + (poster ? `<img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/>` : '')
           + `<span class="bm-play">▶</span></div>`;
