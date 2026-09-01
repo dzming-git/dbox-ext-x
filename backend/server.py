@@ -855,8 +855,9 @@ def create_blueprint(host):
                 'author_name', 'author_url', 'caption', 'group'
             ) if f.get(k) is not None}
             try:
+                target_lib = f.get('library_id') or job['library_id']
                 res = host.ingest(
-                    job['library_id'], path,
+                    target_lib, path,
                     kind=kind, modes=tuple(modes),
                     hidden=hid, meta=meta, owner_id=job['owner_id'],
                 )
@@ -884,7 +885,7 @@ def create_blueprint(host):
                     author_name=g.get('author_name'),
                     author_url=g.get('author_url'),
                     source_url=g.get('source_url'),
-                    library_id=job['library_id'],
+                    library_id=f.get('library_id') or job['library_id'],
                 )
                 if isinstance(r, dict) and r.get('success'):
                     _append_log(job_id, '已生成帖子(group=%s)' % group)
@@ -1106,6 +1107,10 @@ def create_blueprint(host):
             if request.method == 'POST':
                 val = (request.get_json(force=True, silent=True) or {}).get('value')
                 job['input_response'] = val
+                # 隐藏资源是下载时的选项：预览阶段不传，点击下载时才经 /input 回传，
+                # 此处同步进 job['hidden']，使随后入库沿用用户当时勾选的状态。
+                if isinstance(val, dict) and 'hidden' in val:
+                    job['hidden'] = bool(val['hidden'])
                 input_events[job_id].set()
                 return jsonify({'success': True})
             # GET：run.py 长轮询等待用户选择
@@ -1316,6 +1321,75 @@ def create_blueprint(host):
                             'message': '搜索失败: ' + str(e)}), 502
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
+
+    @bp.route('/user_tweets', methods=['GET'])
+    @host.login_required
+    def user_tweets_ep():
+        """拉取某用户的推文时间线（UserTweets），并附带该用户资料。
+
+        与搜索/时间线同源：dbox 的 X 拓展自己用 GraphQL 解析，不打开 x.com 链接。
+        user 可为 @句柄 或 内部 rest_id；cursor 用于分页。
+        """
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False,
+                            'message': '未配置 x.com 登录 Cookie'}), 400
+        user = (request.args.get('user') or '').strip().lstrip('@')
+        if not user:
+            return jsonify({'success': False, 'message': '缺少用户名（user）'}), 400
+        try:
+            count = min(int(request.args.get('count', 20)), 50)
+            cursor = request.args.get('cursor') or None
+            _home_headers = xrun.build_headers(cookie, with_bearer=False)
+
+            def _txid(method, path):
+                return get_transaction_id(_home_headers, method, path, ua=xrun.UA)
+
+            items, next_cursor, profile = xrun.user_tweets(
+                cookie, user, count, cursor, txid_func=_txid)
+        except Exception as e:
+            if '404' in str(e):
+                return jsonify({'success': False, 'message': (
+                    '获取用户推文失败: X 拒绝了请求（404）。可能是反爬令牌失效或 X 前端改版，'
+                    '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
+            return jsonify({'success': False,
+                            'message': '获取用户推文失败: ' + str(e)}), 502
+
+        # 跨设备共享缓存：拉取结果先并入服务端 UserState（union_by_id 去重、封顶 400），
+        # key 用稳定的 user_id（rest_id）而非 screen_name——@句柄可被用户改名，改名后
+        # 旧 screen_name 目录会失效且残留脏数据；user_id 终身不变，天然去重。
+        # 与首页 /timeline 同一机制，使任意设备打开同一用户看到的都是合并后的同一份列表。
+        # 首次加载（无 cursor）返回合并后的完整 canonical；翻页仅回本页新拉取项。
+        canonical = None
+        try:
+            user_id = str((profile or {}).get('rest_id')
+                          or (profile or {}).get('id') or '')
+            if user_id:
+                norm = []
+                for it in (items or []):
+                    if not isinstance(it, dict):
+                        continue
+                    rec = dict(it)
+                    tid = it.get('tweet_id')
+                    rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
+                    rec['order'] = it.get('created_at')
+                    norm.append(rec)
+                merged = host.state.put('feed:user:' + user_id, norm,
+                                         strategy='union_by_id', cap=400)
+                if isinstance(merged, dict) and isinstance(merged.get('value'), list):
+                    canonical = merged['value']
+                # 缓存用户画像（name/avatar/screen_name/计数），供跨设备秒开用户页
+                umeta = {k: (profile or {}).get(k) for k in (
+                    'rest_id', 'screen_name', 'name', 'avatar', 'bio', 'verified',
+                    'statuses_count', 'following_count', 'followers_count')}
+                host.state.put('users:' + user_id, umeta, strategy='lww')
+        except Exception:
+            canonical = None   # 状态服务不可用时退化为只返回本次结果
+
+        return jsonify({'success': True, 'user': profile,
+                        'items': canonical if (canonical is not None and not cursor) else items,
+                        'next_cursor': next_cursor,
+                        'canonical': canonical is not None and not cursor})
 
     @bp.route('/tweet/<tweet_id>', methods=['GET'])
     @host.login_required

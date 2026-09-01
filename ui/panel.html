@@ -3792,6 +3792,7 @@
   /* ---- 用户详情页：点击头像/名字/@id 进入，DBox 内自行解析其推文（不打开 x.com） ---- */
   let userEl = null, userBodyEl, userListEl, userLoadmoreEl, userMoreEl;
   let userCursor = null, userLoading = false, userCurName = null;
+  let userCachedShown = false;   // 本次打开是否用跨设备缓存预渲染（避免网络返回前闪「加载中」）
 
   function fmtN(n) {
     if (n == null) return '0';
@@ -3822,18 +3823,31 @@
     userCursor = null;
     userEl.classList.add('active');
     enterDrill('user', true);
-    userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
-    userListEl.innerHTML = '';
     userLoadmoreEl.style.display = 'none';
+    // 跨设备缓存预渲染：先 pull 对账，再尝试用本地/服务端缓存（user_id_of 别名 →
+    // feed:user:<id> 成员列表 → XTWEETS 内容）即时渲染；网络返回后再刷新为最新。
+    // 改名(screen_name 变化)会让别名失效 → 退化为「加载中」重新拉取，自然自愈。
+    userCachedShown = false;
+    if (XSTATE) {
+      try { await XSTATE.pull(); } catch (_) {}
+      userCachedShown = renderUserCache(screenName);
+    }
+    if (!userCachedShown) {
+      userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
+      userListEl.innerHTML = '';
+    }
     await loadUserTweets(true);
   }
 
   async function loadUserTweets(reset) {
     if (userLoading || !userEl) return;
     userLoading = true;
-    if (reset) {
+    if (reset && !userCachedShown) {
       userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
       userListEl.innerHTML = '';
+      userCursor = null;
+    } else if (reset) {
+      userListEl.innerHTML = '';   // 已有缓存预渲染，清掉等最新覆盖，不闪「加载中」
       userCursor = null;
     }
     try {
@@ -3853,6 +3867,11 @@
         // 用户自己的时间线里再点作者名/头像会重新进入同一用户，站内解析即可，无需重绑
         userListEl.appendChild(card);
       }
+      tweetCachePut(items);   // 内容进全局单缓存（一处内容，跨设备共享）
+      try {
+        const _uid = (d.user && (d.user.rest_id || d.user.id)) ? String(d.user.rest_id || d.user.id) : '';
+        if (_uid) XSTATE.set('user_id_of:' + userCurName, _uid, { strategy: 'lww' });
+      } catch (_) {}
       userCursor = d.next_cursor || null;
       userLoadmoreEl.style.display = userCursor ? '' : 'none';
     } catch (e) {
@@ -3860,6 +3879,32 @@
     } finally {
       userLoading = false;
     }
+  }
+
+  // 跨设备缓存预渲染：screen_name → user_id 别名 → feed:user:<id> 成员列表 → XTWEETS 内容。
+  // 与 restoreBookmarks/restoreSearch 同套路（pull 后对账再渲染）。改名会让别名失效 → 返回 false。
+  function renderUserCache(screenName) {
+    if (!XSTATE) return false;
+    let uid = null;
+    try { uid = XSTATE.get('user_id_of:' + screenName); } catch (_) {}
+    if (!uid) return false;
+    let mem = null;
+    try { mem = XSTATE.get('feed:user:' + uid); } catch (_) {}
+    if (!mem || !mem.length) return false;
+    let shown = 0;
+    userListEl.innerHTML = '';
+    for (const m of mem) {
+      const it = tweetCacheGet(m.tweet_id || m.id);
+      if (!it) continue;
+      userListEl.appendChild(renderBmCard(it, false));
+      shown++;
+    }
+    if (!shown) return false;
+    // 资料头：优先后端跨设备缓存的 users:<uid>
+    let prof = null;
+    try { prof = XSTATE.get('users:' + uid); } catch (_) {}
+    if (prof && prof.screen_name) renderUserProfile(prof);
+    return true;
   }
 
   function renderUserProfile(p) {
@@ -3988,6 +4033,26 @@
 
   async function recordHistory(tweet) {
     if (!tweet || !tweet.tweet_id) return;
+    // 跨设备共享：浏览记录写入 UserState（与首页/搜索/收藏同一套 ns='x' 状态层），
+    // 任意设备打开历史视图都能直接看到，不依赖本机 SQLite。
+    if (XSTATE) {
+      try {
+        const rec = {
+          tweet_id: tweet.tweet_id, id: tweet.tweet_id,
+          text: tweet.text, created_at: tweet.created_at,
+          media: tweet.media || [], url: tweet.url, author: tweet.author || {},
+          viewed_at: new Date().toISOString(),
+        };
+        let list = [];
+        try { list = (XSTATE.get('history:list') || []).slice(); } catch (_) {}
+        const seen = new Set(list.map((x) => String(x.tweet_id)));
+        if (!seen.has(String(rec.tweet_id))) {
+          list.unshift(rec);
+          if (list.length > 300) list = list.slice(0, 300);
+          XSTATE.set('history:list', list, { strategy: 'lww' });
+        }
+      } catch (_) {}
+    }
     try {
       await req(`${API}/history`, {
         method: 'POST',
@@ -4000,10 +4065,18 @@
   async function loadHistory() {
     hsList.innerHTML = '<div class="bm-empty">加载中…</div>';
     try {
-      const r = await req(`${API}/history?limit=100`);
-      const d = await r.json();
-      if (!d.success) { hsList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
-      const items = d.items || [];
+      let items = null;
+      // 优先读跨设备缓存（history:list），无则回退本机 SQLite（/history）
+      if (XSTATE) {
+        try { await XSTATE.pull(); } catch (_) {}
+        try { items = XSTATE.get('history:list'); } catch (_) {}
+      }
+      if (!items || !items.length) {
+        const r = await req(`${API}/history?limit=100`);
+        const d = await r.json();
+        if (!d.success) { hsList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+        items = d.items || [];
+      }
       if (!items.length) { hsList.innerHTML = '<div class="bm-empty">浏览过的推文会记录在这里，可回看。</div>'; return; }
       tweetCachePut(items);   // 内容进全局单缓存（一处内容，详情也读这份）
       hsList.innerHTML = '';
@@ -4016,6 +4089,7 @@
 
   $('hs-clear').addEventListener('click', async () => {
     if (!confirm('确定清空全部浏览历史？')) return;
+    if (XSTATE) { try { XSTATE.set('history:list', [], { strategy: 'lww' }); } catch (_) {} }
     await req(`${API}/history?clear=1`, { method: 'DELETE' });
     loadHistory();
   });
