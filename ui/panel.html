@@ -251,6 +251,34 @@
   .bm-toolbar .srch-prod { display: flex; gap: 6px; flex: 0 0 auto; }
   .bm-toolbar .srch-prod button { flex: 0 0 auto; padding: 9px 12px; }
   .bm-toolbar .srch-prod button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+  .bm-toolbar #srch-filter-btn { flex: 0 0 auto; padding: 9px 12px; margin-left: auto;
+    border: 1px solid #e3e6eb; background: #fff; color: #536471; }
+  .bm-toolbar #srch-filter-btn.on { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+  #srch-filter-badge { font-size: 11px; opacity: .85; }
+  /* 搜索过滤配置浮层 */
+  .flt-modal { position: fixed; inset: 0; z-index: 60; background: rgba(15,20,25,.45);
+    display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .flt-box { background: #fff; border-radius: 12px; width: 100%; max-width: 420px;
+    max-height: 86vh; overflow: auto; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+  .flt-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; border-bottom: 1px solid #eef0f2; font-size: 14px; }
+  .flt-x { border: none; background: transparent; font-size: 16px; cursor: pointer; color: #536471; }
+  .flt-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .flt-body > label { font-size: 12.5px; color: #0f1419; }
+  .flt-body textarea { width: 100%; border: 1px solid #e3e6eb; border-radius: 8px;
+    padding: 8px; font-size: 13px; resize: vertical; font-family: inherit; }
+  .flt-inline { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #0f1419; }
+  .flt-inline input[type="number"] { width: 74px; border: 1px solid #e3e6eb;
+    border-radius: 6px; padding: 4px 6px; font-size: 12.5px; }
+  .flt-adv { margin-top: 4px; padding: 10px; background: #fafbfc; border: 1px solid #eef0f2;
+    border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .flt-adv > b { font-size: 12.5px; }
+  .flt-foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
+    border-top: 1px solid #eef0f2; }
+  .flt-stat { flex: 1; font-size: 12px; color: #536471; }
+  .flt-foot button { border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+    border: 1px solid #e3e6eb; background: #fff; color: #536471; }
+  .flt-foot button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   /* 内容列限宽并居中（同 X：timeline 是固定宽度的中间列，不是铺满整屏）。
      窗口很宽时卡片不再被拉成 1300+px，图两侧自然留白，避免"贴满"的压迫感。 */
   .bm-list { display: flex; flex-direction: column; gap: 10px; max-width: 1000px; margin: 0 auto; }
@@ -495,6 +523,44 @@
         <button id="srch-prod-top" class="primary sm">🔥 热门</button>
         <button id="srch-prod-latest" class="sm">🕐 最新</button>
       </span>
+      <button id="srch-filter-btn" class="sm" title="配置搜索过滤（屏蔽广告/机器人）">🚫 过滤<span id="srch-filter-badge"></span></button>
+    </div>
+    <!-- 搜索过滤配置浮层：屏蔽关键词/用户 + 反垃圾特征 -->
+    <div id="srch-filter-modal" class="flt-modal" style="display:none">
+      <div class="flt-box">
+        <div class="flt-head">
+          <b>🚫 搜索过滤</b>
+          <button id="flt-close" class="flt-x" title="关闭">✕</button>
+        </div>
+        <div class="flt-body">
+          <label for="flt-keywords">屏蔽关键词（每行一个，正文命中即隐藏）</label>
+          <textarea id="flt-keywords" rows="4" placeholder="免费领取&#10;加微信&#10;兼职日结"></textarea>
+          <label class="flt-inline"><input type="checkbox" id="flt-regex" /> 关键词按正则表达式解析</label>
+
+          <label for="flt-users">屏蔽用户（每行一个 @handle）</label>
+          <textarea id="flt-users" rows="2" placeholder="spam_bot1&#10;spam_bot2"></textarea>
+
+          <div class="flt-adv">
+            <b>反垃圾 / 反机器人（进阶）</b>
+            <label class="flt-inline"><input type="checkbox" id="flt-dedupe" /> 正文去重（批量群发只留一条）</label>
+            <label class="flt-inline"><input type="checkbox" id="flt-noavatar" /> 隐藏无头像账号</label>
+            <label class="flt-inline">最小互动数（赞+转+评，低于此值隐藏，0=不限）
+              <input type="number" id="flt-minlikes" min="0" value="0" />
+            </label>
+            <label class="flt-inline">最小粉丝数（0=不限）
+              <input type="number" id="flt-minfollowers" min="0" value="0" />
+            </label>
+            <label class="flt-inline">关注/粉丝比上限（0=不限；如 10 = 关注数是粉丝 10 倍以上判为机器人）
+              <input type="number" id="flt-ratio" min="0" step="0.5" value="0" />
+            </label>
+          </div>
+        </div>
+        <div class="flt-foot">
+          <span id="flt-stat" class="flt-stat"></span>
+          <button id="flt-reset" class="sm">重置</button>
+          <button id="flt-save" class="primary sm">保存并应用</button>
+        </div>
+      </div>
     </div>
     <div id="srch-list" class="bm-list"><div class="bm-empty">输入关键词搜索 X 推文。</div></div>
     <div class="bm-loadmore" id="srch-loadmore" style="display:none"><button id="srch-more">加载更多</button></div>
@@ -3445,6 +3511,108 @@
   }
 
   // 渲染当前 product 的那一份缓存（热门/最新），不触发网络
+  /* ---- 搜索过滤：屏蔽广告 / 批量注册机器人账号 ----
+     配置存 XSTATE（lww，跨设备同步）。
+     注意：结果数组（srchTopItems 等）只含 {tweet_id, created_at} 轻量成员，完整正文在
+     全局单缓存 XTWEETS 里，所以过滤必须在 tweetCacheGet() 回查出 full 之后做。 */
+  const SRCH_FILTER_KEY = 'x:filter:cfg';
+  const SRCH_FILTER_DEF = {
+    keywords: [], users: [], regex: false, dedupe: true,
+    noAvatar: false, minLikes: 0, minFollowers: 0, maxRatio: 0,
+  };
+  let srchFilterCfg = Object.assign({}, SRCH_FILTER_DEF);
+  let _fltHidden = 0;                 // 上一轮被过滤掉的数量（用于统计提示）
+
+  function loadSearchFilter() {
+    let raw = null;
+    try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(SRCH_FILTER_KEY) : null; } catch (_) {}
+    const c = Object.assign({}, SRCH_FILTER_DEF, (raw && typeof raw === 'object') ? raw : {});
+    srchFilterCfg = {
+      keywords: Array.isArray(c.keywords) ? c.keywords : [],
+      users: Array.isArray(c.users) ? c.users : [],
+      regex: !!c.regex,
+      dedupe: c.dedupe !== false,
+      noAvatar: !!c.noAvatar,
+      minLikes: Number(c.minLikes) || 0,
+      minFollowers: Number(c.minFollowers) || 0,
+      maxRatio: Number(c.maxRatio) || 0,
+    };
+  }
+  function saveSearchFilter() { xSet(SRCH_FILTER_KEY, srchFilterCfg, { strategy: 'lww' }); }
+  // 「是否需要执行过滤」：含 dedupe（默认开），决定渲染时是否走过滤分支
+  function filterActive() {
+    const c = srchFilterCfg;
+    return !!(c.keywords.length || c.users.length || c.noAvatar || c.dedupe
+      || c.minLikes > 0 || c.minFollowers > 0 || c.maxRatio > 0);
+  }
+  // 「用户是否配置了屏蔽规则」：不含 dedupe（它是默认行为，不是用户配的），
+  // 用于按钮高亮——否则默认状态下按钮就是亮的，会误导用户以为自己开过过滤。
+  function filterConfigured() {
+    const c = srchFilterCfg;
+    return !!(c.keywords.length || c.users.length || c.noAvatar
+      || c.minLikes > 0 || c.minFollowers > 0 || c.maxRatio > 0);
+  }
+  // 返回 true=保留；false=屏蔽。seenText 为本次渲染的正文集合（供去重）
+  function srchFilterOk(t, seenText) {
+    const c = srchFilterCfg;
+    const text = String(t.text || '');
+    const a = t.author || {};
+    const sn = String(a.screen_name || '').toLowerCase().replace(/^@/, '');
+
+    // 1) 屏蔽用户
+    if (sn && c.users.length) {
+      for (const u of c.users) {
+        const uu = String(u || '').trim().toLowerCase().replace(/^@/, '');
+        if (uu && uu === sn) return false;
+      }
+    }
+    // 2) 屏蔽关键词（普通包含 / 正则）
+    if (text && c.keywords.length) {
+      const low = text.toLowerCase();
+      for (const kw of c.keywords) {
+        const k = String(kw || '').trim();
+        if (!k) continue;
+        if (c.regex) { try { if (new RegExp(k, 'i').test(text)) return false; } catch (_) {} }
+        else if (low.includes(k.toLowerCase())) return false;
+      }
+    }
+    // 3) 最小互动数（广告/机器人的互动通常极低）
+    if (c.minLikes > 0) {
+      const eng = (Number(t.favorite_count) || 0) + (Number(t.retweet_count) || 0) + (Number(t.reply_count) || 0);
+      if (eng < c.minLikes) return false;
+    }
+    // 4) 关注/粉丝比（批量注册号典型特征：关注很多、粉丝极少）
+    if (c.maxRatio > 0) {
+      const ing = Number(a.following_count) || 0;
+      const fol = Number(a.followers_count) || 0;
+      if (ing > 0 && (ing / Math.max(fol, 1)) > c.maxRatio) return false;
+    }
+    // 5) 最小粉丝数
+    if (c.minFollowers > 0 && (Number(a.followers_count) || 0) < c.minFollowers) return false;
+    // 6) 无头像账号
+    if (c.noAvatar && !a.avatar) return false;
+    // 7) 正文去重：批量群发同一句话的只留一条
+    if (c.dedupe && text) {
+      const key = text.trim().replace(/\s+/g, ' ').slice(0, 200);
+      if (key) { if (seenText.has(key)) return false; seenText.add(key); }
+    }
+    return true;
+  }
+  // 按钮状态：有规则生效时高亮并显示规则数，提示本轮过滤掉多少条
+  function updateFilterBadge() {
+    const btn = $('srch-filter-btn');
+    const badge = $('srch-filter-badge');
+    if (!btn) return;
+    const c = srchFilterCfg;
+    const n = (c.keywords.length || 0) + (c.users.length || 0);
+    const on = filterConfigured();
+    btn.classList.toggle('on', on);
+    if (badge) badge.textContent = n ? ` ${n}` : '';
+    btn.title = on
+      ? `过滤已启用（屏蔽词 ${c.keywords.length} / 用户 ${c.users.length}），本轮隐藏 ${_fltHidden} 条`
+      : '配置搜索过滤（屏蔽广告/机器人）';
+  }
+
   function renderSrchProduct() {
     const arr = srchProduct === 'Top' ? srchTopItems : srchLatestItems;
     srchAllItems = arr.slice();
@@ -3453,12 +3621,17 @@
     srchList.innerHTML = '';
     if (!arr.length) srchList.innerHTML = '<div class="bm-empty">该模式暂无缓存，点「搜索」重新获取。</div>';
     let i = 0;
+    const seenText = new Set();          // 正文去重集合（仅本轮渲染内有效）
+    _fltHidden = 0;
+    const filtering = filterActive();
     sortItemsByTime(arr).forEach((it) => {
       const id = it.tweet_id || it.id;
       if (!id || srchSeenIds.has(String(id))) return;
       srchSeenIds.add(String(id));
       // 内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
       const full = tweetCacheGet(id) || it;
+      // 过滤广告/机器人：命中规则即跳过，不渲染该卡片
+      if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
       const card = renderBrowseCard(full);
       card.classList.add('card-enter');
       card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
@@ -3466,6 +3639,7 @@
       i++;
     });
     srchLoadmore.style.display = 'none';
+    updateFilterBadge();
   }
 
   // 底部状态条（搜索）：与首页 setBrBottom 同款，常驻可见避免「以为卡住」。
@@ -3545,6 +3719,9 @@
     // 存错位置（串味）。固定住，让本次批次完整跑完。
     const product = srchProduct;
     const targetArr = product === 'Top' ? srchTopItems : srchLatestItems;
+    // 与全量渲染同一套过滤；seenText 跨本次批次的各页保持，才能跨页去重
+    const seenText = new Set();
+    const filtering = filterActive();
     let appendedTotal = 0, pages = 0;
     while (srchCursor && pages < MAX_PAGES) {
       pages++;
@@ -3558,8 +3735,11 @@
           const id = it.tweet_id || it.id;
           if (!id || srchSeenIds.has(String(id))) return;
           srchSeenIds.add(String(id));
+          const full = tweetCacheGet(id) || it;
+          // 过滤广告/机器人：命中即跳过，且不写入结果数组（避免把垃圾缓存下来）
+          if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
           targetArr.push({ tweet_id: id, created_at: it.created_at });
-          const card = renderBrowseCard(tweetCacheGet(id) || it);
+          const card = renderBrowseCard(full);
           card.classList.add('card-enter');
           card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
           srchList.appendChild(card);
@@ -3689,6 +3869,73 @@
   srchMoreBtn.addEventListener('click', () => loadSearch(false));
   $('srch-prod-top').addEventListener('click', () => setSrchProduct('Top'));
   $('srch-prod-latest').addEventListener('click', () => setSrchProduct('Latest'));
+
+  /* ---- 搜索过滤浮层交互 ---- */
+  const fltModal = $('srch-filter-modal');
+  const fltKw = $('flt-keywords');
+  const fltUsers = $('flt-users');
+  const fltRegex = $('flt-regex');
+  const fltDedupe = $('flt-dedupe');
+  const fltNoAvatar = $('flt-noavatar');
+  const fltMinLikes = $('flt-minlikes');
+  const fltMinFol = $('flt-minfollowers');
+  const fltRatio = $('flt-ratio');
+  const fltStat = $('flt-stat');
+
+  function fltFillForm() {
+    const c = srchFilterCfg;
+    if (fltKw) fltKw.value = (c.keywords || []).join('\n');
+    if (fltUsers) fltUsers.value = (c.users || []).join('\n');
+    if (fltRegex) fltRegex.checked = !!c.regex;
+    if (fltDedupe) fltDedupe.checked = !!c.dedupe;
+    if (fltNoAvatar) fltNoAvatar.checked = !!c.noAvatar;
+    if (fltMinLikes) fltMinLikes.value = c.minLikes || 0;
+    if (fltMinFol) fltMinFol.value = c.minFollowers || 0;
+    if (fltRatio) fltRatio.value = c.maxRatio || 0;
+  }
+  function fltReadForm() {
+    const lines = (el) => String((el && el.value) || '').split('\n')
+      .map((s) => s.trim()).filter(Boolean);
+    srchFilterCfg = {
+      keywords: lines(fltKw),
+      users: lines(fltUsers),
+      regex: !!(fltRegex && fltRegex.checked),
+      dedupe: !!(fltDedupe && fltDedupe.checked),
+      noAvatar: !!(fltNoAvatar && fltNoAvatar.checked),
+      minLikes: Number((fltMinLikes && fltMinLikes.value) || 0),
+      minFollowers: Number((fltMinFol && fltMinFol.value) || 0),
+      maxRatio: Number((fltRatio && fltRatio.value) || 0),
+    };
+  }
+  function openFilter() {
+    if (!fltModal) return;
+    loadSearchFilter();
+    fltFillForm();
+    if (fltStat) fltStat.textContent = '';
+    fltModal.style.display = '';
+  }
+  function closeFilter() { if (fltModal) fltModal.style.display = 'none'; }
+
+  if ($('srch-filter-btn')) $('srch-filter-btn').addEventListener('click', openFilter);
+  if ($('flt-close')) $('flt-close').addEventListener('click', closeFilter);
+  if (fltModal) fltModal.addEventListener('click', (e) => { if (e.target === fltModal) closeFilter(); });
+  if ($('flt-save')) $('flt-save').addEventListener('click', () => {
+    fltReadForm();
+    saveSearchFilter();
+    closeFilter();
+    // 立即对当前结果重新过滤（不重新请求，配置改动即时生效）
+    if (activeView === 'search') renderSrchProduct();
+    if (fltStat) fltStat.textContent = `已应用，本轮隐藏 ${_fltHidden} 条`;
+  });
+  if ($('flt-reset')) $('flt-reset').addEventListener('click', () => {
+    srchFilterCfg = Object.assign({}, SRCH_FILTER_DEF);
+    saveSearchFilter();
+    fltFillForm();
+    if (activeView === 'search') renderSrchProduct();
+    if (fltStat) fltStat.textContent = '已重置为默认（仅保留正文去重）';
+  });
+  // 启动时载入过滤配置（跨设备同步）
+  loadSearchFilter();
 
   // 自动加载（无限滚动）
   const srchScroll = viewSearch;
