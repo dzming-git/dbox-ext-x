@@ -160,7 +160,7 @@
   /* 详情页视频：与浏览卡片同构（封面 + ▶，点按原地点播走 hls.js）。
      .bm-media / .bm-play / .bm-vclose 的样式都定义在 .bm-card 作用域下，详情页
      够不着，必须自带一份，否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
-  .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; }
+  .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; max-width: 560px; margin: 0 auto; }
   .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
   /* 封面缩略图（<img>）：与上面的 video 同规则，保证点播前后尺寸一致、不跳动 */
   .dt-media .dt-video > img { width: 100%; height: auto; max-height: 70vh; display: block; object-fit: contain; background: #000; }
