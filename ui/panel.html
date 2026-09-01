@@ -264,6 +264,12 @@
   .bm-card .media.m1 .bm-media { max-height: 320px; background: #f3f5f7; }
   /* 视频安全网：即使封面未加载 / 尺寸缺失，也保证最小可见高度（防塌成一行） */
   .bm-card .media.m1 .bm-media[data-type="video"] { min-height: 120px; }
+  /* 视频封面必须撑满容器宽度：X 部分视频的 cover 是缩略图尺寸（如 80x45），
+     width:auto 会按原始小尺寸显示 → 图很小。视频封面统一 width:100% 撑满。 */
+  .bm-card .media.m1 .bm-media[data-type="video"] > img {
+    width: 100%; height: auto; max-height: 320px;
+    object-fit: contain; display: block;
+  }
   .bm-card .media.m1 .bm-media img, .bm-card .media.m1 .bm-media video {
     width: auto; max-width: 100%; max-height: 320px;
     object-fit: contain; display: block; margin: 0 auto;
