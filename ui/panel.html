@@ -468,9 +468,14 @@
   // acquire 只在「刻意使用」的时机调用（打开/刷新浏览视图、面板重新显示、点击状态灯接管）。
   const XLEDGER = XSTATE ? XSTATE.lease('main') : null;
 
+  let _lastMasterMine = null;   // 上一次已通知宿主的主控状态，用于去重
   function updateMasterLight() {
     if (!XLEDGER) return;
     const mine = XLEDGER.mine();
+    // 状态没变就不重复通知：下面有定期轮询会频繁调用本函数，去重避免无谓的
+    // postMessage（宿主每收到一次都要重绘指示灯）。
+    if (_lastMasterMine === mine) return;
+    _lastMasterMine = mine;
     try {
       window.parent.postMessage({
         type: 'DBOX_LIGHT', extId: 'x',
@@ -500,12 +505,43 @@
   }
   if (XSTATE && XLEDGER) {
     XSTATE.onStale((key) => {
-      if (XFEED && key !== XFEED.keys.anchor) return;
+      // 锚点被拒＝主控可能已让出；租约键自身变化也要响应
+      const isAnchor = XFEED && key === XFEED.keys.anchor;
+      if (!isAnchor && key !== XLEDGER.key) return;
       XLEDGER.refresh().then(updateMasterLight);
       // 锚点被别的设备更新＝主控已让出，强制把服务端位置拉到客户端
-      followServerAnchorWhenNotMaster();
+      if (isAnchor) followServerAnchorWhenNotMaster();
     });
   }
+
+  /* ---- 主控状态定期轮询 ----
+     主控权本质是 UserState 里的一个普通键（feed:main:lease），别的设备抢占后
+     本机【不会自动感知】：mine() 读的是本地缓存，要感知变化必须 pull 对账，
+     而 pull 只在「锚点写入被服务端以 lease_rev 拒绝（onStale）」「面板重新显示」
+     「启动时」发生——于是别的设备抢走主控后，本机要滑动好几下、等锚点写入被拒
+     才反馈回来，指示灯才变黄。这里在面板可见时定期与服务端对账，让指示灯尽快
+     反映真实主控状态。页面隐藏时跳过，不打扰服务端。 */
+  const MASTER_POLL_MS = 2500;
+  let _masterPollTimer = null;
+  function pollMasterState() {
+    if (!XLEDGER || document.hidden) return;
+    XLEDGER.refresh().then((mine) => {
+      updateMasterLight();
+      // 刚被抢走：把服务端位置拉过来跟随主控（内部会判断用户是否正在滚动）
+      if (!mine) followServerAnchorWhenNotMaster();
+    }).catch(() => {});
+  }
+  function startMasterPoll() {
+    if (_masterPollTimer || !XLEDGER) return;
+    _masterPollTimer = setInterval(pollMasterState, MASTER_POLL_MS);
+  }
+  function stopMasterPoll() {
+    if (_masterPollTimer) { clearInterval(_masterPollTimer); _masterPollTimer = null; }
+  }
+  // 页面重新可见时立刻对账一次，不等下一个轮询周期
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pollMasterState();
+  });
   function acquireMaster(opts) {
     opts = opts || {};
     if (!XLEDGER) return Promise.resolve(false);
@@ -1648,6 +1684,7 @@
           restoreBrowseScroll();
         }
         updateMasterLight();   // 对账后刷新主控状态灯（可能已被其它设备接管）
+        startMasterPoll();     // 此后持续对账，主控被抢能及时反映到指示灯
         const v = XSTATE.get('active_view');
         const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'];
         if (v && !userSwitchedView && v !== activeView && VALID.includes(v)) {
