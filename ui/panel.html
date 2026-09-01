@@ -307,6 +307,9 @@
     display: flex; align-items: center; justify-content: center;
     /* 兜底：JS 未算出精确行高时（img 未加载 / 容器不可见），格子也不会被撑成超大图 */
     max-height: 60vh;
+    /* 未计算时的默认比例（3:4，贴合 X 主流竖图）；JS 设置 height 后由 height 接管。
+       避免初次渲染按 16:9 出矮格子、图片加载后又变高 →「紧→松→紧」跳动。 */
+    aspect-ratio: 3 / 4;
     background: #f3f5f7; border-radius: 8px; overflow: hidden; position: relative;
   }
   /* img/video 用 max-width/max-height:100% + width/height:auto：浏览器按内在比例 + 容器
@@ -2295,7 +2298,10 @@
         const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"${dimAttr(m)}><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"${dimAttr(m)}><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
+      // 图片也要带真实 width/height 属性（此前只有视频带了）：浏览器据此推导 aspect-ratio，
+      // 在（lazy）图片尚未加载时就能预留正确空间，避免加载过程中布局尺寸来回变化。
+      const idim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"${dimAttr(m)}><img src="${esc2(mediaUrl(m.url, 'image'))}" alt=""${idim} loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
     // justified：横向行式布局（每行等高、按宽高比分配宽度），由 layoutJustified() 计算尺寸。
     // 仅多图启用；单图仍走全宽自然撑高（保持与多图接近的视觉体量，不被行高夹小）。
@@ -2303,13 +2309,14 @@
     return html ? `<div class="media ${mCls}${jlCls}">${html}</div>` : '';
   }
 
-  /* ---- justified 行式布局（Google Photos 式自适应行高图片墙）----
-     逐个把图片塞进当前行：每加一张就重算「若这行定行」所需的行高
-       rowH = (容器宽 - 间距总和) / 该行所有图片宽高比之和
-     行高 ≤ 目标行高时就定行（说明塞得够满、够紧凑）；否则继续塞下一张。
-     定行后每张宽度 = 行高 × 自身宽高比 —— 元素宽高比 == 图片宽高比，
-     所以图片完整显示、不裁切，且同一行高度完全一致、总宽正好铺满容器。
-     目标行高取「视口高度的 32%」并与 150~300px 夹取，避免小屏一行过高。 */
+  /* ---- 多图网格：固定行高（行高与图片比例完全无关）----
+     为什么放弃 justified（行高 = max(格子宽 / 图片宽高比)）？
+       因为 X API 不返回图片尺寸（实测 214 个格子里 213 个缺失 data-w/h），而初次渲染
+       时图片基本未加载（仅约 9%），比例只能走兜底值 → 图片加载后必须重排，行高从
+       272px 跳到 531px（几乎翻倍）→ 排布「紧→松→紧」地跳，还会把已定位的浏览位置顶开。
+     固定行高下，格子尺寸在初次渲染即确定，图片加载只改变它在格子内的 contain 显示，
+     不改动任何布局 —— **零跳动、顶部浏览位置恒定**。
+     代价：图片比例与格子不符时会有留白。但「稳定不跳 + 位置不动」远重要于「恰好填满」。 */
   // 真正可见的内容区高度：沿祖先找第一个纵向可滚动容器（已扣除顶部导航/底部工具栏等
   // UI 边界），找不到才退回视口高度。行高据此约束，保证一行不会撑出可见区域。
   function contentViewportH(el) {
@@ -2338,8 +2345,13 @@
       const w = parseFloat(el.dataset.w), h = parseFloat(el.dataset.h);
       if (w > 0 && h > 0) return w / h;
       const img = el.querySelector('img');
-      if (img && img.naturalWidth > 0 && img.naturalHeight > 0) return img.naturalWidth / img.naturalHeight;
-      return 16 / 9;
+      if (img) {
+        // 预取探测到的真实比例（见 wireMediaBlock 的 probeMediaSizes），优先于一切
+        if (img._arProbed) return img._arProbed;
+        if (img.naturalWidth > 0 && img.naturalHeight > 0) return img.naturalWidth / img.naturalHeight;
+      }
+      // 兜底 3/4（贴合 X 主流竖图）：仅在比例确实拿不到时用，且随后会被预取结果一次性覆盖
+      return 3 / 4;
     };
     items.forEach((el) => { el._ar = arOf(el); });
     const N = items.length;
@@ -2371,6 +2383,28 @@
       container.style.gridTemplateRows = `${H}px ${H}px`;
     }
     container.dataset.jlDone = '1';
+  }
+
+  // 并发探测一组图片的真实尺寸，**全部就绪后一次性重算布局**。
+  // 与「逐张监听 load 后重排」的本质区别：后者会在「部分已加载（真实比例）+
+  // 部分未加载（兜底比例）」的混合态下反复算出不同行高，表现为「紧→松→紧」跳动；
+  // 这里等所有尺寸到手才算，故只调整一次、且是精确值。
+  // 用 new Image() 预取：浏览器会缓存该图，后续 <img> 复用缓存，不会重复下载。
+  // 注意：必须定义在 layoutJustified 之外（顶层），否则 wireMediaBlock 调用不到。
+  function probeMediaSizes(jlEl) {
+    if (!jlEl) return;
+    const imgs = [...jlEl.querySelectorAll('img')].filter((im) => (im.currentSrc || im.src) && !im._arProbed);
+    if (!imgs.length) return;
+    Promise.all(imgs.map((im) => new Promise((res) => {
+      if (im.complete && im.naturalWidth) { im._arProbed = im.naturalWidth / im.naturalHeight; res(); return; }
+      const probe = new Image();
+      probe.onload = () => {
+        if (probe.naturalWidth > 0 && probe.naturalHeight > 0) im._arProbed = probe.naturalWidth / probe.naturalHeight;
+        res();
+      };
+      probe.onerror = () => res();      // 失败就用兜底比例，不能卡住整组
+      probe.src = im.currentSrc || im.src;
+    }))).then(() => layoutJustified(jlEl));
   }
 
   // 容器宽度变化（窗口 resize / 侧栏折叠）时重排所有 justified 区块
@@ -2405,17 +2439,10 @@
     // justified 行式布局：blockEl 可能是 .media 本身，也可能是 .quoted（内部含 .media）
     const jlEl = blockEl.classList.contains('justified') ? blockEl : blockEl.querySelector('.media.justified');
     if (jlEl) {
+      // 先用兜底比例出初始布局（避免空白/塌陷），随即并发探测真实尺寸，
+      // 全部到手后由 probeMediaSizes 一次性重排到精确布局 —— 全程只调整一次。
       layoutJustified(jlEl);
-      // 缺 data-w/h 的图要等加载完才知道真实比例 → 监听 load 后重排。
-      // 用 60ms 防抖合并：4 张图会连续触发 4 次 load，逐次重排会造成可见的布局跳变
-      // （表现为「先是 2×2，几秒后又散成 4 行」）。
-      jlEl.querySelectorAll('img').forEach((img) => {
-        if (img.complete && img.naturalWidth) return;
-        img.addEventListener('load', () => {
-          clearTimeout(jlEl._jlT);
-          jlEl._jlT = setTimeout(() => layoutJustified(jlEl), 60);
-        }, { once: true });
-      });
+      probeMediaSizes(jlEl);
     }
   }
 
@@ -2854,6 +2881,11 @@
   // 校验；已读边界同步推进（max，只前进，另一台设备往回看也不会拉低）。
   function saveBrowsePos() {
     if (!XFEED || activeView !== 'browse') return;
+    // 程序化定位（恢复锚点 / 框架的 4 次补偿定位）期间绝不保存：
+    // 此刻 scrollTop 是程序设定的中间值，且布局还可能被后续图片加载顶开，
+    // 保存会把「偏移后的位置」当成用户进度写回锚点 → 每次刷新偏一点，
+    // 累积即漂移（表现：反复刷新几次后位置跑到旁边的推文）。
+    if (brRestoring) return;
     const cont = viewBrowse;
     if (!cont || getComputedStyle(cont).display === 'none') return;
     XFEED.saveAnchor();
@@ -2892,10 +2924,60 @@
                              // 调用，每次都起一个解除定时器，先到期的会提前解除保护（或
                              // 反过来把窗口越拉越长）。用令牌保证只有「最后设置」的才有效。
   // 统一的抑制窗口设置，替代散落各处的 `brRestoring=true + setTimeout`
+  // 总时长上限：reanchor 会被 ResizeObserver 与每张图片 load 反复调用，若每次都无条件
+  // 续期，brRestoring 会长时间（乃至持续）为真 → saveBrowsePos 被永久抑制、
+  // 用户自己的阅读位置永远存不进去。故限制从首次设置起的总时长。
+  const BR_RESTORE_MAX_MS = 2500;
+  let _brRestoreStart = 0;
   function holdBrRestoring(ms) {
+    const now = Date.now();
+    if (!brRestoring || now - _brRestoreStart > BR_RESTORE_MAX_MS) _brRestoreStart = now;
     const t = ++_brRestoreToken;
     brRestoring = true;
-    setTimeout(() => { if (t === _brRestoreToken) brRestoring = false; }, ms);
+    const remain = Math.max(0, Math.min(ms, BR_RESTORE_MAX_MS - (now - _brRestoreStart)));
+    setTimeout(() => { if (t === _brRestoreToken) brRestoring = false; }, remain);
+  }
+  // 统一的锚点定位入口：预定位 / reanchor / restoreBrowseScroll 三处都走这里。
+  // 之前三处各自调 XFEED.restore()，锚点与 offset 各不相同且彼此不知情，
+  // 顺序执行下来 scrollTop 被来回改写 —— 这正是用户看到的「小幅度抖动」。
+  // 统一入口后配合 _lastAnchorAt 去重，短时间内只认第一次定位。
+  let _lastAnchorAt = 0;
+  function anchorTo(tid, offset) {
+    if (!tid) return false;
+    _lastAnchorAt = Date.now();
+    holdBrRestoring(1300);
+    if (XFEED) {
+      // restore() 的第一次定位是同步执行的，随后会排 60/200/500/1000ms 四次补偿定位。
+      // 这四次之间若图片加载改变了布局，落点各不相同 —— 正是残留的「小幅度抖动」。
+      // 取消固定补偿，改由 watchStableThenAnchor() 在布局真正稳定后校正一次。
+      XFEED.restore({ id: String(tid), offset: offset || 0 });
+      try { XFEED.cancelRestore(); } catch (e) {}
+    } else scrollCardToTop(tid, offset);
+    watchStableThenAnchor(tid, offset);
+    return true;
+  }
+  // 布局稳定后做唯一一次校正：替代框架固定延时的四次补偿定位。
+  // 图片加载期间绝不定位（不抖），等高度连续不变了才校正一次（位置准）。
+  let _stableRo = null;
+  function watchStableThenAnchor(tid, offset) {
+    if (typeof ResizeObserver === 'undefined' || !brList) return;
+    if (_stableRo) { try { _stableRo.disconnect(); } catch (e) {} _stableRo = null; }
+    let lastH = -1, stableFrames = 0;
+    _stableRo = new ResizeObserver(() => {
+      if (brUserScrolled) { try { _stableRo.disconnect(); } catch (e) {} _stableRo = null; return; }
+      const h = brList.offsetHeight;
+      if (h === lastH) stableFrames++; else { stableFrames = 0; lastH = h; }
+      if (stableFrames >= 3) {       // 连续 3 次高度不变 = 图片加载完毕、布局稳定
+        try { _stableRo.disconnect(); } catch (e) {}
+        _stableRo = null;
+        _lastAnchorAt = Date.now();
+        holdBrRestoring(400);
+        if (XFEED) XFEED.restore({ id: String(tid), offset: offset || 0 });
+        else scrollCardToTop(tid, offset);
+      }
+    });
+    _stableRo.observe(brList);
+    setTimeout(() => { if (_stableRo) { try { _stableRo.disconnect(); } catch (e) {} _stableRo = null; } }, 4000);
   }
   // 正常收尾：延迟解除抑制，覆盖 restore() 之后异步到达的 scroll 事件
   function finishAutoRestore() {
@@ -2923,12 +3005,17 @@
   }
   function restoreBrowseScroll() {
     if (!XFEED || brUserScrolled) return;
+    // 刚刚已被 anchorTo 定位过（缓存预定位 / 插入新推文后的 reanchor）—— 再定位一次
+    // 就是紧接着的第二次 scrollTop 改写，且两处锚点/offset 并不相同 → 用户看到的抖动。
+    if (Date.now() - _lastAnchorAt < 1500) return;
     if (_restoreIv) return;        // 已有重试在跑，别再叠一个 interval 反复定位
     holdBrRestoring(200);
+    _lastAnchorAt = Date.now();
     if (XFEED.restore()) return;
     let tries = 0;
     _restoreIv = setInterval(() => {
       if (brUserScrolled) { cancelAutoRestore(); return; }
+      _lastAnchorAt = Date.now();
       if ((XFEED && XFEED.restore()) || ++tries > 16) { finishAutoRestore(); return; }
       holdBrRestoring(360);        // 下一轮重试前继续保持抑制
     }, 320);
@@ -2948,11 +3035,19 @@
     opts = opts || {};
     const cont = viewBrowse;
     if (!cont) return;
+    // 同步记录插入前「视口顶部卡片」的卡内偏移（卡片顶部相对视口顶部的距离，可为负——
+    //  表示卡片顶部已滚出视口上方，即用户正在看该卡片的中下部）。reanchor 必须保留
+    //  此偏移：之前用 offset:0 → 恢复时 scrollTop = abs - 0 = 卡片顶部对齐视口顶部，
+    //  视觉上跳到了该卡片（即「上一篇」）的开头，即用户反馈的「抖动后定位到上一篇推文」。
+    let beforeTopOffset = 0;
     const beforeTopTid = (() => {
       const cr = cont.getBoundingClientRect();
       for (const c of brList.querySelectorAll('.bm-card')) {
         const r = c.getBoundingClientRect();
-        if (r.bottom > cr.top + 4) return c.dataset.tid || null;
+        if (r.bottom > cr.top + 4) {
+          beforeTopOffset = r.top - cr.top;
+          return c.dataset.tid || null;
+        }
       }
       return null;
     })();
@@ -2991,6 +3086,7 @@
     });
     if (!inserted) return 0;
     brList.insertBefore(frag, brList.firstChild);
+    let _reanchorThrottle = null;
     const reanchor = () => {
       // 用户已自己滚动就彻底停止程序化定位——本函数会被立即调用 + rAF + ResizeObserver
       // (4s 内) + 每张图片 load 反复触发，若不检查就会在用户滚动后一次次把人拽回锚点。
@@ -3005,21 +3101,21 @@
       // anchorTid（如恢复的上次位置）优先；否则用插入前视口顶部的卡片稳住当前位置
       const anchor = opts.anchorTid || beforeTopTid;
       if (!anchor) return;         // 无锚点就别平白开一个抑制窗口
-      holdBrRestoring(1300);
-      // 交给框架 feed()：按 id 定位并保留卡内偏移（跨设备一致）
-      if (XFEED) XFEED.restore({ id: String(anchor), offset: 0 });
-      else scrollCardToTop(anchor);
+      // 节流：防重复触发（同步立即调 + rAF 可能紧邻触发）合到一帧
+      if (_reanchorThrottle) return;
+      _reanchorThrottle = setTimeout(() => { _reanchorThrottle = null; }, 150);
+      // 走统一入口：按 id 定位并保留卡内偏移（可负，长卡片中部也精准保持）
+      anchorTo(anchor, beforeTopOffset);
     };
     reanchor();
     requestAnimationFrame(reanchor);
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(reanchor);
-      ro.observe(brList);
-      setTimeout(() => ro.disconnect(), 4000);
-    }
-    frag.querySelectorAll('img').forEach((img) => {
-      if (!img.complete) img.addEventListener('load', reanchor, { once: true });
-    });
+    // 【修复抖动 + 漂移到上一篇】移除 ResizeObserver 与图片 load 的 reanchor 触发：
+    // 之前这俩来源会让 reanchor 被反复调用，每次 XFEED.restore() 又再排 60/200/500/1000ms
+    // 四次补偿定位 —— 叠加为几十次，落点各不相同（用户截图：图片从占位框变实图瞬间
+    // 卡片高度变化触发 RO，reanchor 跳一次；图片逐张加载完成又各跳一次；且 offset:0
+    // 丢失卡内偏移，每次跳到卡片顶部 → 反复刷新后位置漂移到「上一篇」开头）。
+    // reanchor 只为「插入新推文」而生：此处只调一次 + rAF 各一次，足够把位置稳住。
+    // 图片加载导致的卡片高度变化是布局自然结果，scrollTop 不变即可，无需也不应被纠正。
     return inserted;
   }
   function fmtCdTime(iso) {
@@ -3171,6 +3267,13 @@
       // 注意：这里绝不能再 scrollTop=0。强制回顶部会触发 scroll 事件把 brUserScrolled
       // 置真、并 scheduleSavePos 把"顶部"当主控锚点写回服务端，既跳走用户当前阅读位置、
       // 又污染服务端真实进度。位置交由下方 reanchor / restoreBrowseScroll 按服务端锚点恢复。
+      // 缓存渲染后立刻用本地锚点预定位：否则要等 await 网络请求返回才定位，
+      // 用户会先看到列表顶部（最新）、再被拽到上次位置 —— 即「两段式跳变」。
+      // 本机锚点可能略旧，随后 await syncP 落地 + prependNewTweets 会用服务端锚点校正。
+      if (preview) {
+        const localTid = getBrowseAnchor();
+        if (localTid) anchorTo(localTid, 0);
+      }
       if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
