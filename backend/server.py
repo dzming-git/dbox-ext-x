@@ -1193,7 +1193,7 @@ def create_blueprint(host):
             return jsonify({'success': False,
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
 
-        # 服务端为唯一真相源：拉取结果先并入服务端缓存（union_by_id 去重、封顶 400），
+        # 服务端为唯一真相源：拉取结果先并入服务端缓存（union_by_id 去重、封顶 1500），
         # 首次加载（无 cursor）时返回「服务端合并后的完整列表」，使任何设备打开
         # 刷新看到的都是同一份，而不是各自 localStorage 里分叉的那份。
         # 翻页（带 cursor）时只回本次新拉取的一页，避免每次回传 400 条。
@@ -1212,7 +1212,7 @@ def create_blueprint(host):
             norm.append(rec)
         canonical = None
         try:
-            merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=400)
+            merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
             if isinstance(merged, dict) and isinstance(merged.get('value'), list):
                 canonical = merged['value']
             if next_cursor:
@@ -1355,7 +1355,7 @@ def create_blueprint(host):
             return jsonify({'success': False,
                             'message': '获取用户推文失败: ' + str(e)}), 502
 
-        # 跨设备共享缓存：拉取结果先并入服务端 UserState（union_by_id 去重、封顶 400），
+        # 跨设备共享缓存：拉取结果先并入服务端 UserState（union_by_id 去重、封顶 1500），
         # key 用稳定的 user_id（rest_id）而非 screen_name——@句柄可被用户改名，改名后
         # 旧 screen_name 目录会失效且残留脏数据；user_id 终身不变，天然去重。
         # 与首页 /timeline 同一机制，使任意设备打开同一用户看到的都是合并后的同一份列表。
@@ -1375,7 +1375,7 @@ def create_blueprint(host):
                     rec['order'] = it.get('created_at')
                     norm.append(rec)
                 merged = host.state.put('feed:user:' + user_id, norm,
-                                         strategy='union_by_id', cap=400)
+                                         strategy='union_by_id', cap=1500)
                 if isinstance(merged, dict) and isinstance(merged.get('value'), list):
                     canonical = merged['value']
                 # 缓存用户画像（name/avatar/screen_name/计数），供跨设备秒开用户页

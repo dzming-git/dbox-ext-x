@@ -2526,7 +2526,10 @@
     idAttr: 'data-tid',
     idKeys: ['tweet_id', 'id'],
     orderKey: 'created_at',
-    cap: 400,
+    // 成员列表上限与内容库 XTWEETS(1500) 对齐：union_by_id 按 created_at 倒序封顶，
+    // 只保留最新 N 条。此前 cap=400，滚到底「加载更旧」累计超 400 后，最旧的（刚加载的）
+    // 会被服务端淘汰，刷新即消失。提到 1500 覆盖正常深度滚动会话。
+    cap: 1500,
     throttle: 200,
     anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
     lease: true,           // 锚点写入受主控租约门控，并由服务端硬栅栏校验
@@ -2545,6 +2548,7 @@
     itemSelector: '.bm-card',
     idAttr: 'data-tid',
     anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
+    cap: 1500,             // 与浏览列表对齐：避免搜索翻页加载更旧被封顶淘汰
     throttle: 200,
     autoBind: false,       // 滚动由本面板统一处理（还要兼顾自动加载）
   }) : null;
