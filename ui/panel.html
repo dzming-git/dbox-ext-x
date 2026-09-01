@@ -84,7 +84,8 @@
   /* ---- Lightbox（点击图片放大 + 左右切换） ---- */
   .lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; cursor: pointer; touch-action: none; overscroll-behavior: contain; user-select: none; -webkit-user-select: none; }
   .lightbox.active { display: flex; }
-  .lightbox img, .lightbox video { max-width: 92%; max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); user-select: none; -webkit-user-select: none; }
+  .lightbox img { max-width: 92%; max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); user-select: none; -webkit-user-select: none; }
+  .lightbox video { max-width: 720px; max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); user-select: none; -webkit-user-select: none; }
   .lightbox .lb-stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
   .lightbox .lb-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; will-change: transform; user-select: none; -webkit-user-select: none; }
   .lightbox .lb-layer.lb-anim { transition: transform .3s ease, opacity .3s ease; }
