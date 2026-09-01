@@ -262,7 +262,7 @@
   .x-mention { color: #1d9bf0; cursor: pointer; }
   .x-mention:hover { text-decoration: underline; }
   /* 媒体布局：单图占满限高，多图 grid（2x2/3+） */
-  .bm-card .media { display: grid; gap: 4px; margin-bottom: 6px; border-radius: 10px; overflow: hidden; }
+  .bm-card .media { display: grid; gap: 4px; align-items: start; margin-bottom: 6px; border-radius: 10px; overflow: hidden; }
   .bm-card .media.m1 { grid-template-columns: 1fr; }
   /* 单图：保持原图比例完整显示，限高 320px 不裁切，背景浅灰填充 */
   .bm-card .media.m1 .bm-media { max-height: 320px; background: #f3f5f7; }
@@ -282,10 +282,12 @@
   }
   .bm-card .media.m2 { grid-template-columns: 1fr 1fr; }
   .bm-card .media.m3, .bm-card .media.m4 { grid-template-columns: 1fr 1fr; }
-  .bm-card .media.m2 .bm-media, .bm-card .media.m3 .bm-media, .bm-card .media.m4 .bm-media { aspect-ratio: 16/10; }
+  /* 多图与单图一致：完整显示（object-fit: contain），不裁切、不强迫点开；
+     每格宽度撑满列、高度按原比例、max-height 限超高长图。网格 start 对齐使各格按内容高度。 */
+  .bm-card .media.m2 .bm-media, .bm-card .media.m3 .bm-media, .bm-card .media.m4 .bm-media { max-height: 320px; }
   .bm-card .media.m2 img, .bm-card .media.m2 video,
   .bm-card .media.m3 img, .bm-card .media.m3 video,
-  .bm-card .media.m4 img, .bm-card .media.m4 video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .bm-card .media.m4 img, .bm-card .media.m4 video { width: 100%; height: auto; max-height: 320px; object-fit: contain; display: block; }
   .bm-card .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
   /* 图片加载失败：显示重试按钮，不再静默隐藏。
      错误态下容器折叠到内容高度（retry 按钮），不再占满 320px/16:10 的预留位，
@@ -308,13 +310,14 @@
   .quoted .q-name:hover { text-decoration: underline; }
   .quoted .q-handle { color: #536471; font-size: 11.5px; }
   .quoted .q-text { font-size: 12.5px; line-height: 1.4; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; }
-  .quoted .media { display: grid; gap: 4px; border-radius: 10px; overflow: hidden; margin-bottom: 0; }
+  .quoted .media { display: grid; gap: 4px; align-items: start; border-radius: 10px; overflow: hidden; margin-bottom: 0; }
   .quoted .media.m1 { grid-template-columns: 1fr; }
   .quoted .media.m1 .bm-media { max-height: 220px; background: #f3f5f7; }
   .quoted .media.m1 .bm-media img, .quoted .media.m1 .bm-media video { width: auto; max-width: 100%; max-height: 220px; object-fit: contain; display: block; margin: 0 auto; }
   .quoted .media.m2, .quoted .media.m3, .quoted .media.m4 { grid-template-columns: 1fr 1fr; }
-  .quoted .media.m2 .bm-media, .quoted .media.m3 .bm-media, .quoted .media.m4 .bm-media { aspect-ratio: 16/10; }
-  .quoted .media.m2 img, .quoted .media.m2 video, .quoted .media.m3 img, .quoted .media.m3 video, .quoted .media.m4 img, .quoted .media.m4 video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* 多图与单图一致：完整显示（object-fit: contain），不裁切 */
+  .quoted .media.m2 .bm-media, .quoted .media.m3 .bm-media, .quoted .media.m4 .bm-media { max-height: 220px; }
+  .quoted .media.m2 img, .quoted .media.m2 video, .quoted .media.m3 img, .quoted .media.m3 video, .quoted .media.m4 img, .quoted .media.m4 video { width: 100%; height: auto; max-height: 220px; object-fit: contain; display: block; }
   .quoted .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
 
   /* 下拉刷新指示器：贴在滚动容器顶部内侧，默认隐藏在内容上沿之上；
