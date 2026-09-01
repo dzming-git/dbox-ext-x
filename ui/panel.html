@@ -163,7 +163,7 @@
   .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; }
   .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
   /* 封面缩略图（<img>）：与上面的 video 同规则，保证点播前后尺寸一致、不跳动 */
-  .dt-media .dt-video > img { width: 100%; max-height: 70vh; display: block; object-fit: contain; background: #000; }
+  .dt-media .dt-video > img { width: 100%; height: auto; max-height: 70vh; display: block; object-fit: contain; background: #000; }
 
   /* 用户详情页：资料头 + 推文列表（推文复用 .bm-card） */
   .user-profile { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
@@ -267,6 +267,8 @@
   .bm-card .media.m1 .bm-media { max-height: 320px; background: #f3f5f7; }
   /* 视频安全网：即使封面未加载 / 尺寸缺失，也保证最小可见高度（防塌成一行） */
   .bm-card .media.m1 .bm-media[data-type="video"] { min-height: 120px; }
+  /* 详情页视频同样需要安全网（此前漏了此规则，导致无封面时塌成 ~16px 黑条） */
+  .dt-media .bm-media[data-type="video"], .dt-media .dt-video { min-height: 120px; }
   /* 视频封面必须撑满容器宽度：X 部分视频的 cover 是缩略图尺寸（如 80x45），
      width:auto 会按原始小尺寸显示 → 图很小。视频封面统一 width:100% 撑满。 */
   .bm-card .media.m1 .bm-media[data-type="video"] > img {
