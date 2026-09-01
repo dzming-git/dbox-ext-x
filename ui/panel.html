@@ -1863,8 +1863,11 @@
   // 把推文正文里的 @提及 渲染成可点击链接，点击跳到 DBox 内用户页（#/<seg>/<screen_name>）。
   // 仅当 @ 前不是字母数字/下划线/点/@ 时才视为提及（避免误伤邮箱等）。
   // 跳转由 .x-mention + 下方 document 捕获点击代理统一处理。
+  // 同时剥掉 t.co 短链占位（X 给媒体/链接自动追加的裸短链，正文本身不含真实地址；
+  // 后端已对新建数据做去短链，这里再兜底一层，确保缓存/历史旧数据硬刷新后即干净）。
   function linkifyMentions(text) {
-    const safe = esc2(text || '');
+    const raw = (text || '').replace(/https?:\/\/t\.co\/\w+/g, '');
+    const safe = esc2(raw.replace(/\s{2,}/g, ' ').trim());
     return safe.replace(/(^|[^A-Za-z0-9_.@])@([A-Za-z0-9_]{1,15})/g,
       (m, pre, h) => `${pre}<a class="x-mention" data-screen="${esc2(h)}" href="#/${NATIVE_SEG}/${encodeURIComponent(h)}">@${h}</a>`);
   }

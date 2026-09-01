@@ -743,8 +743,8 @@ def extract_from_api(tweet_id, cookie_header, opener):
         return [], '', None
     leg = tweet.get('legacy', {})
     text = (leg.get('full_text') or '').strip()
-    # 去掉末尾的 t.co 短链占位（X 在 extended 模式会把链接放到 entities 里）
-    text = re.sub(r'https://t\.co/\w+', '', text).strip()
+    # 去掉媒体自动追加的 t.co 短链占位（X 在 extended 模式会把链接放到 entities 里）
+    text = _strip_media_tco(text, leg)
     # 提取作者信息（显示名 + 用户名 + 主页），供前端展示为超链接
     author = None
     # 作者信息可能位于多个位置，逐一尝试
@@ -1561,6 +1561,23 @@ def _normalize_media(tweet_legacy):
     return media
 
 
+def _strip_media_tco(text, tweet_legacy):
+    """剔除正文里由媒体自动追加的 t.co 短链占位。
+
+    X 在 extended 模式下，媒体（视频/图片）会往 full_text 末尾追加一个指向该媒体的
+    t.co 短链（entities.media[].url 正是正文中那一段），正文本身不含真实地址。
+    直接展示会留下难看的裸短链，故按实体精准移除——只去媒体占位，保留用户主动写的链接。
+    """
+    if not text:
+        return text
+    media = (((tweet_legacy.get('extended_entities') or tweet_legacy.get('entities')) or {}).get('media')) or []
+    for m in media:
+        u = m.get('url')
+        if u:
+            text = text.replace(u, '')
+    return re.sub(r'\s{2,}', ' ', text).strip()
+
+
 def _normalize_note_tweet_media(nt_media_list):
     """从 note_tweet.result.media 提取媒体列表（结构不同于 legacy.extended_entities）。
 
@@ -1749,7 +1766,7 @@ def _extract_quoted(qtweet):
     return {
         'tweet_id': qtweet.get('rest_id'),
         'author': _author_dict(qul, quc, qu),
-        'text': ql.get('full_text', ''),
+        'text': _strip_media_tco(ql.get('full_text', ''), ql),
         'media': _normalize_media(ql),
         'url': 'https://x.com/{}/status/{}'.format(
             (qul.get('screen_name') or qu.get('screen_name') or 'unknown'),
@@ -1904,7 +1921,7 @@ def _extract_bookmark_tweets(data):
                 }
             out.append({
                 'tweet_id': tid,
-                'text': legacy.get('full_text', ''),
+                'text': _strip_media_tco(legacy.get('full_text', ''), legacy),
                 'created_at': legacy.get('created_at'),
                 'favorite_count': legacy.get('favorite_count'),
                 'retweet_count': legacy.get('retweet_count'),
@@ -2107,7 +2124,7 @@ def _extract_tweet_obj(r):
     # X 对长推文 / 含特殊格式的推文会把完整文本放在 note_tweet 里，
     # legacy.full_text 反而是截断的（末尾带 …）。检测规则：
     #   note_tweet 存在且其 text 比 legacy.full_text 更长 → 用 note_tweet 的
-    text = legacy.get('full_text', '')
+    text = _strip_media_tco(legacy.get('full_text', ''), legacy)
     _nt = (((r.get('note_tweet') or {}).get('note_tweet_results') or {}).get('result') or {})
     _nt_text = (_nt.get('text') or '').strip()
     if len(_nt_text) > len(text):
