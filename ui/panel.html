@@ -101,6 +101,18 @@
   .lightbox .lb-dl { align-self: center; background: #1d9bf0; color: #fff; border: none; border-radius: 20px; padding: 8px 20px; font-size: 14px; cursor: pointer; }
   .lightbox .lb-dl:hover { background: #1a8cd8; }
 
+  /* 资源库选择弹窗：点击下载时才弹出 */
+  .lib-picker { position: fixed; inset: 0; z-index: 10000; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; }
+  .lib-picker-box { background: #fff; border-radius: 14px; padding: 20px 22px; width: min(360px, 86vw); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+  .lib-picker-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #14171a; }
+  .lib-picker-box select { width: 100%; padding: 9px 10px; border: 1px solid #cfd9de; border-radius: 8px; font-size: 14px; box-sizing: border-box; margin-bottom: 16px; background: #fff; }
+  .lib-picker-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #333; margin-bottom: 16px; cursor: pointer; }
+  .lib-picker-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .lib-picker-actions button { padding: 8px 18px; border-radius: 20px; font-size: 14px; cursor: pointer; border: 1px solid transparent; }
+  .lib-picker-actions .primary { background: #1d9bf0; color: #fff; }
+  .lib-picker-actions .primary:hover { background: #1a8cd8; }
+  .lib-picker-actions .cancel { background: #fff; border-color: #cfd9de; color: #536471; }
+
   /* 推文详情页覆盖层 */
   .detail { position: fixed; inset: 0; z-index: 9998; background: #f5f6f7; display: none; flex-direction: column; }
   .detail.active { display: flex; }
@@ -110,6 +122,16 @@
   .detail-back:hover { background: #eef5fd; }
   .detail-title { font-weight: 600; font-size: 14px; color: #0f1419; }
   .detail-scroll { flex: 1; overflow-y: auto; padding: 14px; }
+  /* 用户详情页资料卡（DBox 内自行解析，不打开 x.com） */
+  .uprof { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+  .uprof-head { display: flex; align-items: center; gap: 12px; }
+  .uprof-avatar { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; background: #e9eef2; flex: 0 0 auto; }
+  .uprof-id { min-width: 0; }
+  .uprof-name { font-size: 17px; font-weight: 700; color: #0f1419; line-height: 1.25; }
+  .uprof-handle { font-size: 14px; color: #536471; }
+  .uprof-bio { margin-top: 10px; font-size: 14px; color: #0f1419; white-space: pre-wrap; word-break: break-word; }
+  .uprof-stats { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; color: #536471; }
+  .uprof-stats b { color: #0f1419; }
   .dt-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
   .dt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .dt-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #e9eef2; }
@@ -142,6 +164,22 @@
   .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
   /* 封面缩略图（<img>）：与上面的 video 同规则，保证点播前后尺寸一致、不跳动 */
   .dt-media .dt-video > img { width: 100%; max-height: 70vh; display: block; object-fit: contain; background: #000; }
+
+  /* 用户详情页：资料头 + 推文列表（推文复用 .bm-card） */
+  .user-profile { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .user-profile.loading { color: #8899a6; }
+  .user-profile { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+  .user-avatar { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; background: #e9eef2; flex: 0 0 auto; }
+  .user-meta { min-width: 0; }
+  .user-name { font-weight: 700; font-size: 16px; color: #0f1419; display: flex; align-items: center; gap: 5px; }
+  .user-verified { color: #1d9bf0; font-size: 13px; }
+  .user-handle { color: #536471; font-size: 14px; }
+  .user-bio { flex-basis: 100%; font-size: 14px; line-height: 1.5; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+  .user-stats { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: #536471; margin-top: 4px; }
+  .user-stats b { color: #0f1419; }
+  /* 头像/名字可点进用户页：仅当用户本身在列表里时也成立；这里给资料头里的元素加手型 */
+  .avatar[data-user], .name[data-user], .dt-avatar[data-user], .dt-name[data-user],
+  .q-avatar[data-user], .q-name[data-user] { cursor: pointer; }
   .dt-media .dt-video .bm-play { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; font-size: 18px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
   .dt-media .dt-video.playing .bm-play { display: none; }
   .dt-media .dt-video .bm-vclose { position: absolute; top: 8px; right: 8px; z-index: 3; width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
@@ -310,33 +348,30 @@
     <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新">↻</button>
   </div>
 
-  <!-- 标签切换：首页（浏览）为主，下载是辅助功能放最后 -->
+  <!-- 标签切换：首页（浏览）为主；链接（粘贴 X 推文链接 → 解析/预览/仅浏览 → 下载）紧随其后，作为独立页常驻导航。
+       下载只是「链接」页里的子动作，故不再单独占一个标签；资源库选择也推迟到真正点下载时才弹出。 -->
   <div class="tabs" id="tabs">
     <button class="tab active" data-view="browse">🏠 首页</button>
+    <button class="tab" data-view="download">🔗 链接</button>
     <button class="tab" data-view="search">🔍 搜索</button>
     <button class="tab" data-view="bookmarks">⭐ 收藏</button>
     <button class="tab" data-view="history">🕘 历史</button>
     <button class="tab" data-view="cache">📦 缓存</button>
-    <button class="tab" data-view="download">⬇ 下载</button>
   </div>
 
   <!-- X 登录态自检告警：Cookie 失效/残缺时整条横幅置顶，不打断浏览但必须可见 -->
   <div id="xd-session-alert" class="xd-session-alert" style="display:none"></div>
 
-  <!-- 下载表单视图 -->
+  <!-- 链接表单视图（原「下载」页）：粘贴推文链接 → 解析预览/仅浏览 → 下载只是其中的子动作。
+       资源库选择不再常驻表单，改为点击「下载整个帖子」时弹出，避免过早暴露。 -->
   <div class="view" id="view-download" style="display:none">
-  <!-- 表单：始终可见 -->
+  <!-- 表单：只负责「预览」；下载是预览之后的子动作，不在表单上暴露 -->
   <div class="form" id="form">
     <input id="url" type="text" placeholder="粘贴 X / Twitter 推文链接…" />
-    <select id="library"><option value="">目标资源库（加载中…）</option></select>
-    <div class="opts">
-      <label><input type="checkbox" id="preview" checked /> 先预览确认</label>
-      <label><input type="checkbox" id="hidden" /> 隐藏资源（仅帖子流可见）</label>
-    </div>
     <div class="run-row">
-      <button id="run">解析预览</button>
+      <button id="run">预览</button>
     </div>
-    <div class="hint">粘贴推文链接 → 解析并预览图片/视频 → 确认后下载整个帖子。</div>
+    <div class="hint">粘贴链接 → 解析并把图文/视频爬取到本地缓存并预览；确认无误后在预览里点「下载」，选好资源库即把数据持久化进以推文 ID 命名的文件夹。</div>
   </div>
   </div><!-- /view-download -->
 
@@ -374,11 +409,6 @@
 
   <!-- 浏览（首页·关注流）视图 -->
   <div class="view" id="view-browse">
-    <!-- 快速打开：在首页粘贴链接即可浏览该推文，看完再决定是否下载 -->
-    <div class="quickdl" id="quickdl">
-      <input id="qdl-url" type="text" placeholder="粘贴推文链接，回车打开浏览…" />
-      <button id="qdl-btn">🔍 打开</button>
-    </div>
     <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
     <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
   </div>
@@ -420,6 +450,20 @@
     <div class="counter" id="lb-counter"></div>
   </div>
 
+  <!-- 资源库选择弹窗：点击「下载」时才弹出，不在表单里过早暴露。
+       隐藏资源同样是下载时的选项，故一并收进此弹窗，避免与「预览」混淆。 -->
+  <div class="lib-picker" id="lib-picker" style="display:none">
+    <div class="lib-picker-box">
+      <div class="lib-picker-title">选择目标资源库</div>
+      <select id="lib-picker-sel"><option value="">加载中…</option></select>
+      <label class="lib-picker-check"><input type="checkbox" id="lib-picker-hidden" /> 隐藏资源（仅帖子流可见）</label>
+      <div class="lib-picker-actions">
+        <button id="lib-picker-ok" class="primary">确定</button>
+        <button id="lib-picker-cancel" class="cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 推文详情页（DBox 内预览推文 + 评论区） -->
   <div class="detail" id="detail">
     <div class="detail-box">
@@ -431,6 +475,21 @@
         <div id="dt-body"><div class="bm-empty">加载中…</div></div>
         <div class="detail-replies" id="dt-replies"></div>
         <div class="bm-loadmore" id="dt-loadmore" style="display:none"><button id="dt-more">加载更多回复</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 用户详情页（DBox 内自行解析该用户的资料与推文，不打开 x.com） -->
+  <div class="detail" id="user">
+    <div class="detail-box">
+      <div class="detail-top">
+        <button class="detail-back" id="user-back">← 返回</button>
+        <span class="detail-title">用户</span>
+      </div>
+      <div class="detail-scroll" id="user-scroll">
+        <div id="user-body"><div class="bm-empty">加载中…</div></div>
+        <div class="bm-list" id="user-list"></div>
+        <div class="bm-loadmore" id="user-loadmore" style="display:none"><button id="user-more">加载更多</button></div>
       </div>
     </div>
   </div>
@@ -575,7 +634,7 @@
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
       TOKEN = e.data.token;
-      if (!librariesLoaded) loadLibraries();
+      // 资源库改为点击「下载」时再惰性加载（chooseLibrary），不再启动时预拉
       // token 到达后恢复可能存在的旧任务（iframe 重建场景）
       if (!jobId) { const saved = restoreJob(); if (saved) { jobId = saved; startPolling(); } }
     }
@@ -600,7 +659,7 @@
         // 首次连上宿主（如小窗切全屏）：把面板当前所在页面补写到顶层 URL，
         // 否则地址栏停在 /ext/x，用户复制不到当前页。
         if (dtEl && dtEl.classList.contains('active') && dtCurTweet) {
-          navigate({ name: 'tweet', id: dtCurTweet.tweet_id }, { replace: true, silent: true });
+          navigate({ name: 'tweet', id: dtCurTweet.tweet_id, screen_name: (dtCurTweet.author || {}).screen_name }, { replace: true, silent: true });
         } else {
           navigate(currentListRoute(), { replace: true, silent: true });
         }
@@ -656,11 +715,6 @@
   });
   // token 到达时也尝试恢复（token 可能比 load 晚）
   const _origTokenHandler = null; // 标记需要在 message 监听里加恢复逻辑
-
-  // 预览开关控制按钮文案
-  $('preview').addEventListener('change', () => {
-    $('run').textContent = $('preview').checked ? '解析预览' : '开始下载';
-  });
 
   // 全屏入口已统一由框架层（ExtensionHost）面板 header 的「⛶ 全屏」按钮提供，
   // panel 自身不再维护独立全屏按钮。
@@ -746,20 +800,47 @@
     return r;
   }
 
-  // 加载资源库列表
-  async function loadLibraries() {
-    if (librariesLoaded) return;
-    if (!latestToken()) return;
-    librariesLoaded = true;
-    try {
-      const r = await fetch('/api/my-libraries', { headers: AUTH() });
-      const d = await r.json();
-      const libs = (d.data || d.libraries || []);
-      const sel = $('library');
-      sel.innerHTML = libs.map(l => `<option value="${l.id}">${l.name}</option>`).join('') || '<option value="">（无可用库）</option>';
-    } catch (e) {
-      $('library').innerHTML = '<option value="">（加载库失败）</option>';
-    }
+  // 资源库列表：按需拉取并缓存（不再在表单里常驻展示）
+  let _libsCache = null;
+  async function fetchLibraries() {
+    if (_libsCache) return _libsCache;
+    const r = await fetch('/api/my-libraries', { headers: AUTH() });
+    const d = await r.json();
+    _libsCache = d.data || d.libraries || [];
+    return _libsCache;
+  }
+
+  // 点击「下载」时弹出资源库选择；返回 { library_id, hidden }，取消则返回 null
+  function chooseLibrary() {
+    return new Promise((resolve) => {
+      const picker = $('lib-picker');
+      const sel = $('lib-picker-sel');
+      const hiddenCb = $('lib-picker-hidden');
+      const finish = (v) => {
+        picker.style.display = 'none';
+        $('lib-picker-ok').onclick = null;
+        $('lib-picker-cancel').onclick = null;
+        picker.onclick = null;
+        resolve(v);
+      };
+      fetchLibraries().then((libs) => {
+        sel.innerHTML = libs.length
+          ? libs.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')
+          : '<option value="">（无可用资源库）</option>';
+      }).catch(() => {
+        sel.innerHTML = '<option value="">（加载失败）</option>';
+      }).finally(() => {
+        hiddenCb.checked = false;  // 每次重新打开重置，避免沿用上次勾选
+        picker.style.display = 'flex';
+        $('lib-picker-ok').onclick = () => {
+          const v = sel.value;
+          if (!v) { alert('请选择目标资源库'); return; }
+          finish({ library_id: v, hidden: hiddenCb.checked });
+        };
+        $('lib-picker-cancel').onclick = () => finish(null);
+        picker.onclick = (e) => { if (e.target === picker) finish(null); };
+      });
+    });
   }
 
   /* ---- 视图切换 ---- */
@@ -1203,6 +1284,13 @@
       const back = lastListRoute || { name: 'browse', params: {} };
       navigate(back, { replace: true });
       return;
+    } else if (kind === 'user') {
+      if (userEl) userEl.classList.remove('active');
+      // 用户页同样是 URL（#/<seg>/<screen_name>），「返回」＝回到来源列表页，
+      // 与推文详情一致：用 replace 对齐地址栏，不依赖 history.back()。
+      const back = lastListRoute || { name: 'browse', params: {} };
+      navigate(back, { replace: true });
+      return;
     }
     // 同步历史栈：仅当本浮层是当前最上层（最近压入的 drill）时，回退一次以消费
     // 对应历史项；出栈与再次关闭交由 popstate 统一处理（幂等，重复移除 active 无副作用）
@@ -1217,6 +1305,8 @@
       lbEl.classList.remove('active');
     } else if (kind === 'detail') {
       hideDetailLayer();
+    } else if (kind === 'user') {
+      if (userEl) userEl.classList.remove('active');
     }
   });
   // 触摸左右滑动切换（图片/视频）；竖向滑动或点按不触发，避免误关/误触。
@@ -1319,12 +1409,10 @@
     });
   }
 
-  /* ---- 提交任务 ---- */
+  /* ---- 提交任务：只做「预览」（把图文/视频爬取到缓存并预览）---- */
   $('run').onclick = async () => {
     const url = $('url').value.trim();
-    const library_id = $('library').value;
     if (!url) { alert('请填写推文链接'); return; }
-    if (!library_id) { alert('请选择目标资源库'); return; }
     if (!latestToken()) { alert('尚未获取到 token'); return; }
     jobId = null; seenLogs.clear();
     $('log').textContent = ''; $('pick').innerHTML = ''; $('status-msg').textContent = ''; progEl.style.display = 'none';
@@ -1336,12 +1424,10 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...AUTH() },
         body: JSON.stringify({
-          library_id,
           params: {
             url,
-            preview: $('preview').checked,
+            preview: true,
             auto: true,
-            hidden: $('hidden').checked,
           }
         })
       });
@@ -1353,20 +1439,23 @@
     } catch (e) { pushLog('提交异常: ' + e.message, true); }
   };
 
-  /* ---- 预览区下载 ---- */
+  /* ---- 预览区下载：此时才选资源库与隐藏选项，避免过早暴露 ---- */
   $('pv-download').onclick = async () => {
     const items = Array.from(gridEl.querySelectorAll('input[data-i]:checked')).map(x => Number(x.dataset.i));
     if (!items.length) { alert('请至少勾选一个媒体'); return; }
+    const res = await chooseLibrary();
+    if (!res) return;   // 用户取消选择资源库
+    const { library_id, hidden } = res;
     showStatus();
     setProgress(0, '开始下载…');
-    await postInput({ action: 'download', items });
+    await postInput({ action: 'download', items, library_id, hidden });
   };
 
   /* ---- 首次加载兜底 ---- */
   let loadRetries = 0;
   (function ensureLibraries() {
     if (librariesLoaded) return;
-    if (latestToken()) { loadLibraries(); return; }
+    if (latestToken()) { return; }   // 资源库改惰性加载，无需启动时预拉
     if (loadRetries++ < 20) setTimeout(ensureLibraries, 300);
   })();
 
@@ -1402,7 +1491,10 @@
      · #/bookmarks  #/history  #/cache  #/download
      · #/tweet/<id>                    推文详情（中立：不绑定来源，
                                        首页/搜索/收藏/历史/粘贴链接进来都是同一个 URL）
-     兼容旧格式 #/view/<view>。
+   · #/<seg>/<screen_name>           用户主页（对齐 x.com/<screen_name>）
+   · #/<seg>/<screen_name>/status/<id> 推文详情（对齐 x.com/<screen_name>/status/<id>，
+                                       <seg> 见下方 NATIVE_SEG 常量）
+     兼容旧格式 #/view/<view> 与 #/tweet/<id>。
      重要：从 URL 进来只渲染已有缓存，**绝不自动发起搜索**；只有点「搜索」按钮
      才真正请求 X 刷新缓存。
   */
@@ -1412,6 +1504,9 @@
   const PATH_VIEW = { home: 'browse', search: 'search', bookmarks: 'bookmarks',
                       history: 'history', cache: 'cache', download: 'download',
                       browse: 'browse', download: 'download' };
+  // X 原生 URL 命名空间：把推文/用户页的 URL 对齐到 x.com 真实结构
+  // （#/<seg>/<screen_name> 与 #/<seg>/<screen_name>/status/<id>）。改名只需改这一处。
+  const NATIVE_SEG = 'tw';
 
   // 历史兼容：宿主曾把面板已编码的 hash 再编码一次（Vue Router 的 encodeHash
   // 会对 % 再编码成 %25）。这类旧链接解一层后仍是「整串百分号编码」，
@@ -1457,6 +1552,17 @@
       try { id = decodeURIComponent(id); } catch (_) {}
       return { name: 'tweet', id: id, params: params };
     }
+    // X 原生 URL 对齐：#/<seg>/<screen_name> 与 #/<seg>/<screen_name>/status/<id>
+    if (seg[0] === NATIVE_SEG && seg[1]) {
+      let screen = seg[1];
+      try { screen = decodeURIComponent(screen); } catch (_) {}  // 与 id 一致，避免 CJK 被双重编码
+      if (seg[2] === 'status' && seg[3]) {
+        let id = seg[3];
+        try { id = decodeURIComponent(id); } catch (_) {}
+        return { name: 'tweet', id: id, screen_name: screen, params: params };
+      }
+      return { name: 'user', screen_name: screen, params: params };
+    }
     // 旧格式 #/view/<view> 与现行 #/<path> 都认
     const key = (seg[0] === 'view' && seg[1]) ? seg[1] : seg[0];
     const view = PATH_VIEW[key] || (VIEW_ROUTES.indexOf(key) >= 0 ? key : null);
@@ -1465,7 +1571,14 @@
 
   function buildHash(route) {
     if (!route) return '#/home';
-    if (route.name === 'tweet') return '#/tweet/' + encodeURIComponent(route.id);
+    if (route.name === 'user' && route.screen_name)
+      return '#/' + NATIVE_SEG + '/' + encodeURIComponent(route.screen_name);
+    if (route.name === 'tweet') {
+      // 优先对齐 x.com 结构：#/<seg>/<screen_name>/status/<id>；拿不到作者时回退中立 #/tweet/<id>
+      if (route.screen_name)
+        return '#/' + NATIVE_SEG + '/' + encodeURIComponent(route.screen_name) + '/status/' + encodeURIComponent(route.id);
+      return '#/tweet/' + encodeURIComponent(route.id);
+    }
     const q = [];
     if (route.name === 'search') {
       const pr = route.params || {};
@@ -1530,7 +1643,14 @@
       // 推文页中立：不切换底层列表视图，只在其上开详情层；
       // 记住来源路由，关闭详情（含浏览器后退）时回到它。
       if (!lastListRoute) lastListRoute = currentListRoute();
-      openTweetDetail(route.id, null);
+      openTweetDetail(route.id, null, false, route.screen_name);
+      return;
+    }
+    if (route.name === 'user') {
+      // 用户页（X 原生 URL 对齐）：开用户浮层，URL 即 #/<seg>/<screen_name>；
+      // 关闭时回到来源列表页（与推文详情一致）。
+      if (!lastListRoute) lastListRoute = currentListRoute();
+      openUser(route.screen_name);
       return;
     }
     if (route.name === 'search') applySearchParams(route.params || {}, opts);
@@ -1811,7 +1931,7 @@
     const bmText = card.querySelector('.text');
     if (bmText && tid) {
       bmText.style.cursor = 'pointer';
-      bmText.addEventListener('click', (e) => { e.stopPropagation(); openTweetDetail(tid, item); });
+      bmText.addEventListener('click', (e) => { e.stopPropagation(); openTweetDetail(tid, item, false, (item.author || {}).screen_name); });
     }
     card.querySelectorAll('.open').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
@@ -2191,7 +2311,7 @@
     // 点击正文/标题 → 打开 DBox 内推文详情页。
     // 作者名/头像点击跳作者 profile（仍走外链，因 dbox 暂无用户资料页）。
     const tweetUrl = item.url || `https://x.com/${a.screen_name || 'unknown'}/status/${tid}`;
-    const openDetail = (e) => { e.stopPropagation(); openTweetDetail(tid, item); };
+    const openDetail = (e) => { e.stopPropagation(); openTweetDetail(tid, item, false, (item.author || {}).screen_name); };
     // 主图 + 引用卡片内的图：绑定灯箱/原地点播
     wireMediaBlock(card.querySelector('.media'), medias);
     if (item.quoted) wireMediaBlock(card.querySelector('.quoted'), item.quoted.media || []);
@@ -2201,7 +2321,13 @@
       if (e.target === card || e.target.classList.contains('text')) openDetail(e);
     });
     card.querySelectorAll('[data-link]').forEach((el) => {
-      el.addEventListener('click', (e) => { e.stopPropagation(); const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const u = el.dataset.link; if (!u) return;
+        // 作者资料链接 → 在 DBox 内自行解析用户详情，不打开 x.com
+        const m = /^https?:\/\/(?:x|twitter)\.com\/([^\/\?\#]+)\/?$/.exec(u);
+        if (m) openUser(m[1]); else window.open(u, '_blank', 'noopener');
+      });
     });
     // 引用卡片整体 → 打开被引用推文详情
     const qEl = card.querySelector('.quoted');
@@ -2210,7 +2336,7 @@
         if (e.target.closest('[data-link]') || e.target.closest('.bm-media')) return;  // 链接/媒体自行处理
         e.stopPropagation();
         const qt = qEl.dataset.tid;
-        if (qt) openTweetDetail(qt, item.quoted);
+        if (qt) openTweetDetail(qt, item.quoted, false, (item.quoted.author || {}).screen_name);
       });
     }
     // 收藏 / 移出收藏
@@ -2280,15 +2406,16 @@
   }
 
   async function downloadTweet(tweetUrl) {
-    const libraryId = $('library').value;
-    if (!libraryId) { alert('请先选择目标资源库'); return false; }
+    const res = await chooseLibrary();
+    if (!res) return false;   // 用户取消选择资源库
+    const { library_id: libraryId, hidden } = res;
     try {
       const r = await req(`${API}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           library_id: libraryId,
-          params: { url: tweetUrl, preview: false, auto: true, hidden: $('hidden').checked },
+          params: { url: tweetUrl, preview: false, auto: true, hidden },
         }),
       });
       const d = await r.json();
@@ -3289,21 +3416,8 @@
     });
   }
 
-  // 首页快速打开：粘贴链接 → 回车/点按钮 → 打开该推文详情页浏览，
-  // 用户看完再在详情页决定是否下载（不直接下载）。
-  function quickOpen() {
-    const url = $('qdl-url').value.trim();
-    if (!url) return;
-    const m = url.match(/\/status\/(\d+)/);
-    if (!m) { alert('无法识别推文链接'); return; }
-    const btn = $('qdl-btn');
-    btn.disabled = true; btn.textContent = '加载中…';
-    openTweetDetail(m[1], null).finally(() => {
-      btn.disabled = false; btn.textContent = '🔍 打开';
-    });
-  }
-  $('qdl-btn').addEventListener('click', quickOpen);
-  $('qdl-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') quickOpen(); });
+  // 首页快速打开功能已合并进「链接」页（粘贴链接 → 预览 → 下载），
+  // 首页不再单独保留 URL 直接打开框，故相关 DOM 与监听器已移除。
 
   $('br-more').addEventListener('click', () => loadBrowse(false));
 
@@ -3569,7 +3683,7 @@
     if (gotoParent && t.in_reply_to && t.in_reply_to.tweet_id) {
       gotoParent.addEventListener('click', (e) => {
         e.stopPropagation();
-        openTweetDetail(t.in_reply_to.tweet_id, null);
+        openTweetDetail(t.in_reply_to.tweet_id, null, false, (t.author || {}).screen_name);
       });
     }
     // 引用转发：原贴也以嵌套卡片呈现（头像/@id/正文/媒体），点卡片打开原贴详情
@@ -3580,13 +3694,19 @@
         qEl.addEventListener('click', (e) => {
           if (e.target.closest('[data-link]') || e.target.closest('.bm-media')) return;
           e.stopPropagation();
-          if (qEl.dataset.tid) openTweetDetail(qEl.dataset.tid, t.quoted);
+          if (qEl.dataset.tid) openTweetDetail(qEl.dataset.tid, t.quoted, false, (t.quoted.author || {}).screen_name);
         });
       }
     }
     // 作者名跳 profile
     card.querySelectorAll('[data-link]').forEach((el) => {
-      el.addEventListener('click', (e) => { e.stopPropagation(); const u = el.dataset.link; if (u) window.open(u, '_blank', 'noopener'); });
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const u = el.dataset.link; if (!u) return;
+        // 作者资料链接 → 在 DBox 内自行解析用户详情，不打开 x.com
+        const m = /^https?:\/\/(?:x|twitter)\.com\/([^\/\?\#]+)\/?$/.exec(u);
+        if (m) openUser(m[1]); else window.open(u, '_blank', 'noopener');
+      });
     });
     // 收藏/移出
     card.querySelectorAll('.fav').forEach((b) => b.addEventListener('click', () => {
@@ -3632,7 +3752,7 @@
       b.textContent = '获取中…';
       const tid = t.tweet_id || b.dataset.tid;
       if (tid) {
-        openTweetDetail(String(tid), null, true).catch(() => {});
+        openTweetDetail(String(tid), null, true, (t.author || {}).screen_name).catch(() => {});
         return;
       }
       setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
@@ -3665,13 +3785,107 @@
       div.style.cursor = 'pointer';
       div.addEventListener('click', (e) => {
         e.stopPropagation();
-        openTweetDetail(rp.tweet_id, rp);
+        openTweetDetail(rp.tweet_id, rp, false, (rp.author || {}).screen_name);
       });
     }
     return div;
   }
 
-  async function openTweetDetail(tweetId, seed, force) {
+  /* ---- 用户详情页：点击头像/名字/@id 进入，DBox 内自行解析其推文（不打开 x.com） ---- */
+  let userEl = null, userBodyEl, userListEl, userLoadmoreEl, userMoreEl;
+  let userCursor = null, userLoading = false, userCurName = null;
+
+  function fmtN(n) {
+    if (n == null) return '0';
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(n);
+  }
+
+  async function openUser(screenName) {
+    screenName = (screenName || '').replace(/^@/, '');
+    if (!screenName) return;
+    // 已是当前用户浮层且无强制刷新 → 直接返回，避免 navigate 触发 hashchange 后重复进入
+    if (userEl && userEl.classList.contains('active') && userCurName === screenName) return;
+    if (_inlineVid) stopInlineVideo(_inlineVid);
+    // URL 对齐：用户页即 #/<seg>/<screen_name>，可复制 / 刷新 / 分享
+    navigate({ name: 'user', screen_name: screenName }, { silent: true });
+    if (!userEl) {
+      userEl = $('user');
+      userBodyEl = $('user-body');
+      userListEl = $('user-list');
+      userLoadmoreEl = $('user-loadmore');
+      userMoreEl = $('user-more');
+      $('user-back').addEventListener('click', () => closeDrillViaApp('user'));
+      userMoreEl.addEventListener('click', () => loadUserTweets(false));
+    }
+    userCurName = screenName;
+    userCursor = null;
+    userEl.classList.add('active');
+    enterDrill('user', true);
+    userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
+    userListEl.innerHTML = '';
+    userLoadmoreEl.style.display = 'none';
+    await loadUserTweets(true);
+  }
+
+  async function loadUserTweets(reset) {
+    if (userLoading || !userEl) return;
+    userLoading = true;
+    if (reset) {
+      userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
+      userListEl.innerHTML = '';
+      userCursor = null;
+    }
+    try {
+      const url = `${API}/user_tweets?user=${encodeURIComponent(userCurName)}&count=20` +
+        (userCursor ? `&cursor=${encodeURIComponent(userCursor)}` : '');
+      const r = await req(url);
+      const d = await r.json();
+      if (!d.success) {
+        if (reset) userBodyEl.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '')}</div>`;
+        userLoading = false;
+        return;
+      }
+      renderUserProfile(d.user);
+      const items = d.items || [];
+      for (const it of items) {
+        const card = renderBmCard(it, false);
+        // 用户自己的时间线里再点作者名/头像会重新进入同一用户，站内解析即可，无需重绑
+        userListEl.appendChild(card);
+      }
+      userCursor = d.next_cursor || null;
+      userLoadmoreEl.style.display = userCursor ? '' : 'none';
+    } catch (e) {
+      if (reset) userBodyEl.innerHTML = `<div class="bm-empty err">加载异常: ${esc2(e.message || e)}</div>`;
+    } finally {
+      userLoading = false;
+    }
+  }
+
+  function renderUserProfile(p) {
+    if (!p) { userBodyEl.innerHTML = ''; return; }
+    const handle = p.screen_name ? '@' + p.screen_name : '';
+    const stats = [];
+    if (p.statuses_count != null) stats.push(`<span><b>${fmtN(p.statuses_count)}</b> 推文</span>`);
+    if (p.following_count != null) stats.push(`<span><b>${fmtN(p.following_count)}</b> 正在关注</span>`);
+    if (p.followers_count != null) stats.push(`<span><b>${fmtN(p.followers_count)}</b> 关注者</span>`);
+    userBodyEl.innerHTML = `
+      <div class="uprof">
+        <div class="uprof-head">
+          ${p.avatar ? `<img class="uprof-avatar" src="${esc2(p.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : '<div class="uprof-avatar"></div>'}
+          <div class="uprof-id">
+            <div class="uprof-name">${esc2(p.name || '')}${p.verified ? ' ✔' : ''}</div>
+            <div class="uprof-handle">${esc2(handle)}</div>
+          </div>
+        </div>
+        ${p.bio ? `<div class="uprof-bio">${esc2(p.bio)}</div>` : ''}
+        <div class="uprof-stats">${stats.join('')}</div>
+      </div>`;
+  }
+
+  async function openTweetDetail(tweetId, seed, force, screenName) {
     // 列表里若有正在原地点播的视频，进详情前必须先停掉并销毁 hls 实例：
     // 详情层会盖住整个面板，视频虽被遮住但解码与声音仍在继续（被遮挡不会自动
     // 暂停），表现为「推文都点开了，视频还在响」。
@@ -3681,10 +3895,16 @@
     const wasActive = dtEl.classList.contains('active');
     if (!wasActive) enterDrill('detail', false);   // 历史项由下面的 navigate 压入
     dtEl.classList.add('active');
-    const wantHash = buildHash({ name: 'tweet', id: tweetId });
+    // 尽量带上作者 screen_name，使 URL 与 x.com 真实结构对齐
+    // （#/<seg>/<screen_name>/status/<id>）；拿不到时回退到中立的 #/tweet/<id>
+    let sn = screenName || null;
+    if (!sn) { const c = dtCacheGet(tweetId); if (c && c.tweet && c.tweet.author) sn = c.tweet.author.screen_name || null; }
+    const wantHash = buildHash(sn ? { name: 'tweet', id: tweetId, screen_name: sn }
+                                 : { name: 'tweet', id: tweetId });
     // 详情内跳到另一条推文（如点引用的原推）用 replace：详情始终只占一条历史
     if (location.hash !== wantHash) {
-      navigate({ name: 'tweet', id: tweetId }, { silent: true, replace: wasActive });
+      navigate(sn ? { name: 'tweet', id: tweetId, screen_name: sn }
+                  : { name: 'tweet', id: tweetId }, { silent: true, replace: wasActive });
     }
     // 命中详情缓存 → 直接秒开，零请求（刷新页面或从别的入口再打开同一条推文
     // 都走这条路；这种情况下内容已经在本地，再拉一遍 X 没有意义）
