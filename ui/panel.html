@@ -155,13 +155,16 @@
   .dt-handle { color: #536471; font-size: 13px; }
   .dt-time { color: #8899a6; font-size: 13px; margin-left: auto; }
   .dt-text { font-size: 16px; line-height: 1.6; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 12px; }
-  .dt-media { border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+  /* 详情页媒体：2 列网格（与 X 官方一致），单图自动跨两列全宽。
+     多图并排显示，不再纵向堆叠。 */
+  .dt-media { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+  .dt-media > :only-child { grid-column: 1 / -1; }
   .dt-media img { width: 100%; display: block; max-height: 70vh; object-fit: contain; background: #e9eef2; }
   .dt-media video { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 12px; display: block; background: #000; }
   /* 详情页视频：与浏览卡片同构（封面 + ▶，点按原地点播走 hls.js）。
      .bm-media / .bm-play / .bm-vclose 的样式都定义在 .bm-card 作用域下，详情页
      够不着，必须自带一份，否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
-  .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; max-width: 560px; margin: 0 auto; }
+  .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; }
   .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
   /* 封面缩略图（<img>）：与上面的 video 同规则，保证点播前后尺寸一致、不跳动 */
   .dt-media .dt-video > img { width: 100%; height: auto; max-height: 70vh; display: block; object-fit: contain; background: #000; }
@@ -248,7 +251,9 @@
   .bm-toolbar .srch-prod { display: flex; gap: 6px; flex: 0 0 auto; }
   .bm-toolbar .srch-prod button { flex: 0 0 auto; padding: 9px 12px; }
   .bm-toolbar .srch-prod button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
-  .bm-list { display: flex; flex-direction: column; gap: 10px; }
+  /* 内容列限宽并居中（同 X：timeline 是固定宽度的中间列，不是铺满整屏）。
+     窗口很宽时卡片不再被拉成 1300+px，图两侧自然留白，避免"贴满"的压迫感。 */
+  .bm-list { display: flex; flex-direction: column; gap: 10px; max-width: 1000px; margin: 0 auto; }
   .bm-empty { color: #8899a6; font-size: 13px; text-align: center; padding: 24px 0; }
   .bm-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 10px 12px; }
   .bm-card .head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -262,32 +267,55 @@
   .x-mention { color: #1d9bf0; cursor: pointer; }
   .x-mention:hover { text-decoration: underline; }
   /* 媒体布局：单图占满限高，多图 grid（2x2/3+） */
-  .bm-card .media { display: grid; gap: 4px; align-items: start; margin-bottom: 6px; border-radius: 10px; overflow: hidden; }
+  .bm-card .media { display: grid; gap: 4px; align-items: stretch; margin-bottom: 6px; border-radius: 10px; overflow: hidden; }
   .bm-card .media.m1 { grid-template-columns: 1fr; }
-  /* 单图：保持原图比例完整显示，限高 320px 不裁切，背景浅灰填充 */
-  .bm-card .media.m1 .bm-media { max-height: 320px; background: #f3f5f7; }
+  /* 单图/单视频：撑满容器宽度，但加 max-height 兜底防超大（70vh ≈ 内容区的上限）。
+     img/video 用 max-width/max-height:100% + auto + contain：按比例居中显示，不裁切。
+     之前完全不限高导致超高竖图/视频封面撑爆一整屏（用户反馈「超大图片」「视频预览图也超大」）。 */
+  .bm-card .media.m1 .bm-media {
+    display: flex; align-items: center; justify-content: center;
+    max-height: 70vh; background: #f3f5f7; border-radius: 10px; overflow: hidden;
+  }
   /* 视频安全网：即使封面未加载 / 尺寸缺失，也保证最小可见高度（防塌成一行） */
   .bm-card .media.m1 .bm-media[data-type="video"] { min-height: 120px; }
   /* 详情页视频同样需要安全网（此前漏了此规则，导致无封面时塌成 ~16px 黑条） */
   .dt-media .bm-media[data-type="video"], .dt-media .dt-video { min-height: 120px; }
   /* 视频封面必须撑满容器宽度：X 部分视频的 cover 是缩略图尺寸（如 80x45），
      width:auto 会按原始小尺寸显示 → 图很小。视频封面统一 width:100% 撑满。 */
-  .bm-card .media.m1 .bm-media[data-type="video"] > img {
-    width: 100%; height: auto; max-height: 320px;
+  /* 视频封面、img/video 统一：max-width/max-height:100% + auto + contain
+     → 按内在比例 + 容器约束自动算尺寸，居中、不裁切，且被 max-height:70vh 兜底防超高。 */
+  .bm-card .media.m1 .bm-media[data-type="video"] > img,
+  .bm-card .media.m1 .bm-media img,
+  .bm-card .media.m1 .bm-media video {
+    max-width: 100%; max-height: 100%; width: auto; height: auto;
     object-fit: contain; display: block;
   }
-  .bm-card .media.m1 .bm-media img, .bm-card .media.m1 .bm-media video {
-    width: auto; max-width: 100%; max-height: 320px;
-    object-fit: contain; display: block; margin: 0 auto;
+  /* 多图：按图片数量用 X 风格的固定网格布局（CSS Grid 直接出结构，JS 只算行高）。
+     N=2 横排（1 行 2 列）、N=3 左大右二（2 列 2 行，首格跨两行）、N=4 2×2。
+     行高由 JS 算出：所有格子在等宽布局下取最高那一张所需高度（其余按比例填满居中）。
+     行高上限 = 真正内容区高度（沿祖先找可滚动容器），单行最多占满可见区。 */
+  .bm-card .media.justified {
+    display: grid;
+    grid-template-columns: 1fr 1fr;   /* CSS 兜底：JS 未跑/失效时也保持 2 列，不退化为每行一张 */
+    gap: 4px;
+    padding: 4px 8px;            /* 图距卡片边留出视觉缓冲（顶 4、左右 8），配合 card 自身的
+                                     10/12px padding，总计左右 20px、上下 14px，避免图贴满
+                                     容器四周产生压迫感；同时 gridW 自动按 padding 收缩，
+                                     行高 = gridW/ar 同步收紧，进一步留冗余。 */
   }
-  .bm-card .media.m2 { grid-template-columns: 1fr 1fr; }
-  .bm-card .media.m3, .bm-card .media.m4 { grid-template-columns: 1fr 1fr; }
-  /* 多图与单图一致：完整显示（object-fit: contain），不裁切、不强迫点开；
-     每格宽度撑满列、高度按原比例、max-height 限超高长图。网格 start 对齐使各格按内容高度。 */
-  .bm-card .media.m2 .bm-media, .bm-card .media.m3 .bm-media, .bm-card .media.m4 .bm-media { max-height: 320px; }
-  .bm-card .media.m2 img, .bm-card .media.m2 video,
-  .bm-card .media.m3 img, .bm-card .media.m3 video,
-  .bm-card .media.m4 img, .bm-card .media.m4 video { width: 100%; height: auto; max-height: 320px; object-fit: contain; display: block; }
+  .bm-card .media.justified .bm-media {
+    display: flex; align-items: center; justify-content: center;
+    /* 兜底：JS 未算出精确行高时（img 未加载 / 容器不可见），格子也不会被撑成超大图 */
+    max-height: 60vh;
+    background: #f3f5f7; border-radius: 8px; overflow: hidden; position: relative;
+  }
+  /* img/video 用 max-width/max-height:100% + width/height:auto：浏览器按内在比例 + 容器
+     约束自动算尺寸 → 任何比例都完整显示、居中、零裁切（不被 row 强行拉宽）。 */
+  .bm-card .media.justified .bm-media img,
+  .bm-card .media.justified .bm-media video {
+    max-width: 100%; max-height: 100%; width: auto; height: auto;
+    object-fit: contain; display: block;
+  }
   .bm-card .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
   /* 图片加载失败：显示重试按钮，不再静默隐藏。
      错误态下容器折叠到内容高度（retry 按钮），不再占满 320px/16:10 的预留位，
@@ -310,14 +338,32 @@
   .quoted .q-name:hover { text-decoration: underline; }
   .quoted .q-handle { color: #536471; font-size: 11.5px; }
   .quoted .q-text { font-size: 12.5px; line-height: 1.4; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 4px; }
-  .quoted .media { display: grid; gap: 4px; align-items: start; border-radius: 10px; overflow: hidden; margin-bottom: 0; }
+  .quoted .media { display: grid; gap: 4px; align-items: stretch; border-radius: 10px; overflow: hidden; margin-bottom: 0; }
   .quoted .media.m1 { grid-template-columns: 1fr; }
-  .quoted .media.m1 .bm-media { max-height: 220px; background: #f3f5f7; }
-  .quoted .media.m1 .bm-media img, .quoted .media.m1 .bm-media video { width: auto; max-width: 100%; max-height: 220px; object-fit: contain; display: block; margin: 0 auto; }
-  .quoted .media.m2, .quoted .media.m3, .quoted .media.m4 { grid-template-columns: 1fr 1fr; }
-  /* 多图与单图一致：完整显示（object-fit: contain），不裁切 */
-  .quoted .media.m2 .bm-media, .quoted .media.m3 .bm-media, .quoted .media.m4 .bm-media { max-height: 220px; }
-  .quoted .media.m2 img, .quoted .media.m2 video, .quoted .media.m3 img, .quoted .media.m3 video, .quoted .media.m4 img, .quoted .media.m4 video { width: 100%; height: auto; max-height: 220px; object-fit: contain; display: block; }
+  /* quoted 单图/单视频：与主卡片 m1 一致 —— 撑满宽度 + 70vh 兜底防超大 + 按比例居中 */
+  .quoted .media.m1 .bm-media {
+    display: flex; align-items: center; justify-content: center;
+    max-height: 70vh; background: #f3f5f7; border-radius: 10px; overflow: hidden;
+  }
+  .quoted .media.m1 .bm-media img, .quoted .media.m1 .bm-media video {
+    max-width: 100%; max-height: 100%; width: auto; height: auto;
+    object-fit: contain; display: block;
+  }
+  /* quoted 多图：同样 X 风格固定网格（与主卡片一致） */
+  .quoted .media.justified {
+    display: grid;
+    gap: 4px;
+    padding: 4px 8px;            /* 与主卡片一致：图四周留缓冲 */
+  }
+  .quoted .media.justified .bm-media {
+    display: flex; align-items: center; justify-content: center;
+    background: #f3f5f7; border-radius: 8px; overflow: hidden; position: relative;
+  }
+  .quoted .media.justified .bm-media img,
+  .quoted .media.justified .bm-media video {
+    max-width: 100%; max-height: 100%; width: auto; height: auto;
+    object-fit: contain; display: block;
+  }
   .quoted .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
 
   /* 下拉刷新指示器：贴在滚动容器顶部内侧，默认隐藏在内容上沿之上；
@@ -335,7 +381,12 @@
   .ptr-indicator .ptr-icon { font-size: 16px; }
   .bm-card .bm-play, .quoted .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
   .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #000; }
-  .bm-card .bm-media.playing video, .quoted .bm-media.playing video { object-fit: contain; }
+  /* 原地点播中：解除 .media video 的 max-height:70vh（line 61）。
+     该限制会覆盖 JS 钉死的像素高度，把 video 压得比封面小（「缩小一圈」）。
+     容器高度已由 JS 冻结为封面高度，无需再限高。 */
+  .bm-card .bm-media.playing video, .quoted .bm-media.playing video {
+    object-fit: contain; max-height: none;
+  }
   .bm-card .bm-vclose, .quoted .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
   .bm-card .actions { display: flex; gap: 6px; margin-top: 4px; }
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
@@ -1211,7 +1262,11 @@
     mediaEl.classList.add('playing');
     const v = document.createElement('video');
     v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false; v.preload = 'metadata';
-    v.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block';
+    // 高度用像素值而非 100%：CSS multicol（多图瀑布流）中百分比高度解析不可靠，
+    // video 会按内在比例塌成比封面小的框（「缩小一圈」）。直接钉死原封面高度最稳。
+    // 高度异常（0）时退回 100%，避免 video 被压成不可见。
+    const _vh = Math.round(_rect.height);
+    v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#000;display:block`;
     const close = document.createElement('button');
     close.className = 'bm-vclose'; close.textContent = '✕';
     close.addEventListener('click', (e) => { e.stopPropagation(); stopInlineVideo(_inlineVid); });
@@ -2217,9 +2272,12 @@
   }
 
   // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
+  // 每个格子带 data-w/data-h（原始宽高）：justified 行式布局按比例分配宽度时要用。
+  // 缺失时由 layoutJustified 在 img 加载后用 naturalWidth/Height 兜底。
   function cardMediaInner(mediaList) {
     const medias = (mediaList || []).slice(0, 4);
     const mCls = `m${Math.min(medias.length, 4)}`;
+    const dimAttr = (m) => (m.w && m.h) ? ` data-w="${m.w}" data-h="${m.h}"` : '';
     const html = medias.map((m, idx) => {
       if (m.type === 'video') {
         const poster = mediaUrl(m.cover || m.url || '', 'image');
@@ -2235,12 +2293,95 @@
         // 缺失时兜底 320x180（≈16:9）：X 部分推文视频不返回 aspect_ratio，无尺寸 + lazy
         // 会导致容器高度塌成 ≈0（只剩 ▶ 一行高）。
         const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
-        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
+        return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"${dimAttr(m)}><img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
-      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"${dimAttr(m)}><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
-    return html ? `<div class="media ${mCls}">${html}</div>` : '';
+    // justified：横向行式布局（每行等高、按宽高比分配宽度），由 layoutJustified() 计算尺寸。
+    // 仅多图启用；单图仍走全宽自然撑高（保持与多图接近的视觉体量，不被行高夹小）。
+    const jlCls = medias.length > 1 ? ' justified' : '';
+    return html ? `<div class="media ${mCls}${jlCls}">${html}</div>` : '';
   }
+
+  /* ---- justified 行式布局（Google Photos 式自适应行高图片墙）----
+     逐个把图片塞进当前行：每加一张就重算「若这行定行」所需的行高
+       rowH = (容器宽 - 间距总和) / 该行所有图片宽高比之和
+     行高 ≤ 目标行高时就定行（说明塞得够满、够紧凑）；否则继续塞下一张。
+     定行后每张宽度 = 行高 × 自身宽高比 —— 元素宽高比 == 图片宽高比，
+     所以图片完整显示、不裁切，且同一行高度完全一致、总宽正好铺满容器。
+     目标行高取「视口高度的 32%」并与 150~300px 夹取，避免小屏一行过高。 */
+  // 真正可见的内容区高度：沿祖先找第一个纵向可滚动容器（已扣除顶部导航/底部工具栏等
+  // UI 边界），找不到才退回视口高度。行高据此约束，保证一行不会撑出可见区域。
+  function contentViewportH(el) {
+    let p = el && el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      const cs = getComputedStyle(p);
+      if (cs && /(auto|scroll|overlay)/.test(cs.overflowY) && p.clientHeight > 120) return p.clientHeight;
+      p = p.parentElement;
+    }
+    return window.innerHeight || 800;
+  }
+
+  function layoutJustified(container) {
+    if (!container) return;
+    const items = [...container.querySelectorAll(':scope > .bm-media')];
+    if (!items.length) return;
+    const cw = container.clientWidth;
+    if (!cw) return;                       // 容器不可见（宽度 0）时跳过
+    const gap = 4;
+    const ch = contentViewportH(container);
+    // 行高上限 = 内容区高度的 70%：留出 ~30% 上下安全冗余（不顶满屏幕，防超屏、视觉更透气）。
+    // X 的多图行高实际占视口 50~65%，70% 是上限留余地。
+    const maxRowH = Math.round(ch * 0.7);
+
+    const arOf = (el) => {
+      const w = parseFloat(el.dataset.w), h = parseFloat(el.dataset.h);
+      if (w > 0 && h > 0) return w / h;
+      const img = el.querySelector('img');
+      if (img && img.naturalWidth > 0 && img.naturalHeight > 0) return img.naturalWidth / img.naturalHeight;
+      return 16 / 9;
+    };
+    items.forEach((el) => { el._ar = arOf(el); });
+    const N = items.length;
+
+    // 按 N 决定网格结构（X 风格）：
+    //   N=2 → 1 行 2 列横排；
+    //   N=3 → 2 列 2 行，首格跨两行（左大右二，比例 2:1）；
+    //   N=4 → 2×2 网格。
+    // 先清掉旧样式（resize 时复用同一节点）
+    container.style.gridTemplateColumns = '1fr 1fr';
+    container.style.gridTemplateRows = '';
+    items.forEach((el) => { el.style.gridRow = ''; el.style.height = ''; el.style.width = ''; });
+
+    // 行高 H：所有格子在等宽 gridW 下按 gridW/ar 算出所需高度，取最大值
+    //  —— 这样高度统一 = 最高那一张所需，最高那张 contain 居中，
+    //     其余各图按自身比例填满格子，零裁切；img max-width/max-height:100% 保证不溢出。
+    const gridW = (cw - gap) / 2;
+    let H = 0;
+    items.forEach((el) => { const h = gridW / el._ar; if (h > H) H = h; });
+    H = Math.min(H, maxRowH);
+
+    if (N === 2) {
+      container.style.gridTemplateRows = `${H}px`;
+    } else if (N === 3) {
+      // 2 行各 H/2，首格跨两行 → 左格高 H，右两格各 H/2（2:1 比例，正是 X 的左大右二）
+      container.style.gridTemplateRows = `${Math.round(H / 2)}px ${Math.round(H / 2)}px`;
+      items[0].style.gridRow = '1 / span 2';
+    } else if (N === 4) {
+      container.style.gridTemplateRows = `${H}px ${H}px`;
+    }
+    container.dataset.jlDone = '1';
+  }
+
+  // 容器宽度变化（窗口 resize / 侧栏折叠）时重排所有 justified 区块
+  let _jlTimer = null;
+  function relayoutAllJustified() {
+    clearTimeout(_jlTimer);
+    _jlTimer = setTimeout(() => {
+      document.querySelectorAll('.media.justified').forEach(layoutJustified);
+    }, 120);
+  }
+  window.addEventListener('resize', relayoutAllJustified);
 
   // 给某个卡片区块内的媒体缩略图绑定交互：点图进灯箱、点视频原地点播
   function wireMediaBlock(blockEl, mediaList) {
@@ -2261,6 +2402,21 @@
         showLightbox(_lbIdx);
       });
     });
+    // justified 行式布局：blockEl 可能是 .media 本身，也可能是 .quoted（内部含 .media）
+    const jlEl = blockEl.classList.contains('justified') ? blockEl : blockEl.querySelector('.media.justified');
+    if (jlEl) {
+      layoutJustified(jlEl);
+      // 缺 data-w/h 的图要等加载完才知道真实比例 → 监听 load 后重排。
+      // 用 60ms 防抖合并：4 张图会连续触发 4 次 load，逐次重排会造成可见的布局跳变
+      // （表现为「先是 2×2，几秒后又散成 4 行」）。
+      jlEl.querySelectorAll('img').forEach((img) => {
+        if (img.complete && img.naturalWidth) return;
+        img.addEventListener('load', () => {
+          clearTimeout(jlEl._jlT);
+          jlEl._jlT = setTimeout(() => layoutJustified(jlEl), 60);
+        }, { once: true });
+      });
+    }
   }
 
   // 纯转推提示：转发人的头像 + @id 一并显示；
