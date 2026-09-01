@@ -1030,6 +1030,280 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
     return items, next_cursor
 
 
+def _gql_fetch_json(url, opener, headers, opn=''):
+    """发起 X GraphQL GET 请求并解析 JSON。
+
+    与裸 fetch_text 的区别：HTTP 错误时把 X 返回的 JSON 错误体（含 errors 数组）
+    一并带出，避免只抛一个干巴巴的「HTTP Error 422」。X 对 variables/features 校验
+    不通过会返 422，但真正的拒绝原因写在响应体里，必须读出来才能定位。
+
+    注意：错误时仍【原样 re-raise 这个 urllib.error.HTTPError】（仅改写其 args 让
+    str(e) 携带真实原因），这样调用方才能按 e.code==404 触发 query id 重发现重试。
+    """
+    try:
+        raw = fetch_text(url, opener, headers, timeout=30)
+    except urllib.error.HTTPError as e:
+        body = ''
+        try:
+            body = e.read().decode('utf-8', 'replace')
+        except Exception:
+            body = ''
+        msg = f'X GraphQL({opn}) 请求失败 HTTP {e.code}'
+        if body:
+            try:
+                j = json.loads(body)
+                errs = j.get('errors')
+                if isinstance(errs, list) and errs:
+                    msg += ': ' + '; '.join(
+                        str(x.get('message', x)) for x in errs if isinstance(x, dict))
+                elif not errs and not j.get('data'):
+                    msg += ': ' + body[:300]
+            except Exception:
+                msg += ': ' + body[:300]
+        e.args = (msg,)
+        raise
+    return json.loads(raw)
+
+
+# 用户资料 / 推文时间线专用的 features 集合。
+# UserByScreenName / UserTweets 对 features 的校验比 Bookmarks 更严（缺某些资料卡
+# 专用开关会直接 422），故在书签那套基础上补齐浏览器真实会发的 profile 开关。
+_GQL_USER_FEATURES = dict(_GQL_BOOKMARKS_FEATURES)
+_GQL_USER_FEATURES.update({
+    "blue_business_profile_image_shape_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": True,
+    "responsive_web_twitter_article_enabled": True,
+    "responsive_web_graphql_exclude_directives_enabled": True,
+    "responsive_web_media_download_enabled": True,
+    "hidden_profile_likes_enabled": True,
+    "hidden_profile_subscriptions_enabled": True,
+    "profile_label_improvements_enabled": True,
+})
+
+
+# ---- 用户资料 / 用户推文（UserByScreenName / UserTweets）----
+_GQL_USER_TWEETS_QID = None
+_GQL_USER_TWEETS_OPN = 'UserTweets'
+_GQL_USER_BY_SCREEN_NAME_QID = None
+_GQL_USER_BY_SCREEN_NAME_OPN = 'UserByScreenName'
+
+
+def _discover_op_qid(opener, cookie_header, op_name):
+    """通用：从 X 首页 bundle 自动发现任意 operationName 对应的 query id。
+
+    与 _discover_search_qid 同理，但目标 operation 可变（UserTweets、
+    UserByScreenName 等），避免为每个接口各写一份扫描逻辑。query id 会轮换，
+    发现失败时由调用方降级报错（前端再以友好提示兜底）。
+    """
+    try:
+        html = fetch_text('https://x.com/', opener,
+                          build_headers(cookie_header, with_bearer=False), timeout=20)
+    except Exception:
+        html = ''
+    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    seen = set(); urls = []
+    for s in scripts:
+        if not s.startswith('http'):
+            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s); urls.append(s)
+    pats = [
+        r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']\s*,?\s*operationName["\']?\s*[:=]\s*["\']'
+        + re.escape(op_name) + r'["\']?',
+        r'operationName["\']?\s*[:=]\s*["\']' + re.escape(op_name)
+        + r'["\']?\s*,?\s*queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']',
+    ]
+    for s in urls:
+        try:
+            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
+        except Exception:
+            continue
+        for pat in pats:
+            for m in re.finditer(pat, js):
+                return m.group(1)
+    return None
+
+
+def _user_profile_from_result(ur):
+    """从 User* 响应的 user result 提取归一化资料字典。
+
+    X 新版把资料字段从 legacy 提到 result 顶层（core / avatar / profile_bio /
+    relationship_counts / tweet_counts 等），旧版仍在 legacy 内。两者都兼容。
+    """
+    if not isinstance(ur, dict):
+        return None
+    legacy = ur.get('legacy') or {}
+    core = ur.get('core') or {}
+    rel = ur.get('relationship_counts') or {}
+    twc = ur.get('tweet_counts') or {}
+    bio_obj = ur.get('profile_bio') or {}
+
+    def _first(*vals):
+        for v in vals:
+            if v not in (None, '', []):
+                return v
+        return None
+
+    avatar = _first(
+        legacy.get('profile_image_url_https'),
+        (core.get('avatar') or {}).get('image_url'),
+        (ur.get('avatar') or {}).get('image_url'),
+    )
+    return {
+        'rest_id': _first(ur.get('rest_id'), str(legacy.get('id_str') or '')),
+        'name': _first(legacy.get('name'), core.get('name'), ur.get('name')),
+        'screen_name': _first(legacy.get('screen_name'), core.get('screen_name'), ur.get('screen_name')),
+        'avatar': avatar,
+        'bio': _first(bio_obj.get('description'), legacy.get('description'), ''),
+        'verified': _first(legacy.get('verified'), ur.get('is_blue_verified'), False),
+        'followers_count': _first(legacy.get('followers_count'), rel.get('followers')),
+        'following_count': _first(legacy.get('friends_count'), rel.get('following')),
+        'statuses_count': _first(legacy.get('statuses_count'), twc.get('tweets')),
+    }
+
+
+def user_by_screen_name(cookie_header, screen_name, extra_headers=None, txid_func=None):
+    """@句柄 → 用户资料（含内部 rest_id、昵称、简介、关注/粉丝/推文数）。
+
+    query id 会轮换：404 说明当前 id 失效，自动重新发现后重试一次（与 search_tweets 一致）。
+    """
+    global _GQL_USER_BY_SCREEN_NAME_QID
+    opener = make_opener(None)
+    qid = _GQL_USER_BY_SCREEN_NAME_QID
+    if not qid:
+        qid = _discover_op_qid(opener, cookie_header, _GQL_USER_BY_SCREEN_NAME_OPN)
+        _GQL_USER_BY_SCREEN_NAME_QID = qid
+    if not qid:
+        raise RuntimeError('未能发现 UserByScreenName query id')
+
+    variables = {"screen_name": screen_name, "withHighlightedLabel": True}
+
+    def _do(qid):
+        url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_USER_BY_SCREEN_NAME_OPN}'
+               f'?variables={urllib.parse.quote(json.dumps(variables, ensure_ascii=False))}'
+               f'&features={urllib.parse.quote(json.dumps(_GQL_USER_FEATURES, ensure_ascii=False))}')
+        headers = build_headers(cookie_header, with_bearer=True)
+        if extra_headers or txid_func:
+            headers = dict(headers)
+            if extra_headers:
+                headers.update(extra_headers)
+            if txid_func:
+                try:
+                    tid = txid_func('GET', urllib.parse.urlparse(url).path)
+                    if tid:
+                        headers['x-client-transaction-id'] = tid
+                except Exception:
+                    pass
+        return _gql_fetch_json(url, opener, headers, _GQL_USER_BY_SCREEN_NAME_OPN)
+
+    try:
+        data = _do(qid)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            _GQL_USER_BY_SCREEN_NAME_QID = None
+            new_qid = _discover_op_qid(opener, cookie_header, _GQL_USER_BY_SCREEN_NAME_OPN)
+            if new_qid and new_qid != qid:
+                qid = new_qid
+                data = _do(qid)
+            else:
+                raise
+        else:
+            raise
+    if isinstance(data, dict) and data.get('errors'):
+        raise RuntimeError('X 返回错误: ' + '; '.join(
+            str(x.get('message', x)) for x in data['errors'] if isinstance(x, dict)))
+    ur = ((data.get('data', {}) or {}).get('user') or {}).get('result') or {}
+    if not ur:
+        raise RuntimeError('未找到该用户（可能不存在、被封禁或已注销）')
+    return _user_profile_from_result(ur)
+
+
+def user_tweets(cookie_header, user, count=20, cursor=None, extra_headers=None, txid_func=None):
+    """拉取某用户的推文时间线（UserTweets），复用 _extract_bookmark_tweets 解析。
+
+    user 可为 @句柄 或 内部 rest_id（纯数字视为 id，跳过解析）。
+    返回 (items, next_cursor, profile)，items 结构与首页/搜索卡片完全一致。
+    """
+    opener = make_opener(None)
+    profile = None
+    rest_id = None
+    if user and re.fullmatch(r'\d{6,}', str(user)):
+        rest_id = str(user)
+    if not rest_id:
+        profile = user_by_screen_name(cookie_header, str(user).lstrip('@'),
+                                      extra_headers=extra_headers, txid_func=txid_func)
+        rest_id = (profile or {}).get('rest_id')
+    if not rest_id:
+        raise RuntimeError('无法确定用户 id')
+    global _GQL_USER_TWEETS_QID
+    qid = _GQL_USER_TWEETS_QID
+    if not qid:
+        qid = _discover_op_qid(opener, cookie_header, _GQL_USER_TWEETS_OPN)
+        _GQL_USER_TWEETS_QID = qid
+    if not qid:
+        raise RuntimeError('未能发现 UserTweets query id')
+    variables = {
+        "userId": rest_id,
+        "count": count,
+        "withHighlightedLabel": True,
+        "withVoice": False,
+        "includePromotedContent": False,
+        "withQuickPromoteEligibilityTweetFields": True,
+    }
+    if cursor:
+        variables["cursor"] = cursor
+
+    def _do(qid):
+        url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_USER_TWEETS_OPN}'
+               f'?variables={urllib.parse.quote(json.dumps(variables, ensure_ascii=False))}'
+               f'&features={urllib.parse.quote(json.dumps(_GQL_USER_FEATURES, ensure_ascii=False))}')
+        headers = build_headers(cookie_header, with_bearer=True)
+        if extra_headers or txid_func:
+            headers = dict(headers)
+            if extra_headers:
+                headers.update(extra_headers)
+            if txid_func:
+                try:
+                    tid = txid_func('GET', urllib.parse.urlparse(url).path)
+                    if tid:
+                        headers['x-client-transaction-id'] = tid
+                except Exception:
+                    pass
+        return _gql_fetch_json(url, opener, headers, _GQL_USER_TWEETS_OPN)
+
+    try:
+        data = _do(qid)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            _GQL_USER_TWEETS_QID = None
+            new_qid = _discover_op_qid(opener, cookie_header, _GQL_USER_TWEETS_OPN)
+            if new_qid and new_qid != qid:
+                qid = new_qid
+                data = _do(qid)
+            else:
+                raise
+        else:
+            raise
+    if isinstance(data, dict) and data.get('errors'):
+        raise RuntimeError('X 返回错误: ' + '; '.join(
+            str(x.get('message', x)) for x in data['errors'] if isinstance(x, dict)))
+    ur = ((data.get('data', {}) or {}).get('user') or {}).get('result') or {}
+    tl = (ur.get('timeline_v2') or {}).get('timeline') or ur.get('timeline') or {}
+    inner_tl = tl.get('timeline') if isinstance(tl, dict) and tl.get('timeline') else tl
+    items = _extract_bookmark_tweets(
+        {'data': {'bookmark_timeline_v2': {'timeline': inner_tl}}})
+    next_cursor = None
+    instructions = (inner_tl.get('instructions') or []) if isinstance(inner_tl, dict) else []
+    for inst in instructions:
+        for entry in (inst.get('entries') or []):
+            c = entry.get('content') or {}
+            if c.get('entryType') == 'TimelineTimelineCursor' and c.get('cursorType') == 'Bottom':
+                next_cursor = c.get('value')
+    if not profile and ur:
+        profile = _user_profile_from_result(ur)
+    return items, next_cursor, profile
+
+
 def _discover_home_timeline_qid(opener, cookie_header):
     """从 X 首页 bundle 自动发现 HomeTimeline query id。
 
@@ -2829,6 +3103,10 @@ def main():
             log('未收到确认，已取消下载', level='warn')
             sys.exit(0)
         action = resp.get('action', 'download')
+        # 资源库在点击「下载」时才选定（前端经 /input 回传），此处覆盖，
+        # 使随后的入库使用用户选择的目标库，而非提交预览时的空值。
+        if resp.get('library_id'):
+            library_id = resp['library_id']
         if action == 'cancel':
             log('用户取消下载')
             sys.exit(0)
