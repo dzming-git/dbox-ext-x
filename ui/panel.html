@@ -255,6 +255,47 @@
     border: 1px solid #e3e6eb; background: #fff; color: #536471; }
   .bm-toolbar #srch-filter-btn.on { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   #srch-filter-badge { font-size: 11px; opacity: .85; }
+
+  /* ---- 多关键词管理条 ---- */
+  .kw-bar { margin-bottom: 12px; }
+  .kw-bar .quickdl { margin-bottom: 8px; }
+  .kw-bar .quickdl button { padding: 0 15px; }
+  .kw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .kw-chips:empty { display: none; }
+  .kw-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+    border: 1px solid #e3e6eb; background: #fff; border-radius: 999px;
+    padding: 4px 5px 4px 11px; font-size: 12.5px; color: #536471; cursor: default;
+    transition: background .15s, border-color .15s; }
+  .kw-chip:hover { border-color: #c4cfd9; background: #f7f9fa; }
+  .kw-chip.active { background: #1d9bf0; border-color: #1d9bf0; color: #fff; }
+  .kw-chip.active:hover { background: #1a8cd8; }
+  .kw-chip.err { border-color: #f4212e; color: #f4212e; }
+  .kw-chip.err.active { background: #f4212e; color: #fff; }
+  .kw-txt { max-width: 170px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; cursor: pointer; }
+  .kw-count { font-size: 11px; opacity: .7; }
+  .kw-spin { display: inline-block; width: 12px; text-align: center; font-size: 11px; }
+  .kw-spin.on { animation: kwspin .9s linear infinite; }
+  @keyframes kwspin { to { transform: rotate(360deg); } }
+  .kw-btn { border: none; background: transparent; cursor: pointer; font-size: 11px;
+    line-height: 1; padding: 4px 5px; border-radius: 50%; color: inherit; opacity: .6; }
+  .kw-btn:hover { opacity: 1; background: rgba(15,20,25,.09); }
+  .kw-chip.active .kw-btn:hover { background: rgba(255,255,255,.26); }
+  .kw-chip .kw-del:hover { background: #f4212e; color: #fff; opacity: 1; }
+  /* 「全部」chip 是融合视图入口，比其他关键词 chip 稍重一档 */
+  .kw-chip.kw-all { font-weight: 600; }
+  .kw-chip.kw-all .kw-txt { cursor: pointer; }
+  /* 融合视图：卡片上标出这条来自哪个关键词（混排后否则看不出它为什么出现） */
+  .bm-card .kw-src { margin-left: auto; max-width: 108px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #1d9bf0;
+    background: rgba(29,155,240,.1); border-radius: 999px; padding: 2px 8px; }
+  .bm-card .kw-src + .time { margin-left: 6px; }
+  .kw-bar-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+  .kw-hint { flex: 1; font-size: 11.5px; color: #8b98a5; line-height: 1.3; }
+  #srch-refresh-all { flex: 0 0 auto; border: 1px solid #e3e6eb; background: #fff;
+    color: #536471; border-radius: 9px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
+  #srch-refresh-all:hover:not(:disabled) { border-color: #1d9bf0; color: #1d9bf0; }
+  #srch-refresh-all:disabled { opacity: .5; cursor: default; }
   /* 搜索过滤配置浮层 */
   .flt-modal { position: fixed; inset: 0; z-index: 60; background: rgba(15,20,25,.45);
     display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -514,9 +555,17 @@
 
   <!-- 搜索视图 -->
   <div class="view" id="view-search" style="display:none">
-    <div class="quickdl" id="srch-box">
-      <input id="srch-input" type="text" placeholder="搜索关键词、话题或 @用户，回车搜索…" />
-      <button id="srch-btn">🔍 搜索</button>
+    <!-- 多关键词：每个关键词一份独立缓存，可单独切换查看 / 单独重搜 / 移除 -->
+    <div class="kw-bar">
+      <div class="quickdl" id="srch-box">
+        <input id="srch-input" type="text" placeholder="输入关键词，回车添加并搜索…" />
+        <button id="srch-add" title="添加为关键词并立即搜索">＋ 添加</button>
+      </div>
+      <div class="kw-chips" id="srch-chips"></div>
+      <div class="kw-bar-foot">
+        <span class="kw-hint">点关键词切换查看 · ⟳ 单独重搜 · ✕ 移除（缓存保留）</span>
+        <button id="srch-refresh-all" title="放弃所有关键词的缓存，依次重新爬取">⟳ 全部重搜</button>
+      </div>
     </div>
     <div class="bm-toolbar">
       <span class="srch-prod" id="srch-prod">
@@ -1729,10 +1778,15 @@
     return '#/' + (ROUTE_PATH[route.name] || route.name) + (q.length ? '?' + q.join('&') : '');
   }
 
-  // 当前搜索视图的 URL 参数（读输入框与当前排序，始终反映界面真实状态）
+  // 当前搜索视图的 URL 参数（反映「正在查看的关键词」+ 当前排序）
   function searchRouteParams() {
-    const inp = $('srch-input');
-    const q = ((inp && inp.value) || '').trim();
+    // 融合视图在 URL 上就是「不带 q、只有 tab」
+    if (srchActiveKey === ALL_KEY) {
+      return { tab: srchProduct === 'Latest' ? 'latest' : 'top' };
+    }
+    // 优先用正在查看的关键词；还没有关键词时才回落到输入框里未提交的文字
+    const q = (srchActiveKey ? kwQ(srchActiveKey) : '').trim()
+      || (((srchInput && srchInput.value) || '').trim());
     const params = {};
     if (q) params.q = q;
     if (typeof srchProduct === 'string' && srchProduct) {
@@ -1767,10 +1821,19 @@
     location.hash = hash;   // 触发 hashchange → applyRoute
   }
 
-  // URL 上的搜索参数落到界面（只填框/切排序，**不发请求**）
+  // URL 上的搜索参数落到界面（只切换查看 / 只填框，**不发请求**）
   function applySearchParams(params, opts) {
-    const inp = $('srch-input');
-    if (inp && typeof params.q === 'string' && params.q) inp.value = params.q;
+    const q = (typeof params.q === 'string' ? params.q : '').trim();
+    if (q) {
+      const kk = kwKey(q);
+      if (kwEntry(kk)) {
+        // 在关键词清单里 → 切过去看它的缓存（不发请求）
+        if (kk !== srchActiveKey) { srchActiveKey = kk; saveKwList(); renderKwChips(); }
+      } else if (srchInput) {
+        // 不在清单 → 只填进输入框，绝不自动搜索，避免一进面板就替用户爬一堆词
+        srchInput.value = q;
+      }
+    }
     if (params.tab) {
       const tab = String(params.tab).toLowerCase() === 'latest' ? 'Latest' : 'Top';
       if (tab !== srchProduct) setSrchProduct(tab, { silent: true });
@@ -1863,7 +1926,10 @@
     tbRefresh.classList.add('spinning');
     try {
       if (activeView === 'browse') { await refreshBrowseKeepPos(); }
-      else if (activeView === 'search') { await doSearch(); }
+      // 刷搜索 = 重新搜索当前正在看的关键词；还没有关键词时按输入框内容添加
+      else if (activeView === 'search') {
+        await (srchActiveKey ? refreshKeyword(srchActiveKey) : doSearch());
+      }
       else if (activeView === 'bookmarks') { loadXBookmarks(); }
     } catch (e) { /* 忽略刷新异常 */ } finally {
       tbRefresh.classList.remove('spinning');
@@ -2793,18 +2859,9 @@
     onStale: () => { if (XLEDGER) XLEDGER.refresh().then(updateMasterLight); followServerAnchorWhenNotMaster(); }
   }) : null;
 
-  // 搜索位置续读：与首页（feed:main）一致，用框架 feed() 记「条目 id + 卡内偏移」锚点，跨设备同步。
-  // 内容缓存仍走 search:last（lww，按关键词整体替换），位置单独用 feed:search:anchor 管理；
-  // 仅在「内容缓存更新（新搜索/刷新/切模式）」时重置，避免旧位置指向新内容。
-  const XSEARCHFEED = XSTATE ? XSTATE.feed('search', {
-    container: viewSearch,
-    itemSelector: '.bm-card',
-    idAttr: 'data-tid',
-    anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
-    cap: 1500,             // 与浏览列表对齐：避免搜索翻页加载更旧被封顶淘汰
-    throttle: 200,
-    autoBind: false,       // 滚动由本面板统一处理（还要兼顾自动加载）
-  }) : null;
+  // 搜索位置续读：每个关键词各记一份「条目 id + 卡内偏移」锚点（键 feed:search:<key>:anchor），
+  // 跨设备同步。feed 实例在 srchFeed(key) 里懒创建——关键词是运行时增删的，无法预先建死。
+  // 仅在该关键词「内容缓存更新（重搜 / 切模式）」时清空锚点；切换关键词时各自保留自己的位置。
 
   // ===== 全局单缓存：所有视图与详情页共享的唯一推文内容权威副本 =====
   // 此前首页(XFEED)、搜索(search:last)、收藏(bm:list)各自存一份完整推文对象，详情又有一份
@@ -3458,23 +3515,176 @@
     }
   }
 
-  /* ---- 搜索 ---- */
+  /* ---- 搜索：多关键词，每个关键词一份独立缓存 ----
+     数据布局（XSTATE，跨设备同步）：
+       search:kwlist              lww  关键词清单 [{q,key,added_at}] + 当前查看的 key
+       search:kw:<key>            lww  该关键词 Top/Latest 两套结果 + 游标 + 时间戳
+       feed:search:<key>:anchor   lww  该关键词的浏览位置（框架 feed 管理）
+     用「每关键词一个独立键」而非一个大对象：删除 / 重搜某个关键词只写它自己的键，
+     不会整体覆盖别人的缓存——这正是「增删关键词时旧关键词缓存不重置」的关键。 */
   const srchList = $('srch-list');
   const srchLoadmore = $('srch-loadmore');
   const srchMoreBtn = $('srch-more');
   const srchInput = $('srch-input');
-  let srchLoading = false;
+  const srchChips = $('srch-chips');
+  const srchRefreshAllBtn = $('srch-refresh-all');
   let srchOlderErr = false;
-  let srchCursor = null;
+  let srchCursor = null;         // 当前关键词 + 当前 product 的翻页游标（视图态）
   let srchSeenIds = new Set();
-  let srchQuery = '';
-  let srchProduct = 'Top';  // 'Top' 热门 / 'Latest' 最新
-  // 热门 + 最新 两套结果各存一份：一次搜索同时爬取并缓存，切模式不重新抓取
-  let srchTopItems = [];
-  let srchLatestItems = [];
-  let srchCursorTop = null;
-  let srchCursorLatest = null;
-  let srchAllItems = [];   // 当前展示的那一份（= 上面某一产品的引用副本）
+  let srchProduct = 'Top';       // 'Top' 热门 / 'Latest' 最新（各关键词共用同一排序选择）
+  let srchAllItems = [];         // 当前展示的那一份（引用副本）
+
+  const KW_LIST_KEY = 'search:kwlist';
+  const KW_CACHE_PFX = 'search:kw:';
+  const ALL_KEY = '__all__';     // 融合视图的伪 key：所有关键词合成一条流（主视图）
+  let srchKwList = [];           // [{ q, key, added_at }]
+  let srchActiveKey = null;      // 当前查看的 key；ALL_KEY 表示融合视图
+  const srchCache = new Map();   // key -> {q,top,latest,cursorTop,cursorLatest,ts,err,loading}
+  const srchFeeds = new Map();   // key -> feed（每个视图一份独立的浏览位置）
+  let srchRefreshingAll = false; // 「全部重搜」进行中
+  let srchMerged = [];           // 融合结果 [{tweet_id, created_at, kw}]（内存态，按需重算）
+  let srchMergedLoading = false; // 融合视图翻页中
+
+  // 关键词 → 稳定 key：小写归一（X 搜索不区分大小写）+ 连续空白折叠 + djb2 短哈希。
+  // 不用原文做键：空格 / # / @ / 中文 进键位与 URL 都易出岔子，哈希短且稳定。
+  // 折叠空白是必要的：否则「AI art」和「AI  art」（多敲一个空格）会变成两个关键词、
+  // 各存一份缓存，用户看着像凭空多出一个重复项。注意 # 与 @ 不折叠——它们在 X
+  // 里是不同的搜索语义（话题 / 用户），显示仍用用户输入的原文。
+  function kwKey(q) {
+    const s = String(q || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
+  function kwEntry(kk) { return srchKwList.find((x) => x.key === kk) || null; }
+  function kwQ(kk) { const e = kwEntry(kk); return e ? e.q : ''; }
+  // 当前关键词的缓存对象（没有则建空壳）。结果一律经由此对象读写，不再有散落的
+  // srchTopItems / srchLatestItems 全局——切关键词就是整体换引用，不会串味。
+  function srchCur() {
+    // 融合视图没有「某一个关键词的缓存对象」，它看的是所有词合成的那条流
+    if (!srchActiveKey || srchActiveKey === ALL_KEY) return null;
+    let c = srchCache.get(srchActiveKey);
+    if (!c) {
+      c = { q: kwQ(srchActiveKey), top: [], latest: [], cursorTop: null,
+            cursorLatest: null, ts: 0, err: '', loading: false };
+      srchCache.set(srchActiveKey, c);
+    }
+    return c;
+  }
+  function curArr() {
+    if (srchActiveKey === ALL_KEY) return srchMerged;
+    const c = srchCur();
+    return c ? (srchProduct === 'Top' ? c.top : c.latest) : [];
+  }
+  function curCursorGet() {
+    // 融合视图的翻页进度分散在各关键词自己的游标上，没有单一游标
+    if (srchActiveKey === ALL_KEY) return null;
+    const c = srchCur();
+    return c ? (srchProduct === 'Top' ? c.cursorTop : c.cursorLatest) : null;
+  }
+  function curCursorSet(v) {
+    if (srchActiveKey === ALL_KEY) return;
+    const c = srchCur();
+    if (!c) return;
+    if (srchProduct === 'Top') c.cursorTop = v; else c.cursorLatest = v;
+  }
+  // 每个视图独立的位置锚点（懒创建；feed 名决定键位中段）
+  function srchFeed(kk) {
+    if (!XSTATE || !kk) return null;
+    // 融合视图按模式各记一份：两种模式的内容与顺序都不同，共用一个锚点会互相顶
+    const name = (kk === ALL_KEY) ? ('search:__all__:' + srchProduct) : ('search:' + kk);
+    if (!srchFeeds.has(name)) {
+      srchFeeds.set(name, XSTATE.feed(name, {
+        container: viewSearch, itemSelector: '.bm-card', idAttr: 'data-tid',
+        anchorScope: 'user', cap: 1500, throttle: 200, autoBind: false,
+      }));
+    }
+    return srchFeeds.get(name);
+  }
+
+  /* ---- 多关键词结果融合（融合视图是主功能）----
+     把所有关键词在当前模式下的结果合成一条流。两种模式的排序逻辑不同：
+
+     · 最新（Latest）：时间戳跨关键词天然可比 → 直接按时间倒序，无需额外设计。
+
+     · 热门（Top）：每个词的 Top 列表是 X 自己算的「相关性 + 热度 + 时效」综合序，
+       组内顺序本身就有信息量，**不该**被我们按互动数重排——那既丢掉相关性与作者
+       权威度，又有量级问题：爆款词动辄上万赞、冷门词几百赞，一比绝对互动数，冷门
+       词就永远沉底，那还不如直接看单个词。
+       所以做法是 **组内保序、组间择优归并**（k 路归并：每次从各队队首挑最该露面的
+       一个出队）：
+         出队分 = 位置分 × 新鲜度
+         位置分 = (1 + 该词已出队条数) ^ -0.7
+         新鲜度 = (1 + 年龄小时 / 48) ^ -0.5
+       位置分让「刚出过一条的词」自动让位 → 各词自然轮流露面；乘上新鲜度后，老内容
+       会适度让位给新内容。
+       两条曲线都是**调出来的，不是拍的**——最初用线性（`1/(1+0.15n)` 与
+       `1/(1+age/48)`），实测退化成了「按词分块」：内容普遍较老的词整个沉到底部。
+       因为线性位置分衰减太慢（要出 10 条才追平新鲜度差异），而线性新鲜度又太陡
+       （1h→0.98、72h→0.40，相差 2.45 倍，一乘就等于按词的新旧排序）。
+       改成幂律 + 平方根后（72h 的新鲜度是 0.63，只做调剂不做判决）：
+         A=10条(1h前) B=10条(72h前) C=3条(1h前)
+           线性：CAACACAAAAAAABBBBBBBBBB   ← B 整块沉底
+           现在：ACBACACBAABAABAABABBBBB   ← 三词交错
+         A=6条(2h前) B=6条(300h前) C=6条(600h前)
+           现在：AAABAAACBBCBCBBCCC       ← 新的略先，旧的也不埋没 */
+  function mergeTopQueues(groups) {
+    const cur = groups.map(() => 0);
+    const out = [];
+    const now = Date.now();
+    for (;;) {
+      let best = -1, bestScore = -1;
+      for (let i = 0; i < groups.length; i++) {
+        const it = groups[i].items[cur[i]];
+        if (!it) continue;
+        const posScore = 1 / Math.pow(1 + cur[i], 0.7);
+        const ageH = Math.max(0, (now - (Date.parse(it.created_at) || now)) / 3600000);
+        const s = posScore / Math.sqrt(1 + ageH / 48);
+        if (s > bestScore) { bestScore = s; best = i; }
+      }
+      if (best < 0) break;
+      const it = groups[best].items[cur[best]];
+      out.push({ tweet_id: it.tweet_id, created_at: it.created_at, kw: groups[best].kw });
+      cur[best]++;
+    }
+    return out;
+  }
+
+  // 跨关键词去重：几个词很容易搜到同一条推文，只保留排序中先出现的那份
+  // （它带的 kw 就是这条的来源标签）
+  function dedupeById(list) {
+    const seen = new Set();
+    const out = [];
+    (list || []).forEach((it) => {
+      const id = String(it.tweet_id || it.id || '');
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push(it);
+    });
+    return out;
+  }
+
+  // 重算融合流：切模式 / 切视图 / 任一词抓取完成 / 增删关键词 之后都要调
+  function rebuildMerged() {
+    const groups = [];
+    srchKwList.forEach((e) => {
+      const c = srchCache.get(e.key);
+      const arr = c ? (srchProduct === 'Top' ? (c.top || []) : (c.latest || [])) : [];
+      const items = arr
+        .map((it) => ({ tweet_id: it.tweet_id || it.id, created_at: it.created_at }))
+        .filter((x) => x.tweet_id);
+      if (items.length) groups.push({ kw: e.q, items });
+    });
+    if (srchProduct === 'Top') {
+      srchMerged = dedupeById(mergeTopQueues(groups));
+    } else {
+      const all = [];
+      groups.forEach((g) => g.items.forEach((it) => {
+        all.push({ tweet_id: it.tweet_id, created_at: it.created_at, kw: g.kw });
+      }));
+      srchMerged = dedupeById(sortItemsByTime(all));
+    }
+  }
 
   function setSrchProduct(p, opts) {
     opts = opts || {};
@@ -3489,15 +3699,26 @@
     if (!opts.silent) {
       navigate({ name: 'search', params: searchRouteParams() }, { replace: true, silent: true });
     }
-    // 已有搜索时切模式只展示已缓存的另一份（不同内容集→位置回顶部）。
-    // 但【搜索进行中不要渲染】：此时 srchTopItems / srchLatestItems 仍是上一次
-    // 搜索的旧数据（本次结果要等 Promise.all 返回才写入），此刻渲染会把
-    // 「正在搜索…」直接顶成旧缓存，用户便以为「切换模式打断了搜索」。
-    // 只切按钮状态与 URL 即可——Top/Latest 是并行爬取的两份，loadSearch 收尾时
-    // 会按新的 product 渲染本次结果，切到哪边都有正确数据，无需重新搜索。
-    if (srchQuery && !opts.silent && !srchLoading) {
-      renderSrchProduct();
-      resetSearchPos();
+    // 切模式只展示该关键词已缓存的另一份（不同内容集→位置回顶部）。
+    // 但【该关键词正在抓取时不要渲染】：此时两份结果仍是上一次的旧数据（本次结果
+    // 要等 Promise.all 返回才写入），此刻渲染会把「正在搜索…」顶成旧缓存，用户便
+    // 以为「切换模式打断了搜索」。只切按钮与 URL 即可——Top/Latest 是并行爬取的两
+    // 份，searchKeyword 收尾时会按新的 product 渲染，无需重新搜索。
+    // 切模式：融合视图要按新模式的规则重算整条流；单词视图只是换成另一份已缓存的结果
+    if (srchActiveKey && !opts.silent) {
+      const busy = (srchActiveKey === ALL_KEY)
+        ? srchKwList.some((e) => {
+            const cc = srchCache.get(e.key);
+            return !!(cc && cc.loading);
+          })
+        : !!(srchCur() && srchCur().loading);
+      if (!busy) {
+        if (srchActiveKey === ALL_KEY) rebuildMerged();
+        srchCursor = curCursorGet();
+        renderSrchProduct();
+        resetSearchPos();
+        renderKwChips();   // chip 上的条数随 product 变化
+      }
     }
   }
 
@@ -3614,17 +3835,36 @@
   }
 
   function renderSrchProduct() {
-    const arr = srchProduct === 'Top' ? srchTopItems : srchLatestItems;
+    const c = srchCur();
+    const arr = curArr();
     srchAllItems = arr.slice();
     srchSeenIds = new Set();   // 去重集合在渲染过程中逐个加入，不要预先塞满（否则全部被跳过）
-    srchCursor = srchProduct === 'Top' ? srchCursorTop : srchCursorLatest;
+    srchCursor = curCursorGet();
     srchList.innerHTML = '';
-    if (!arr.length) srchList.innerHTML = '<div class="bm-empty">该模式暂无缓存，点「搜索」重新获取。</div>';
+    if (!arr.length) {
+      if (srchActiveKey === ALL_KEY) {
+        const loading = srchKwList.some((e) => {
+          const cc = srchCache.get(e.key);
+          return !!(cc && cc.loading);
+        });
+        srchList.innerHTML = loading ? '<div class="bm-empty">正在搜索…</div>'
+          : '<div class="bm-empty">还没有结果，添加关键词后会把它们合成一条流。</div>';
+      } else {
+        srchList.innerHTML = (c && c.err)
+          ? `<div class="bm-empty err">获取失败: ${esc2(c.err)}</div>`
+          : '<div class="bm-empty">该模式暂无缓存，点关键词上的 ⟳ 获取。</div>';
+      }
+      updateFilterBadge();
+      return;
+    }
     let i = 0;
     const seenText = new Set();          // 正文去重集合（仅本轮渲染内有效）
     _fltHidden = 0;
     const filtering = filterActive();
-    sortItemsByTime(arr).forEach((it) => {
+    // 融合视图的顺序是排好的（热门＝择优归并、最新＝时间倒序），**不能再按时间重排**，
+    // 否则热门模式算出来的顺序会被抹平；单词视图沿用原来的时间倒序。
+    const ordered = (srchActiveKey === ALL_KEY) ? arr.slice() : sortItemsByTime(arr);
+    ordered.forEach((it) => {
       const id = it.tweet_id || it.id;
       if (!id || srchSeenIds.has(String(id))) return;
       srchSeenIds.add(String(id));
@@ -3633,6 +3873,8 @@
       // 过滤广告/机器人：命中规则即跳过，不渲染该卡片
       if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
       const card = renderBrowseCard(full);
+      // 融合视图：标出这条来自哪个关键词，否则混排后用户看不出它为什么出现在这里
+      if (srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
       card.classList.add('card-enter');
       card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
       srchList.appendChild(card);
@@ -3640,6 +3882,18 @@
     });
     srchLoadmore.style.display = 'none';
     updateFilterBadge();
+  }
+
+  // 给卡片打「来自哪个关键词」的小标签（仅融合视图用）
+  function addKwSourceTag(card, kw) {
+    const head = card.querySelector('.head');
+    if (!head) return;
+    const tag = document.createElement('span');
+    tag.className = 'kw-src';
+    tag.textContent = kw;
+    tag.title = '来自关键词「' + kw + '」';
+    const t = head.querySelector('.time');
+    if (t) head.insertBefore(tag, t); else head.appendChild(tag);
   }
 
   // 底部状态条（搜索）：与首页 setBrBottom 同款，常驻可见避免「以为卡住」。
@@ -3658,56 +3912,91 @@
     }
   }
 
-  async function loadSearch(reset = true) {
-    const q = (srchInput ? srchInput.value : '').trim();
-    if (!q) { srchList.innerHTML = '<div class="bm-empty">输入关键词后回车或点「搜索」。</div>'; return; }
-    if (srchLoading) return;
-    srchLoading = true;
-    if (!reset && q !== srchQuery) reset = true; // 关键词变了，视为全新搜索
-    if (reset) { srchCursor = null; srchSeenIds.clear(); srchQuery = q; }
-    if (reset) {
+  // 抓取某个关键词：Top + Latest 并行爬两份，写入**该关键词自己的**缓存键。
+  // 其他关键词的缓存一字不动，所以单独重搜不会波及它们。
+  // quiet：批量重搜时用——不在列表里刷「正在搜索」，避免逐个把当前视图顶掉。
+  async function searchKeyword(kk, opts) {
+    opts = opts || {};
+    const q = kwQ(kk);
+    if (!q) return;
+    const c = ensureKwCache(kk);
+    c.loading = true;
+    c.err = '';
+    renderKwChips();
+    if (kk === srchActiveKey && !opts.quiet) {
       setSrchBottom('hidden');
       srchList.innerHTML = '<div class="bm-empty">正在搜索…</div>';
-    } else {
-      setSrchBottom('loading');
     }
     try {
-      if (reset) {
-        // 热门 + 最新 并行爬取，一次性缓存两份；之后切模式不再打扰 X
-        const [topD, latestD] = await Promise.all([
-          fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
-          fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
-        ]);
-        // 内容只登记进全局单缓存 XTWEETS；本视图只保留成员 id + 排序（不重复存内容）
-        tweetCachePut((topD && topD.items) || []);
-        tweetCachePut((latestD && latestD.items) || []);
-        srchTopItems = toMembership((topD && topD.items) || []);
-        srchLatestItems = toMembership((latestD && latestD.items) || []);
-        srchCursorTop = (topD && topD.next_cursor) || null;
-        srchCursorLatest = (latestD && latestD.next_cursor) || null;
-        if (!srchTopItems.length && !srchLatestItems.length) {
-          const msg = (topD && topD.err) || (latestD && latestD.err) || '未知错误';
-          srchList.innerHTML = `<div class="bm-empty err">搜索失败: ${esc2(msg)}</div>`;
-          return;
-        }
-        renderSrchProduct();
-        cacheSearch();   // 落本地缓存并同步其它设备，刷新/换设备都看到这一份
-        resetSearchPos(); // 新搜索=内容整体替换，浏览位置回到顶部（避免旧位置指向新内容）
-      } else {
-        await loadSearchOlderBatch();
+      // 热门 + 最新 并行爬取，一次性缓存两份；之后切模式不再打扰 X
+      const [topD, latestD] = await Promise.all([
+        fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
+        fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
+      ]);
+      // 内容只登记进全局单缓存 XTWEETS；本视图只保留成员 id + 排序（不重复存内容）
+      tweetCachePut((topD && topD.items) || []);
+      tweetCachePut((latestD && latestD.items) || []);
+      c.top = toMembership((topD && topD.items) || []);
+      c.latest = toMembership((latestD && latestD.items) || []);
+      c.cursorTop = (topD && topD.next_cursor) || null;
+      c.cursorLatest = (latestD && latestD.next_cursor) || null;
+      c.ts = Date.now();
+      if (!c.top.length && !c.latest.length) {
+        c.err = (topD && topD.err) || (latestD && latestD.err) || '未返回结果';
       }
+      saveKwCache(kk);   // 只落这一个键，其他关键词缓存不受影响
     } catch (e) {
-      if (reset && !srchList.querySelector('.bm-card'))
-        srchList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
-      else if (!reset) srchOlderErr = true;   // 加载更旧失败：底部显示「点击重试」
+      c.err = (e && e.message) ? e.message : '请求异常';
     } finally {
-      srchLoading = false;
-      if (srchOlderErr) setSrchBottom('error');
-      else if (srchList.querySelector('.bm-empty.err')) setSrchBottom('hidden');
-      else if (!srchCursor) setSrchBottom('end');
-      else setSrchBottom('hidden');
+      c.loading = false;
+      renderKwChips();
+      // 融合视图下**任何一个词**爬完都要重算整条流；单词视图只管自己这一个
+      if (srchActiveKey === ALL_KEY || kk === srchActiveKey) {
+        if (srchActiveKey === ALL_KEY) { rebuildMerged(); srchCursor = null; }
+        renderSrchProduct();
+        if (!opts.quiet) resetSearchPos();  // 内容整体替换 → 位置回顶部
+        updateSrchBottom();
+        setTimeout(srchAutoFill, 200);
+      }
+    }
+  }
+
+  // 加载更旧（翻页）：按当前关键词 + 当前 product 追加
+  async function loadSearchOlder() {
+    const c = srchCur();
+    if (!c || c.loading || !srchCursor) return;
+    c.loading = true;
+    srchOlderErr = false;
+    setSrchBottom('loading');
+    renderKwChips();
+    try {
+      await loadSearchOlderBatch();
+    } catch (_) {
+      srchOlderErr = true;
+    } finally {
+      c.loading = false;
+      updateSrchBottom();
+      renderKwChips();
       setTimeout(srchAutoFill, 200);
     }
+  }
+
+  // 底部状态条统一收口：新搜索 / 翻页 / 切换关键词后都要重算一次
+  function updateSrchBottom() {
+    if (srchActiveKey === ALL_KEY) {
+      // 融合视图：还有任一词能往后翻就不显示底栏（滚到底自动续拉），全翻完才提示到底
+      if (srchOlderErr) setSrchBottom('error');
+      else if (srchList.querySelector('.bm-empty.err')) setSrchBottom('hidden');
+      else setSrchBottom(mergedHasMore() ? 'hidden' : 'end');
+      return;
+    }
+    const c = srchCur();
+    // 这个关键词还没获取过：底栏不显示（否则会误报「没有更多了」）
+    if (!c || !c.ts) { setSrchBottom('hidden'); return; }
+    if (srchOlderErr) setSrchBottom('error');
+    else if (srchList.querySelector('.bm-empty.err')) setSrchBottom('hidden');
+    else if (!srchCursor) setSrchBottom('end');
+    else setSrchBottom('hidden');
   }
 
   // 搜索上拉加载更旧结果（批量）：按当前 product 翻页，追加到对应那份缓存
@@ -3718,7 +4007,9 @@
     // srchProduct，会用新模式发请求、结果却 push 进旧模式的 targetArr，游标也会
     // 存错位置（串味）。固定住，让本次批次完整跑完。
     const product = srchProduct;
-    const targetArr = product === 'Top' ? srchTopItems : srchLatestItems;
+    const c = srchCur();
+    if (!c) return;
+    const targetArr = product === 'Top' ? c.top : c.latest;
     // 与全量渲染同一套过滤；seenText 跨本次批次的各页保持，才能跨页去重
     const seenText = new Set();
     const filtering = filterActive();
@@ -3726,7 +4017,7 @@
     while (srchCursor && pages < MAX_PAGES) {
       pages++;
       try {
-        const d = await fetchSearch(srchQuery, product, srchCursor);
+        const d = await fetchSearch(c.q || kwQ(srchActiveKey), product, srchCursor);
         const items = mergeTweets(d.items || []);
         if (!items.length) { srchCursor = null; break; }
         tweetCachePut(items);
@@ -3746,8 +4037,10 @@
           appended++; appendedTotal++;
         });
         srchCursor = d.next_cursor || null;
-        if (product === 'Top') srchCursorTop = srchCursor; else srchCursorLatest = srchCursor;
-        cacheSearch();
+        // 按本次批次开始时固定的 product 写回：不能读 srchProduct——用户可能已切到
+        // 另一模式，那样游标会存错位置（串味）
+        if (product === 'Top') c.cursorTop = srchCursor; else c.cursorLatest = srchCursor;
+        saveKwCache(srchActiveKey);
         if (appended === 0) { if (!srchCursor) break; continue; }
         if (appendedTotal >= BATCH_TARGET) break;
       } catch (e) { break; }
@@ -3756,39 +4049,340 @@
 
   // 搜索自动续拉：与 brAutoFill 同逻辑，加载完若仍贴底或内容不足一屏则继续。
   function srchAutoFill() {
-    if (srchLoading || !srchCursor) return;
     const cont = viewSearch;
     if (!cont) return;
     const nearBottom = cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 400;
-    if (nearBottom || cont.scrollHeight <= cont.clientHeight + 8) {
-      loadSearch(false);
+    const tooShort = cont.scrollHeight <= cont.clientHeight + 8;
+    if (srchActiveKey === ALL_KEY) {
+      // 融合视图的翻页进度分散在各关键词上，不能用单一游标判断
+      if (srchMergedLoading || !mergedHasMore()) return;
+      if (nearBottom || tooShort) loadMergedOlder();
+      return;
+    }
+    const c = srchCur();
+    if (!c || c.loading || !srchCursor) return;
+    if (nearBottom || tooShort) loadSearchOlder();
+  }
+
+  // 融合视图还有没有下一页：看各关键词在当前模式下的游标
+  function mergedHasMore() {
+    return srchKwList.some((e) => {
+      const c = srchCache.get(e.key);
+      return !!(c && (srchProduct === 'Top' ? c.cursorTop : c.cursorLatest));
+    });
+  }
+
+  // 融合视图翻页：让**所有还有货的关键词各翻一页**（并发），重算融合后整体重渲染。
+  // 不逐个词追加，是因为融合流是全局排序——新条目可能插在中间，只往末尾追加会让
+  // 顺序失真；整体重渲染后再用锚点把视口拉回用户正在看的那条，避免「内容一变多就跳走」。
+  async function loadMergedOlder() {
+    if (srchMergedLoading || !mergedHasMore()) return;
+    srchMergedLoading = true;
+    srchOlderErr = false;
+    setSrchBottom('loading');
+    const f = srchFeed(srchActiveKey);
+    const anchor = f ? f.capture() : null;
+    try {
+      const jobs = srchKwList.map((e) => {
+        const c = srchCache.get(e.key);
+        const cursor = c ? (srchProduct === 'Top' ? c.cursorTop : c.cursorLatest) : null;
+        if (!cursor) return Promise.resolve(null);
+        return fetchSearch(e.q, srchProduct, cursor)
+          .then((d) => ({ e, c, d }))
+          .catch(() => ({ e, c, d: null }));
+      });
+      const rets = await Promise.all(jobs);
+      rets.forEach((r) => {
+        if (!r || !r.d || !r.c) return;
+        const items = mergeTweets(r.d.items || []);
+        if (!items.length) {   // 这个词已经翻到底：清掉它的游标，下次不再问它要
+          if (srchProduct === 'Top') r.c.cursorTop = null; else r.c.cursorLatest = null;
+          return;
+        }
+        tweetCachePut(items);
+        const arr = (srchProduct === 'Top'
+          ? (r.c.top = r.c.top || []) : (r.c.latest = r.c.latest || []));
+        const seen = new Set(arr.map((x) => String(x.tweet_id || x.id)));
+        items.forEach((it) => {
+          const id = String(it.tweet_id || it.id || '');
+          if (!id || seen.has(id)) return;
+          seen.add(id);
+          arr.push({ tweet_id: id, created_at: it.created_at });
+        });
+        if (srchProduct === 'Top') r.c.cursorTop = r.d.next_cursor || null;
+        else r.c.cursorLatest = r.d.next_cursor || null;
+        saveKwCache(r.e.key);
+      });
+      rebuildMerged();
+      renderSrchProduct();
+      updateSrchBottom();
+    } catch (_) {
+      srchOlderErr = true;
+      updateSrchBottom();
+    } finally {
+      srchMergedLoading = false;
+      // 拉回翻页前正在看的那条：只保留首次定位，取消框架那套固定延时的多次补偿
+      // （内容刚变长时，补偿定位会落在不同的布局快照上，反而制造跳动）
+      if (f && anchor) { try { f.restore(anchor); f.cancelRestore(); } catch (_) {} }
+      renderKwChips();
+      setTimeout(srchAutoFill, 200);
     }
   }
 
-  // 搜索结果本地缓存 + 多设备同步：热门/最新两份一起存；store 用框架 XSTATE（lww）。
-  // 任一设备搜索后所有设备共用这份缓存，直到有人发起下一次搜索。
-  function cacheSearch() {
-    if (!XSTATE || !srchQuery) return;
+  /* ---- 关键词清单 / 缓存 的持久化 ----
+     清单 search:kwlist、每关键词缓存 search:kw:<key>，都是 lww（跨设备同步）。
+     写缓存只写目标那一个键，因此「重搜 A」不会覆盖 B，「删除 C」也不影响 A/B。 */
+  function saveKwList() {
+    xSet(KW_LIST_KEY, { items: srchKwList, active: srchActiveKey }, { strategy: 'lww' });
+  }
+  function loadKwList() {
+    let raw = null;
+    try { raw = XSTATE ? XSTATE.get(KW_LIST_KEY) : null; } catch (_) {}
+    const o = (raw && typeof raw === 'object') ? raw : {};
+    srchKwList = (Array.isArray(o.items) ? o.items : [])
+      .filter((x) => x && typeof x.q === 'string' && x.q.trim())
+      .map((x) => ({ q: x.q.trim(), key: x.key || kwKey(x.q), added_at: x.added_at || 0 }));
+    // 融合视图是主入口：只有明确记着某个单词的 key 时才回落到单词视图
+    const wantActive = (typeof o.active === 'string') ? o.active : null;
+    srchActiveKey = (wantActive === ALL_KEY || (wantActive && kwEntry(wantActive)))
+      ? wantActive : ALL_KEY;
+  }
+  function saveKwCache(kk) {
+    const c = srchCache.get(kk);
+    if (!XSTATE || !kk || !c) return;
     try {
-      XSTATE.set('search:last', {
-        q: srchQuery,
-        top: srchTopItems.slice(0, 200),
-        latest: srchLatestItems.slice(0, 200),
-        cursorTop: srchCursorTop,
-        cursorLatest: srchCursorLatest,
-        ts: Date.now()
+      XSTATE.set(KW_CACHE_PFX + kk, {
+        q: c.q, top: (c.top || []).slice(0, 200), latest: (c.latest || []).slice(0, 200),
+        cursorTop: c.cursorTop || null, cursorLatest: c.cursorLatest || null,
+        ts: c.ts || 0, err: c.err || '',
       }, { strategy: 'lww' });
     } catch (_) {}
+  }
+  function loadKwCache(kk) {
+    if (!kk) return null;
+    let raw = null;
+    try { raw = XSTATE ? XSTATE.get(KW_CACHE_PFX + kk) : null; } catch (_) {}
+    const prev = srchCache.get(kk);
+    if (!raw || typeof raw !== 'object') return prev || null;
+    const c = prev || {};
+    c.q = raw.q != null ? raw.q : (c.q || kwQ(kk));
+    c.top = Array.isArray(raw.top) ? raw.top : [];
+    c.latest = Array.isArray(raw.latest) ? raw.latest : [];
+    c.cursorTop = raw.cursorTop || null;
+    c.cursorLatest = raw.cursorLatest || null;
+    c.ts = Number(raw.ts) || 0;
+    c.err = raw.err || '';
+    if (c.loading == null) c.loading = false;   // loading 是内存态，不入库
+    srchCache.set(kk, c);
+    return c;
+  }
+  // 取缓存，没有就建一个空壳：新添加的关键词在服务端还没有任何记录，
+  // 若此时返回 null，抓取流程就会直接 return，表现为「添加了却搜不出来」。
+  function ensureKwCache(kk) {
+    const c = loadKwCache(kk);
+    if (c) return c;
+    const n = { q: kwQ(kk), top: [], latest: [], cursorTop: null,
+                cursorLatest: null, ts: 0, err: '', loading: false };
+    srchCache.set(kk, n);
+    return n;
+  }
+  // 兼容旧版：单关键词时代的结果存在 search:last，升级后把它作为第一个关键词导入，
+  // 免得用户一升级就发现上次搜的东西全没了。
+  function migrateLegacySearch() {
+    if (srchKwList.length) return;
+    let old = null;
+    try { old = XSTATE ? XSTATE.get('search:last') : null; } catch (_) {}
+    if (!old || !old.q) return;
+    const q = String(old.q).trim();
+    const kk = kwKey(q);
+    srchKwList.push({ q, key: kk, added_at: Number(old.ts) || Date.now() });
+    srchCache.set(kk, {
+      q, top: Array.isArray(old.top) ? old.top : [],
+      latest: Array.isArray(old.latest) ? old.latest : [],
+      cursorTop: old.cursorTop || null, cursorLatest: old.cursorLatest || null,
+      ts: Number(old.ts) || 0, err: '', loading: false,
+    });
+    // 不设 srchActiveKey：融合视图是主入口，导入的这个词直接进入融合流即可
+    saveKwCache(kk);
+    saveKwList();
+  }
+  function cacheSearch() { saveKwCache(srchActiveKey); }   // 历史调用点保留的薄封装
+
+  /* ---- 关键词 chip 渲染 ---- */
+  function kwTimeAgo(ts) {
+    if (!ts) return '尚未获取';
+    const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
+    if (m < 1) return '刚刚';
+    if (m < 60) return m + ' 分钟前';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + ' 小时前';
+    return Math.floor(h / 24) + ' 天前';
+  }
+  function renderKwChips() {
+    if (!srchChips) return;
+    srchChips.innerHTML = '';
+    // 「全部」固定排最前：融合视图是主入口
+    if (srchKwList.length) {
+      const allChip = document.createElement('span');
+      allChip.className = 'kw-chip kw-all' + (srchActiveKey === ALL_KEY ? ' active' : '');
+      const allTxt = document.createElement('span');
+      allTxt.className = 'kw-txt';
+      allTxt.textContent = '全部';
+      allTxt.title = '把所有关键词的结果合成一条流（热门＝各词轮流 + 新鲜度加权，最新＝按时间）';
+      allTxt.addEventListener('click', () => activateKw(ALL_KEY));
+      const allCnt = document.createElement('span');
+      allCnt.className = 'kw-count';
+      allCnt.textContent = srchMerged.length ? String(srchMerged.length) : '—';
+      allChip.append(allTxt, allCnt);
+      srchChips.appendChild(allChip);
+    }
+    srchKwList.forEach((e) => {
+      const c = srchCache.get(e.key);
+      const chip = document.createElement('span');
+      chip.className = 'kw-chip' + (e.key === srchActiveKey ? ' active' : '')
+        + (c && c.err ? ' err' : '') + (c && c.loading ? ' loading' : '');
+      chip.dataset.key = e.key;
+      const spin = document.createElement('span');
+      spin.className = 'kw-spin' + (c && c.loading ? ' on' : '');
+      spin.textContent = (c && c.loading) ? '⟳' : '';
+      const txt = document.createElement('span');
+      txt.className = 'kw-txt';
+      txt.textContent = e.q;
+      txt.title = c && c.err ? ('上次获取失败：' + c.err) : ('最后更新 ' + kwTimeAgo(c && c.ts));
+      txt.addEventListener('click', () => activateKw(e.key));
+      const cnt = document.createElement('span');
+      cnt.className = 'kw-count';
+      if (c && c.loading) cnt.textContent = '';
+      else if (c && c.err) cnt.textContent = '失败';
+      else {
+        const n = c ? ((srchProduct === 'Top' ? (c.top || []) : (c.latest || [])).length) : 0;
+        cnt.textContent = n ? String(n) : '—';
+      }
+      const re = document.createElement('button');
+      re.className = 'kw-btn kw-re';
+      re.textContent = '⟳';
+      re.title = '重新搜索「' + e.q + '」（放弃缓存重新爬取）';
+      re.addEventListener('click', (ev) => { ev.stopPropagation(); refreshKeyword(e.key); });
+      const del = document.createElement('button');
+      del.className = 'kw-btn kw-del';
+      del.textContent = '✕';
+      del.title = '移除关键词「' + e.q + '」（缓存保留，再加回来可恢复）';
+      del.addEventListener('click', (ev) => { ev.stopPropagation(); removeKeyword(e.key); });
+      chip.append(spin, txt, cnt, re, del);
+      srchChips.appendChild(chip);
+    });
+  }
+
+  /* ---- 关键词增删 / 切换 / 重搜 ---- */
+  // 切换查看的关键词：只渲染它已缓存的内容，**不发请求**（点 ⟳ 才重爬）
+  function activateKw(kk) {
+    if (!kk) return;
+    if (kk !== ALL_KEY && !kwEntry(kk)) return;
+    if (kk !== srchActiveKey) {
+      saveSearchPos();          // 先存旧视图的浏览位置，切回来还在原处
+      srchActiveKey = kk;
+      saveKwList();
+      navigate({ name: 'search', params: { q: kwQ(kk), tab: srchProduct } },
+               { replace: true, silent: true });
+    }
+    if (kk === ALL_KEY) {
+      rebuildMerged();          // 融合流按当前模式重算
+      srchCursor = null;
+    } else {
+      loadKwCache(kk) || srchCur();   // 确保该关键词的缓存对象已就位
+      srchCursor = curCursorGet();
+    }
+    srchSeenIds = new Set();
+    renderSrchProduct();
+    srchUserScrolled = false;
+    restoreSearchScroll();
+    updateSrchBottom();
+    renderKwChips();
+  }
+  // 添加关键词：已存在则只切过去（不重复爬）；新词加入清单末尾并立即抓取
+  function addKeyword(q, opts) {
+    opts = opts || {};
+    q = String(q || '').trim();
+    if (!q) return null;
+    const kk = kwKey(q);
+    const exists = !!kwEntry(kk);
+    if (!exists) {
+      srchKwList.push({ q, key: kk, added_at: Date.now() });
+      saveKwList();
+    }
+    if (srchInput) srchInput.value = '';
+    // 已存在的词不重新爬取——用户只是想切过去看，没必要再打一次 X
+    if (exists || opts.search === false) { activateKw(kk); return kk; }
+    srchActiveKey = kk;
+    saveKwList();
+    renderKwChips();
+    searchKeyword(kk).then(() => {
+      navigate({ name: 'search', params: { q, tab: srchProduct } }, { silent: true });
+    }).catch(() => {});
+    return kk;
+  }
+  // 移除关键词：只从清单摘掉，**不动 search:kw:<key> 缓存**，
+  // 所以误删后再添加同一词，旧结果立刻回来（这正是「增删不重置缓存」）
+  function removeKeyword(kk) {
+    const i = srchKwList.findIndex((x) => x.key === kk);
+    if (i < 0) return;
+    srchKwList.splice(i, 1);
+    if (srchActiveKey === kk) {
+      srchActiveKey = srchKwList.length
+        ? srchKwList[Math.min(i, srchKwList.length - 1)].key : null;
+    }
+    saveKwList();
+    srchCache.delete(kk);          // 清内存副本；服务端缓存留着给下次添加
+    srchFeeds.delete('search:' + kk);   // srchFeeds 按 feed 名索引（= 'search:' + key）
+    renderKwChips();
+    if (srchActiveKey) activateKw(srchActiveKey);
+    else {
+      srchList.innerHTML = '<div class="bm-empty">已移除全部关键词，输入关键词后点「＋ 添加」。</div>';
+      setSrchBottom('hidden');
+    }
+  }
+  // 单个关键词重新搜索：放弃它自己的缓存重爬，其他关键词毫发无损
+  function refreshKeyword(kk) {
+    if (!kk || srchRefreshingAll) return Promise.resolve();
+    return searchKeyword(kk);   // searchKeyword 本就是全量重取 Top+Latest，无需额外参数
+  }
+  // 全部重搜：串行逐个重爬。并发容易触发 X 反爬（令牌/限流）且无法看进度，
+  // 串行更稳，chip 上的 ⟳ 与按钮进度会逐个亮起。
+  async function refreshAllKeywords() {
+    if (srchRefreshingAll || !srchKwList.length) return;
+    srchRefreshingAll = true;
+    if (srchRefreshAllBtn) srchRefreshAllBtn.disabled = true;
+    const list = srchKwList.slice();
+    try {
+      for (let i = 0; i < list.length; i++) {
+        if (srchRefreshAllBtn) srchRefreshAllBtn.textContent = `⟳ 重搜 ${i + 1}/${list.length}`;
+        await searchKeyword(list[i].key, { quiet: true });
+      }
+    } finally {
+      srchRefreshingAll = false;
+      if (srchRefreshAllBtn) {
+        srchRefreshAllBtn.disabled = false;
+        srchRefreshAllBtn.textContent = '⟳ 全部重搜';
+      }
+      renderKwChips();
+      if (srchActiveKey === ALL_KEY) rebuildMerged();
+      if (srchActiveKey) {
+        renderSrchProduct();
+        resetSearchPos();      // 全部内容都换了，位置回顶部
+        updateSrchBottom();
+      }
+    }
   }
 
   // 搜索位置记忆：与首页一致，交给框架 feed()（feed:search:anchor，跨设备同步）。
   let srchUserScrolled = false;
   let srchPosSaveTimer = null;
   function saveSearchPos() {
-    if (!XSEARCHFEED || activeView !== 'search') return;
+    if (activeView !== 'search' || !srchActiveKey) return;
     const cont = viewSearch;
     if (!cont || getComputedStyle(cont).display === 'none') return;
-    XSEARCHFEED.saveAnchor();
+    const f = srchFeed(srchActiveKey);
+    if (f) f.saveAnchor();
   }
   function scheduleSaveSearchPos() {
     if (srchPosSaveTimer) return;
@@ -3798,20 +4392,27 @@
   function resetSearchPos() {
     const cont = viewSearch;
     if (cont) cont.scrollTop = 0;
-    if (XSEARCHFEED) XSEARCHFEED.clearAnchor();
+    const f = srchFeed(srchActiveKey);   // 只清当前关键词的锚点，其他关键词位置照旧
+    if (f) f.clearAnchor();
     srchUserScrolled = false;
   }
   // 恢复到上次搜索位置：交给框架 feed()（按 id 定位 + 卡内偏移，带补偿重定位）；
   // 用户一旦自己滚动立即让位，绝不把正在看的用户拽回去。
   let _srchRestoreIv = null;
   function restoreSearchScroll() {
-    if (!XSEARCHFEED || srchUserScrolled) return;
-    if (XSEARCHFEED.restore()) return;
+    // 先收掉上一轮没跑完的重定位定时器：切换关键词时若不清理，旧 interval 会继续
+    // 按新关键词的锚点反复重定位，表现为「切过去后画面又自己跳一下」。
+    if (_srchRestoreIv) { clearInterval(_srchRestoreIv); _srchRestoreIv = null; }
+    const f0 = srchFeed(srchActiveKey);
+    if (!f0 || srchUserScrolled) return;
+    if (f0.restore()) return;
     if (_srchRestoreIv) clearInterval(_srchRestoreIv);
     let tries = 0;
     _srchRestoreIv = setInterval(() => {
       if (srchUserScrolled) { clearInterval(_srchRestoreIv); _srchRestoreIv = null; return; }
-      if ((XSEARCHFEED && XSEARCHFEED.restore()) || ++tries > 16) { clearInterval(_srchRestoreIv); _srchRestoreIv = null; }
+      // 重试期间用户可能已切到别的关键词，每次都要取当前那个的 feed
+      const f = srchFeed(srchActiveKey);
+      if ((f && f.restore()) || ++tries > 16) { clearInterval(_srchRestoreIv); _srchRestoreIv = null; }
     }, 320);
   }
 
@@ -3823,50 +4424,51 @@
     opts = opts || {};
     if (!XSTATE) return;
     try { await XSTATE.pull(); } catch (_) {}
-    let snap;
-    try { snap = XSTATE.get('search:last'); } catch (_) { return; }
+    loadKwList();
+    migrateLegacySearch();     // 旧版 search:last → 作为第一个关键词导入
+    // 每个关键词的缓存都读一遍：chip 上要显示条数与「最后更新」
+    srchKwList.forEach((e) => {
+      const c = loadKwCache(e.key);
+      if (c) tweetCachePut((c.top || []).concat(c.latest || []));  // 兼容旧版全量缓存，无害
+    });
     const wantQ = (opts.q || '').trim();
+    if (wantQ) {
+      const kk = kwKey(wantQ);
+      if (kwEntry(kk)) srchActiveKey = kk;
+      else if (srchInput) srchInput.value = wantQ;   // 不在清单：只填框，不自动搜索
+    } else {
+      srchActiveKey = ALL_KEY;   // URL 没指定关键词 → 融合视图（主入口）
+    }
     const wantTab = String(opts.tab || '').toLowerCase() === 'latest' ? 'Latest'
       : (opts.tab ? 'Top' : null);
-    if (!snap || !snap.q) {
-      if (wantQ && srchInput) srchInput.value = wantQ;
-      if (wantTab && wantTab !== srchProduct) setSrchProduct(wantTab, { silent: true });
-      srchList.innerHTML = '<div class="bm-empty">输入关键词搜索 X 推文。</div>';
-      return;
-    }
-    if (wantQ && wantQ !== snap.q) {
-      // URL 与缓存内容不符：不拿旧关键词的结果冒充，避免「地址栏与页面内容不一致」
-      if (srchInput) srchInput.value = wantQ;
-      srchQuery = '';
-      srchTopItems = []; srchLatestItems = [];
-      srchCursorTop = null; srchCursorLatest = null;
-      srchList.innerHTML = `<div class="bm-empty">点「搜索」获取「${esc2(wantQ)}」的结果。</div>`;
-      return;
-    }
-    srchInput.value = snap.q;
-    srchQuery = snap.q;
-    srchTopItems = (snap.top || []).slice();
-    srchLatestItems = (snap.latest || []).slice();
-    tweetCachePut(srchTopItems.concat(srchLatestItems));   // 兼容旧版全量缓存；新缓存只有 id，无害
-    srchCursorTop = snap.cursorTop || null;
-    srchCursorLatest = snap.cursorLatest || null;
     if (wantTab && wantTab !== srchProduct) setSrchProduct(wantTab, { silent: true });
+    renderKwChips();
+    if (!srchKwList.length) {
+      srchList.innerHTML = '<div class="bm-empty">输入关键词后点「＋ 添加」，可同时跟踪多个关键词。</div>';
+      setSrchBottom('hidden');
+      return;
+    }
+    if (srchActiveKey === ALL_KEY) { rebuildMerged(); srchCursor = null; }
+    else { loadKwCache(srchActiveKey); srchCursor = curCursorGet(); }
+    srchSeenIds = new Set();
     renderSrchProduct();
-    srchUserScrolled = false;   // 打开即尝试恢复上次搜索位置（与首页续读一致）
+    updateSrchBottom();
+    srchUserScrolled = false;   // 打开即尝试恢复上次的位置（与首页续读一致）
     restoreSearchScroll();
   }
 
+  // 输入框回车 / 点「＋ 添加」：加入清单并立即抓取（新词本来就没有缓存）
   function doSearch() {
     const q = (srchInput ? srchInput.value : '').trim();
     if (!q) return;
-    // 只有点「搜索」按钮/回车才真正请求 X 刷新缓存；URL 进来不会走到这里。
-    Promise.resolve(loadSearch(true)).then(() => {
-      navigate({ name: 'search', params: { q: srchQuery || q, tab: srchProduct } }, { silent: true });
-    });
+    addKeyword(q);
   }
-  $('srch-btn').addEventListener('click', doSearch);
+  $('srch-add').addEventListener('click', doSearch);
   srchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
-  srchMoreBtn.addEventListener('click', () => loadSearch(false));
+  srchMoreBtn.addEventListener('click', () => {
+    if (srchActiveKey === ALL_KEY) loadMergedOlder(); else loadSearchOlder();
+  });
+  if (srchRefreshAllBtn) srchRefreshAllBtn.addEventListener('click', refreshAllKeywords);
   $('srch-prod-top').addEventListener('click', () => setSrchProduct('Top'));
   $('srch-prod-latest').addEventListener('click', () => setSrchProduct('Latest'));
 
@@ -3947,9 +4549,9 @@
       if (srchScrollTimer) return;
       srchScrollTimer = setTimeout(() => {
         srchScrollTimer = null;
-        if (srchLoading || !srchCursor) return;
-        const nearBottom = srchScroll.scrollTop + srchScroll.clientHeight >= srchScroll.scrollHeight - 400;
-        if (nearBottom) loadSearch(false);
+        // 融合视图与单词视图的翻页判断不同（前者看各词游标、后者看单一游标），
+        // 统一交给 srchAutoFill 决定，避免两处逻辑各写一遍而走偏
+        srchAutoFill();
       }, 250);
     });
   }
