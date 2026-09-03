@@ -246,14 +246,18 @@
   .tab .lbl { white-space: nowrap; }
   .tab:hover { background: #eef3f7; }
   .tab.active { background: #e8f5fe; color: #1d9bf0; }
-  /* 窄面板（迷你窗）：收成图标栏，标签隐藏 */
+  /* 窄屏（手机/迷你窗）：不要竖条占横向空间，改为底部横向标签栏，内容占满宽度 */
   @media (max-width: 560px) {
-    .sidebar { width: 66px; padding: 18px 8px; align-items: stretch; }
-    .side-brand { justify-content: center; padding: 2px 0 18px; }
-    .side-brand .lbl { display: none; }
-    .tab { justify-content: center; padding: 12px 0; gap: 0; }
-    .tab .lbl { display: none; }
-    .side-foot .tb-refresh { width: 100%; }
+    .wrap { flex-direction: column; }
+    .sidebar { width: auto; order: 2; flex-direction: row; align-items: stretch;
+      padding: 4px 4px; gap: 0; border-right: none; border-top: 1px solid #e3e6eb; }
+    .side-brand { display: none; }
+    .side-nav { flex-direction: row; flex: 1; gap: 0; min-height: 0; }
+    .tab { flex: 1; flex-direction: column; justify-content: center; align-items: center;
+      gap: 2px; padding: 6px 2px; border-radius: 10px; overflow: hidden; }
+    .tab .ico { width: auto; font-size: 18px; }
+    .tab .lbl { font-size: 10.5px; line-height: 1.1; }
+    .side-foot { display: none; }
   }
   .quickdl { display: flex; gap: 6px; margin-bottom: 10px; }
   .quickdl input { flex: 1; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 12px; font-size: 13px; color: #0f1419; background: #fff; }
