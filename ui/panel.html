@@ -1192,6 +1192,15 @@
           ? 'resource_key=' + encodeURIComponent(resKey)
           : 'job_id=' + encodeURIComponent(jobId);
         const r = await fetch(`${API}/status?${qs}`, { headers: AUTH() });
+        // 任务已不存在（进程重启 / 旧 job_id 已失效）：停止轮询并清掉残留记录，
+        // 否则会一直刷 404。
+        if (r.status === 404) {
+          clearInterval(poller); poller = null;
+          jobId = null; resKey = null; saveJob(null); saveRes(null);
+          showIdle();
+          return;
+        }
+        if (!r.ok) return;
         const s = await r.json();
         if (!s.success) return;
         setProgress(s.percent, s.message || '');
