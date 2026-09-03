@@ -179,6 +179,18 @@ def create_blueprint(host):
             if len(job['logs']) > 500:
                 job['logs'] = job['logs'][-500:]
 
+    def _report_task(task_id, **fields):
+        """把下载状态/进度同步到框架统一任务表（静默失败，避免打断下载线程）。
+
+        这样任务生命周期与浏览器连接解耦：刷新/重启/多 worker 均可经 task_id 查回，
+        并在统一「任务管理器」中可见、可重试，而非只活在进程内 jobs 字典里。"""
+        if not task_id:
+            return
+        try:
+            host.tasks.update(task_id, **fields)
+        except Exception:
+            pass
+
     def _bearer():
         auth = request.headers.get('Authorization', '')
         return auth[7:] if auth.startswith('Bearer ') else auth
@@ -910,6 +922,21 @@ def create_blueprint(host):
         resource_id = _tweet_id_from_url(params.get('url') or '')
         resource_key = _resource_key(resource_id) if resource_id else None
 
+        # 登记为框架统一任务（持久化、与连接无关）：任务生命周期不再绑定浏览器连接，
+        # 刷新/重启/多 worker 均可经 task_id 查回，并在「任务管理器」中可见、可重试。
+        task_id = None
+        try:
+            _t = host.tasks.create(
+                title=params.get('title') or ('X 推文 ' + (resource_id or job_id[:8])),
+                owner_id=owner_id, status='running', progress=0,
+                stage='解析中', detail='下载任务已启动',
+                library_id=library_id,
+                params={'resource_key': resource_key, 'url': params.get('url'), 'job_id': job_id},
+            )
+            task_id = _t.get('task_id') if isinstance(_t, dict) else getattr(_t, 'task_id', None)
+        except Exception:
+            task_id = None
+
         # 查重：已完成则去重不重复拉取；running/failed 可续传（复用已下文件重新拉起）
         if resource_key:
             existing = _progress_store.get(resource_key)
@@ -1020,6 +1047,7 @@ def create_blueprint(host):
                 'done': False, 'error': None,
                 'pending_input': None, 'input_response': None,
                 'proc': proc, 'wd': wd, 'resource_key': resource_key,
+                'task_id': task_id,
                 'library_id': library_id, 'owner_id': owner_id,
                 'hidden': bool(params.get('hidden', True)),
             }
@@ -1040,6 +1068,8 @@ def create_blueprint(host):
                     if t == 'progress':
                         jobs[job_id]['percent'] = int(obj.get('percent', 0))
                         jobs[job_id]['message'] = obj.get('message', '')
+                        _report_task(task_id, progress=int(obj.get('percent', 0)),
+                                     stage='下载中', detail=obj.get('message', ''))
                         if resource_key:
                             _progress_store.update(resource_key,
                                 percent=int(obj.get('percent', 0)),
@@ -1048,6 +1078,7 @@ def create_blueprint(host):
                         _append_log(job_id, obj.get('message', ''))
                     elif t == 'error':
                         jobs[job_id]['error'] = obj.get('message')
+                        _report_task(task_id, status='failed', detail=obj.get('message', ''))
                         _append_log(job_id, 'ERROR: ' + obj.get('message', ''))
                         if resource_key:
                             _progress_store.mark_failed(resource_key, obj.get('message', '下载失败'))
@@ -1060,16 +1091,19 @@ def create_blueprint(host):
                         # 解析阶段已完成（进入预览/选择交互），进度应标满
                         jobs[job_id]['percent'] = 100
                         jobs[job_id]['message'] = inp.get('title') or '解析完成'
+                        _report_task(task_id, progress=100, stage=inp.get('title') or '解析完成')
                         wait = None if inp.get('type') == 'preview' else 30
                         input_events[job_id].wait(timeout=wait)
                         jobs[job_id]['pending_input'] = None
                     elif t == 'result':
                         # 降级路径：run.py 直接带 files（未走 /notify）
                         _ingest_files(job_id, obj.get('files', []))
+                        _report_task(task_id, status='completed', progress=100, stage='完成', detail='下载完成')
                         if resource_key:
                             _progress_store.mark_completed(resource_key, '下载完成')
             except Exception as e:
                 jobs[job_id]['error'] = str(e)
+                _report_task(task_id, status='failed', detail=str(e))
             finally:
                 try:
                     proc.stdout.close()
@@ -1085,7 +1119,8 @@ def create_blueprint(host):
                 jobs[job_id]['done'] = True
 
         threading.Thread(target=reader, daemon=True).start()
-        return jsonify({'success': True, 'job_id': job_id})
+        return jsonify({'success': True, 'job_id': job_id,
+                        'resource_key': resource_key, 'task_id': task_id})
 
     @bp.route('/notify', methods=['POST'])
     @host.login_required

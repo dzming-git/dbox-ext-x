@@ -749,7 +749,8 @@
   // 平台注入真实 API 前缀：框架 serve 面板时把 __EXT_API_PREFIX__ 替换为 /api/ext/<key>/。
   // 去掉末尾斜杠以兼容下方 API + '/xxx' 拼接；前缀不再硬编码，平台改规则只改一处。
   const API = '__EXT_API_PREFIX__'.replace(/\/$/, '');
-  const JOB_KEY = 'xd_job';  // localStorage key for active job
+  const JOB_KEY = 'xd_job';  // localStorage key for active job（进程内句柄，重启后失效）
+  const RES_KEY = 'xd_rk';   // localStorage key for resource_key（持久化句柄，刷新/重启后仍可取回进度）
 
   // ── 统一跨设备状态（框架 SDK，命名空间自动隔离为 x）──────────────────
   // 各状态的合并语义不同，必须按键声明，否则会互相覆盖/回退：
@@ -934,7 +935,7 @@
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status'), logEl = $('log'), progEl = $('prog'), progBar = $('prog-bar');
   const formEl = $('form'), previewEl = $('pv-wrap'), gridEl = $('pv-grid');
-  let jobId = null, poller = null;
+  let jobId = null, poller = null, resKey = null;
   const seenLogs = new Set();
 
   // ---- 跨 iframe 重建恢复：从 localStorage 恢复活跃任务 ----
@@ -945,11 +946,21 @@
   function restoreJob() {
     try { return localStorage.getItem(JOB_KEY) || null; } catch(_) { return null; }
   }
-  // 页面加载时检查是否有未完成任务，自动恢复轮询
+  function saveRes(rk) {
+    if (rk) { try { localStorage.setItem(RES_KEY, rk); } catch(_) {} }
+    else { try { localStorage.removeItem(RES_KEY); } catch(_) {} }
+  }
+  function restoreRes() {
+    try { return localStorage.getItem(RES_KEY) || null; } catch(_) { return null; }
+  }
+  // 页面加载时检查是否有未完成任务，自动恢复轮询。
+  // 优先用持久化的 resource_key 查进度（刷新/重启/多 worker 仍可取回），
+  // 不再依赖进程内 job_id，任务生命周期与浏览器连接解耦。
   window.addEventListener('load', () => {
     const saved = restoreJob();
     if (saved && latestToken()) {
       jobId = saved;
+      resKey = restoreRes();
       startPolling();
     }
   });
@@ -1111,9 +1122,14 @@
   function startPolling() {
     if (poller) clearInterval(poller);
     poller = setInterval(async () => {
-      if (!jobId) return;
+      if (!jobId && !resKey) return;
       try {
-        const r = await fetch(`${API}/status?job_id=${encodeURIComponent(jobId)}`, { headers: AUTH() });
+        // 优先用持久化 resource_key 查询（SQLite 持久表，刷新/重启/多 worker 均可查回）；
+        // 仅当没有 resource_key（旧任务）时才退回进程内 job_id。
+        const qs = resKey
+          ? 'resource_key=' + encodeURIComponent(resKey)
+          : 'job_id=' + encodeURIComponent(jobId);
+        const r = await fetch(`${API}/status?${qs}`, { headers: AUTH() });
         const s = await r.json();
         if (!s.success) return;
         setProgress(s.percent, s.message || '');
@@ -1130,7 +1146,7 @@
           const btn = document.createElement('button');
           btn.textContent = '← 再来一个';
           btn.style.cssText = 'margin-top:10px;background:#1d9bf0;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer;';
-          btn.onclick = () => { showIdle(); seenLogs.clear(); $('log').textContent = ''; $('status-msg').textContent = ''; progEl.style.display = 'none'; jobId = null; saveJob(null); };
+          btn.onclick = () => { showIdle(); seenLogs.clear(); $('log').textContent = ''; $('status-msg').textContent = ''; progEl.style.display = 'none'; jobId = null; resKey = null; saveJob(null); saveRes(null); };
           statusEl.appendChild(btn);
         }
       } catch (e) {}
@@ -1678,7 +1694,9 @@
       const d = await r.json();
       if (!d.success) { pushLog('提交失败: ' + (d.message || ''), true); return; }
       jobId = d.job_id;
+      resKey = d.resource_key || null;
       saveJob(jobId);
+      saveRes(resKey);
       startPolling();
     } catch (e) { pushLog('提交异常: ' + e.message, true); }
   };
