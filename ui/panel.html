@@ -269,7 +269,8 @@
   /* 视图需独立滚动：wrap 是 overflow:hidden 的 flex column，此视图占满剩余高度并滚动。
      注意：任何新增的 .view 都必须进这条规则，否则内容会溢出被裁掉且无法下滑
      （搜索/历史/缓存三个视图此前就漏在这里）。 */
-  #view-bookmarks, #view-browse, #view-search, #view-history, #view-cache {
+  #view-bookmarks, #view-browse, #view-search, #view-history, #view-cache,
+  #view-settings {
     flex: 1; overflow-y: auto; min-height: 0; padding: 12px;
   }
   .bm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -554,7 +555,7 @@
   .star { border: 1px solid var(--border, #2f3336); border-radius: 16px; background: transparent; color: inherit; padding: 4px 10px; cursor: pointer; }
   .star.on { color: #ffd400; border-color: #ffd400; }
 
-  /* ---- 首页后台预取（autocrawl）设置块 ---- */
+  /* ---- 设置页卡片块（缓存上限 / 首页 / 书签 / 喜欢 共用） ---- */
   .ac-box { border: 1px solid var(--border, #2f3336); border-radius: 12px; padding: 12px; margin-bottom: 14px; }
   .ac-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .ac-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; cursor: pointer; }
@@ -573,6 +574,8 @@
   .ac-status.err { color: #f4212e; }
   .ac-status.ok { color: #00ba7c; }
   .ac-hint { margin-top: 6px; font-size: 11.5px; color: #8899a6; line-height: 1.5; }
+  .ac-title { font-size: 14px; font-weight: 600; }
+  .ac-readonly { color: #8899a6; font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -589,6 +592,7 @@
       <button class="tab" data-view="stars"><span class="ico">⭐</span><span class="lbl">dbox 收藏</span></button>
       <button class="tab" data-view="history"><span class="ico">🕘</span><span class="lbl">历史</span></button>
       <button class="tab" data-view="cache"><span class="ico">📦</span><span class="lbl">缓存</span></button>
+      <button class="tab" data-view="settings"><span class="ico">⚙️</span><span class="lbl">设置</span></button>
     </nav>
     <div class="side-foot">
       <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新">↻</button>
@@ -643,18 +647,36 @@
 
   <!-- 缓存管理视图（P2-9） -->
   <div class="view" id="view-cache" style="display:none">
-    <!-- 首页后台预取：服务端定时抓首页 + 预下载媒体，隔几天再打开时直接出内容 -->
+    <div class="bm-toolbar">
+      <button id="mc-clear" class="secondary">🗑 清空缓存</button>
+    </div>
+    <div id="mc-stats" class="mc-stats"></div>
+    <div id="mc-list" class="bm-list"><div class="bm-empty">点开的图片/视频会缓存到本地。</div></div>
+  </div>
+
+  <!-- 设置视图：缓存上限 + 首页/书签/喜欢三类后台任务的定时与限量 -->
+  <div class="view" id="view-settings" style="display:none">
+    <div class="ac-box">
+      <div class="ac-head"><span class="ac-title">💾 媒体缓存</span></div>
+      <div class="ac-desc">图片／视频下载后缓存在本地磁盘，回看不再访问 X。超出上限时按最久未使用自动回收。</div>
+      <div class="ac-grid">
+        <label>上限(MB) <input type="number" id="st-cache-mb" min="64" max="4096" step="64" /></label>
+        <span class="ac-readonly" id="st-cache-use">—</span>
+      </div>
+      <div class="ac-hint">视频单个可达数十 MB（实测最大 89MB），图片仅百 KB 级。视频缓存过多会挤掉图片，反而更慢。</div>
+    </div>
+
     <div class="ac-box">
       <div class="ac-head">
         <label class="ac-switch">
-          <input type="checkbox" id="ac-enabled" /><span>首页后台预取</span>
+          <input type="checkbox" id="st-home-en" /><span>🏠 首页后台预取</span>
         </label>
-        <button id="ac-run" class="ac-btn">立即抓取</button>
+        <button id="st-home-run" class="ac-btn">立即运行</button>
       </div>
-      <div class="ac-desc">服务端定时抓取首页时间线，并把新推文的图片／视频提前下载到本地缓存。隔几天再打开就是现成内容，无需等待加载。抓取只写服务端、不推送给页面，因此不会改变你当前的浏览位置。</div>
+      <div class="ac-desc">服务端定时抓取首页关注流。隔几天再打开就是现成内容，无需等待。抓取只写服务端、不推送给页面，因此不会改变你当前的浏览位置。</div>
       <div class="ac-grid">
         <label>间隔
-          <select id="ac-interval">
+          <select id="st-home-iv">
             <option value="30">30 分钟</option>
             <option value="60">1 小时</option>
             <option value="120">2 小时</option>
@@ -664,29 +686,90 @@
           </select>
         </label>
         <label>每次页数
-          <select id="ac-pages">
+          <select id="st-home-pages">
             <option value="1">1 页（约 50 条）</option>
             <option value="2">2 页（约 100 条）</option>
             <option value="3">3 页（约 150 条）</option>
             <option value="5">5 页（约 250 条）</option>
           </select>
         </label>
-        <label>图片上限 <input type="number" id="ac-img" min="0" max="300" step="10" /></label>
-        <label>视频上限 <input type="number" id="ac-vid" min="0" max="50" step="1" /></label>
+        <label>图片上限 <input type="number" id="st-home-img" min="0" max="300" step="10" /></label>
+        <label>视频上限 <input type="number" id="st-home-vid" min="0" max="50" step="1" /></label>
       </div>
       <div class="ac-foot">
         <label class="ac-switch">
-          <input type="checkbox" id="ac-media" /><span>同时预缓存图片／视频</span>
+          <input type="checkbox" id="st-home-media" /><span>同时预缓存图片／视频</span>
         </label>
-        <span id="ac-status" class="ac-status"></span>
+        <span id="st-home-status" class="ac-status"></span>
       </div>
-      <div class="ac-hint">视频单个可达数十 MB，而本地缓存上限 512MB——视频预取过量会把已缓存的图片挤掉，反而更慢。建议图片放宽、视频限量。</div>
     </div>
-    <div class="bm-toolbar">
-      <button id="mc-clear" class="secondary">🗑 清空缓存</button>
+
+    <div class="ac-box">
+      <div class="ac-head">
+        <label class="ac-switch">
+          <input type="checkbox" id="st-bm-en" /><span>🔖 书签后台同步</span>
+        </label>
+        <button id="st-bm-run" class="ac-btn">立即运行</button>
+      </div>
+      <div class="ac-desc">定时把 X 书签抓到本地。此前要打开书签页才现拉（首次要转圈数秒），开启后点开即秒开。成员列表按 tweet_id 归并，不会因只翻到最近几页而抹掉更早的缓存。</div>
+      <div class="ac-grid">
+        <label>间隔
+          <select id="st-bm-iv">
+            <option value="60">1 小时</option>
+            <option value="360">6 小时</option>
+            <option value="720">12 小时</option>
+            <option value="1440">24 小时</option>
+            <option value="4320">3 天</option>
+            <option value="10080">7 天</option>
+          </select>
+        </label>
+        <label>每次页数
+          <select id="st-bm-pages">
+            <option value="1">1 页（约 50 条）</option>
+            <option value="2">2 页（约 100 条）</option>
+            <option value="3">3 页（约 150 条）</option>
+            <option value="5">5 页（约 250 条）</option>
+          </select>
+        </label>
+      </div>
+      <div class="ac-foot"><span id="st-bm-status" class="ac-status"></span></div>
     </div>
-    <div id="mc-stats" class="mc-stats"></div>
-    <div id="mc-list" class="bm-list"><div class="bm-empty">点开的图片/视频会缓存到本地。</div></div>
+
+    <div class="ac-box">
+      <div class="ac-head">
+        <label class="ac-switch">
+          <input type="checkbox" id="st-lk-en" /><span>❤️ 喜欢后台同步</span>
+        </label>
+        <button id="st-lk-run" class="ac-btn">立即运行</button>
+      </div>
+      <div class="ac-desc">定时把 X 喜欢列表抓到本地。喜欢列表通常有数百条，现拉尤其慢，开启后点开即秒开。</div>
+      <div class="ac-grid">
+        <label>间隔
+          <select id="st-lk-iv">
+            <option value="60">1 小时</option>
+            <option value="360">6 小时</option>
+            <option value="720">12 小时</option>
+            <option value="1440">24 小时</option>
+            <option value="4320">3 天</option>
+            <option value="10080">7 天</option>
+          </select>
+        </label>
+        <label>每次页数
+          <select id="st-lk-pages">
+            <option value="1">1 页（约 50 条）</option>
+            <option value="2">2 页（约 100 条）</option>
+            <option value="3">3 页（约 150 条）</option>
+            <option value="5">5 页（约 250 条）</option>
+          </select>
+        </label>
+      </div>
+      <div class="ac-foot"><span id="st-lk-status" class="ac-status"></span></div>
+    </div>
+
+    <div class="ac-box">
+      <div class="ac-head"><span class="ac-title">ℹ️ 说明</span></div>
+      <div class="ac-desc">后台任务运行在服务端，面板关闭也会照常执行；三个任务共用一个调度线程，每分钟巡检一次，改动间隔下一分钟即生效。所有设置保存在服务端，对所有设备生效。</div>
+    </div>
   </div>
 
   <!-- 浏览（首页·关注流）视图 -->
@@ -1857,6 +1940,7 @@
   const viewBrowse = $('view-browse');
   const viewHistory = $('view-history');
   const viewCache = $('view-cache');
+  const viewSettings = $('view-settings');
   const viewBookmarks = $('view-bookmarks');
   const viewSearch = $('view-search');
 
@@ -2074,6 +2158,7 @@
     viewBrowse.style.display = v === 'browse' ? '' : 'none';
     viewHistory.style.display = v === 'history' ? '' : 'none';
     viewCache.style.display = v === 'cache' ? '' : 'none';
+    viewSettings.style.display = v === 'settings' ? '' : 'none';
     viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
     viewStarsView.style.display = v === 'stars' ? '' : 'none';
     viewStars.style.display = v === 'stars' ? '' : 'none';
@@ -2091,6 +2176,8 @@
       loadHistory();
     } else if (v === 'cache') {
       loadCache();
+    } else if (v === 'settings') {
+      loadSettings();
     } else if (v === 'search') {
       // 打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）。
       // 传入 URL 上的搜索参数：URL 指定的关键词若与缓存不同，只对齐输入框、
@@ -5971,100 +6058,175 @@
     loadHistory();
   });
 
-  /* ---- 首页后台预取（autocrawl）----
-     服务端定时抓取首页时间线并预先下载图片/视频到本地缓存，用于「隔几天才看一次」
-     的场景：打开时内容已在服务端、媒体已在本地磁盘，直接渲染，无需等待加载。
-     抓取只写服务端状态、不向页面推送，所以不会改变用户当前的浏览位置——
+  /* ---- 设置页：媒体缓存上限 + 首页/书签/喜欢三类后台任务 ----
+     统一走 /settings 接口（服务端保存，对所有设备生效）。
+     后台任务只写服务端状态、不向页面推送，因此不会改变用户当前的浏览位置——
      页面侧的新推文一律走 prependNewTweets（插前记锚点、插后还原）。 */
-  const acEnabledEl = $('ac-enabled');
-  const acRunBtn = $('ac-run');
-  const acIntervalEl = $('ac-interval');
-  const acPagesEl = $('ac-pages');
-  const acImgEl = $('ac-img');
-  const acVidEl = $('ac-vid');
-  const acMediaEl = $('ac-media');
-  const acStatusEl = $('ac-status');
-  let acCfg = null;
-  let acPollIv = null;
+  const stEls = {
+    cacheMb: $('st-cache-mb'), cacheUse: $('st-cache-use'),
+    homeEn: $('st-home-en'), homeIv: $('st-home-iv'), homePages: $('st-home-pages'),
+    homeImg: $('st-home-img'), homeVid: $('st-home-vid'), homeMedia: $('st-home-media'),
+    homeRun: $('st-home-run'), homeStatus: $('st-home-status'),
+    bmEn: $('st-bm-en'), bbIv: $('st-bm-iv'), bmPages: $('st-bm-pages'),
+    bmRun: $('st-bm-run'), bmStatus: $('st-bm-status'),
+    lkEn: $('st-lk-en'), lkIv: $('st-lk-iv'), lkPages: $('st-lk-pages'),
+    lkRun: $('st-lk-run'), lkStatus: $('st-lk-status'),
+  };
+  let stCfg = null;
+  let stPollIv = null;
 
-  function acSetStatus(msg, kind) {
-    if (!acStatusEl) return;
-    acStatusEl.textContent = msg || '';
-    acStatusEl.className = 'ac-status' + (kind ? ' ' + kind : '');
+  // 下拉框赋值：当前值不在预设项里时补一项再选中。
+  // 否则 select.value 会被赋成不存在的值而静默变空——用户看到空白下拉，
+  // 既不知道当前设定是什么，也无从改起（例如经其它途径把间隔设成了 90 分钟）。
+  function stSetSel(el, val, label) {
+    if (!el) return;
+    const s = String(val);
+    if (!Array.prototype.some.call(el.options, (o) => o.value === s)) {
+      const op = document.createElement('option');
+      op.value = s;
+      op.textContent = label || s;
+      el.appendChild(op);
+    }
+    el.value = s;
+  }
+  // 分钟 → 人读文案（用于补建非预设项）
+  function fmtMinutes(v) {
+    const n = parseInt(v, 10) || 0;
+    if (n < 60) return `${n} 分钟`;
+    if (n < 1440) return `${(n / 60).toFixed(n % 60 ? 1 : 0)} 小时`;
+    return `${(n / 1440).toFixed(n % 1440 ? 1 : 0)} 天`;
   }
 
-  function acRenderState(st) {
-    if (!st) return;
-    if (st.running) { acSetStatus('正在抓取…', ''); return; }
-    if (!st.runs) { acSetStatus('尚未运行', ''); return; }
-    if (!st.last_ok) { acSetStatus('上次失败：' + (st.last_error || '未知错误'), 'err'); return; }
+  function stJobStatus(el, st) {
+    if (!el) return;
+    if (!st) { el.textContent = ''; el.className = 'ac-status'; return; }
+    if (st.running) { el.textContent = '运行中…'; el.className = 'ac-status'; return; }
+    if (!st.runs) { el.textContent = '尚未运行'; el.className = 'ac-status'; return; }
+    if (!st.last_ok) {
+      el.textContent = '上次失败：' + (st.last_error || '未知错误');
+      el.className = 'ac-status err'; return;
+    }
     const t = st.last_finish ? new Date(st.last_finish * 1000).toLocaleString() : '';
-    acSetStatus(`上次 ${t} · 推文 ${st.last_tweets} 条 · 新增媒体 ${st.last_media} 个`, 'ok');
+    el.textContent = `上次 ${t} · ${st.last_count} 条${st.last_extra ? ' · ' + st.last_extra : ''}`;
+    el.className = 'ac-status ok';
   }
 
-  async function acLoad() {
+  async function loadSettings() {
     try {
-      const r = await req(`${API}/autocrawl`);
+      const r = await req(`${API}/settings`);
       const d = await r.json();
-      if (!d.success) { acSetStatus('读取配置失败', 'err'); return; }
-      acCfg = d.config || {};
-      if (acEnabledEl) acEnabledEl.checked = !!acCfg.enabled;
-      if (acMediaEl) acMediaEl.checked = !!acCfg.prefetch_media;
-      if (acIntervalEl) acIntervalEl.value = String(acCfg.interval_min || 120);
-      if (acPagesEl) acPagesEl.value = String(acCfg.pages || 3);
-      if (acImgEl) acImgEl.value = String(acCfg.image_limit == null ? 60 : acCfg.image_limit);
-      if (acVidEl) acVidEl.value = String(acCfg.video_limit == null ? 3 : acCfg.video_limit);
-      acRenderState(d.state);
-      // 正在跑就持续跟状态，跑完自动停
-      if (d.state && d.state.running) acStartPoll(); else acStopPoll();
-    } catch (_) { acSetStatus('读取配置异常', 'err'); }
+      if (!d.success) return;
+      stCfg = d.settings || {};
+      const E = stEls;
+      if (E.cacheMb) E.cacheMb.value = String(stCfg.cache_max_mb || 512);
+      const c = d.cache || {};
+      if (E.cacheUse) {
+        const used = c.bytes || 0, max = c.max_bytes || 0;
+        const pct = max ? Math.round(used / max * 100) : 0;
+        E.cacheUse.textContent = `已用 ${fmtSize(used)} / ${fmtSize(max)}（${pct}%）`;
+      }
+      if (E.homeEn) E.homeEn.checked = !!stCfg.home_enabled;
+      stSetSel(E.homeIv, stCfg.home_interval_min || 120,
+               fmtMinutes(stCfg.home_interval_min || 120));
+      stSetSel(E.homePages, stCfg.home_pages || 3, `${stCfg.home_pages || 3} 页`);
+      if (E.homeImg) E.homeImg.value = String(stCfg.home_image_limit == null ? 60 : stCfg.home_image_limit);
+      if (E.homeVid) E.homeVid.value = String(stCfg.home_video_limit == null ? 3 : stCfg.home_video_limit);
+      if (E.homeMedia) E.homeMedia.checked = !!stCfg.home_prefetch_media;
+      if (E.bmEn) E.bmEn.checked = !!stCfg.bookmarks_enabled;
+      stSetSel(E.bbIv, stCfg.bookmarks_interval_min || 720,
+               fmtMinutes(stCfg.bookmarks_interval_min || 720));
+      stSetSel(E.bmPages, stCfg.bookmarks_pages || 2, `${stCfg.bookmarks_pages || 2} 页`);
+      if (E.lkEn) E.lkEn.checked = !!stCfg.likes_enabled;
+      stSetSel(E.lkIv, stCfg.likes_interval_min || 720,
+               fmtMinutes(stCfg.likes_interval_min || 720));
+      stSetSel(E.lkPages, stCfg.likes_pages || 2, `${stCfg.likes_pages || 2} 页`);
+      const jobs = d.jobs || {};
+      stJobStatus(E.homeStatus, jobs.home);
+      stJobStatus(E.bmStatus, jobs.bookmarks);
+      stJobStatus(E.lkStatus, jobs.likes);
+      // 有任务在跑就轮询状态，全部结束自动停
+      const busy = Object.keys(jobs).some((k) => jobs[k] && jobs[k].running);
+      if (busy) stStartPoll(); else stStopPoll();
+    } catch (_) {}
   }
 
-  function acStopPoll() {
-    if (acPollIv) { clearInterval(acPollIv); acPollIv = null; }
+  function stStopPoll() {
+    if (stPollIv) { clearInterval(stPollIv); stPollIv = null; }
   }
-  function acStartPoll() {
-    if (acPollIv) return;
-    acPollIv = setInterval(async () => {
+  function stStartPoll() {
+    if (stPollIv) return;
+    stPollIv = setInterval(async () => {
       try {
-        const r = await req(`${API}/autocrawl`);
+        const r = await req(`${API}/settings`);
         const d = await r.json();
         if (!d.success) return;
-        acRenderState(d.state);
-        if (!(d.state && d.state.running)) acStopPoll();
+        const jobs = d.jobs || {};
+        stJobStatus(stEls.homeStatus, jobs.home);
+        stJobStatus(stEls.bmStatus, jobs.bookmarks);
+        stJobStatus(stEls.lkStatus, jobs.likes);
+        const busy = Object.keys(jobs).some((k) => jobs[k] && jobs[k].running);
+        // 全部结束后再整拉一次：顺带刷新缓存占用（预取会让它变化）
+        if (!busy) { stStopPoll(); loadSettings(); }
       } catch (_) {}
     }, 2000);
   }
 
-  async function acSave(patch) {
+  async function stSave(patch) {
     try {
-      const r = await req(`${API}/autocrawl`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const r = await req(`${API}/settings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(patch),
       });
       const d = await r.json();
-      if (d.success && d.config) acCfg = d.config;
+      if (d.success && d.settings) stCfg = d.settings;
+      // 上限改动后「已用/上限」要立刻跟着变
+      if ('cache_max_mb' in patch) loadSettings();
     } catch (_) {}
   }
 
-  if (acEnabledEl) acEnabledEl.addEventListener('change', () => acSave({ enabled: acEnabledEl.checked }));
-  if (acMediaEl) acMediaEl.addEventListener('change', () => acSave({ prefetch_media: acMediaEl.checked }));
-  if (acIntervalEl) acIntervalEl.addEventListener('change', () => acSave({ interval_min: parseInt(acIntervalEl.value, 10) }));
-  if (acPagesEl) acPagesEl.addEventListener('change', () => acSave({ pages: parseInt(acPagesEl.value, 10) }));
-  if (acImgEl) acImgEl.addEventListener('change', () => acSave({ image_limit: parseInt(acImgEl.value, 10) || 0 }));
-  if (acVidEl) acVidEl.addEventListener('change', () => acSave({ video_limit: parseInt(acVidEl.value, 10) || 0 }));
+  const stE = stEls;
+  if (stE.cacheMb) stE.cacheMb.addEventListener('change',
+    () => stSave({ cache_max_mb: parseInt(stE.cacheMb.value, 10) || 512 }));
+  if (stE.homeEn) stE.homeEn.addEventListener('change',
+    () => stSave({ home_enabled: stE.homeEn.checked }));
+  if (stE.homeIv) stE.homeIv.addEventListener('change',
+    () => stSave({ home_interval_min: parseInt(stE.homeIv.value, 10) }));
+  if (stE.homePages) stE.homePages.addEventListener('change',
+    () => stSave({ home_pages: parseInt(stE.homePages.value, 10) }));
+  if (stE.homeImg) stE.homeImg.addEventListener('change',
+    () => stSave({ home_image_limit: parseInt(stE.homeImg.value, 10) || 0 }));
+  if (stE.homeVid) stE.homeVid.addEventListener('change',
+    () => stSave({ home_video_limit: parseInt(stE.homeVid.value, 10) || 0 }));
+  if (stE.homeMedia) stE.homeMedia.addEventListener('change',
+    () => stSave({ home_prefetch_media: stE.homeMedia.checked }));
+  if (stE.bmEn) stE.bmEn.addEventListener('change',
+    () => stSave({ bookmarks_enabled: stE.bmEn.checked }));
+  if (stE.bbIv) stE.bbIv.addEventListener('change',
+    () => stSave({ bookmarks_interval_min: parseInt(stE.bbIv.value, 10) }));
+  if (stE.bmPages) stE.bmPages.addEventListener('change',
+    () => stSave({ bookmarks_pages: parseInt(stE.bmPages.value, 10) }));
+  if (stE.lkEn) stE.lkEn.addEventListener('change',
+    () => stSave({ likes_enabled: stE.lkEn.checked }));
+  if (stE.lkIv) stE.lkIv.addEventListener('change',
+    () => stSave({ likes_interval_min: parseInt(stE.lkIv.value, 10) }));
+  if (stE.lkPages) stE.lkPages.addEventListener('change',
+    () => stSave({ likes_pages: parseInt(stE.lkPages.value, 10) }));
 
-  if (acRunBtn) acRunBtn.addEventListener('click', async () => {
-    acRunBtn.disabled = true; acRunBtn.textContent = '抓取中…';
-    acSetStatus('正在抓取…', '');
+  async function stRun(job, btn) {
+    if (!btn) return;
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '运行中…';
     try {
-      const r = await req(`${API}/autocrawl/run`, { method: 'POST' });
+      const r = await req(`${API}/settings/run/${job}`, { method: 'POST' });
       const d = await r.json();
-      if (!d.success) acSetStatus(d.message || '启动失败', 'err');
-      else acStartPoll();
-    } catch (_) { acSetStatus('启动异常', 'err'); }
-    finally { acRunBtn.disabled = false; acRunBtn.textContent = '立即抓取'; }
-  });
+      if (!d.success) alert(d.message || '启动失败');
+      else stStartPoll();
+    } catch (_) {}
+    finally { btn.disabled = false; btn.textContent = old; }
+  }
+  if (stE.homeRun) stE.homeRun.addEventListener('click', () => stRun('home', stE.homeRun));
+  if (stE.bmRun) stE.bmRun.addEventListener('click', () => stRun('bookmarks', stE.bmRun));
+  if (stE.lkRun) stE.lkRun.addEventListener('click', () => stRun('likes', stE.lkRun));
 
   /* ---- 媒体缓存管理（P2-9） ---- */
   const mcList = $('mc-list');
@@ -6078,7 +6240,6 @@
   }
 
   async function loadCache() {
-    acLoad();   // 顺带刷新后台预取的配置与运行状态（同一视图内展示）
     mcList.innerHTML = '<div class="bm-empty">加载中…</div>';
     try {
       const r = await req(`${API}/media/cache`);
