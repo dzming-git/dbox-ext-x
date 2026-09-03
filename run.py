@@ -1086,6 +1086,8 @@ _GQL_USER_TWEETS_QID = None
 _GQL_USER_TWEETS_OPN = 'UserTweets'
 _GQL_USER_BY_SCREEN_NAME_QID = None
 _GQL_USER_BY_SCREEN_NAME_OPN = 'UserByScreenName'
+_GQL_USER_BY_REST_ID_QID = None
+_GQL_USER_BY_REST_ID_OPN = 'UserByRestId'
 
 # ---- 关注列表 / 粉丝列表（Following / Followers）----
 _GQL_FOLLOWING_LIST_QID = None
@@ -1171,10 +1173,11 @@ def _user_profile_from_result(ur):
 def _extract_users(data):
     """从 Following / Followers 时间线响应提取用户资料列表与 Bottom 游标。
 
-    响应结构：data.user.result.timeline_v2.timeline.instructions（部分版本为
-    data.user.result.timeline 直接含 instructions）。用户条目 entryType 为
-    TimelineUser，资料在 content.itemContent.userResults.result（新版）或
-    content.userResults.result（旧版）；游标在 TimelineTimelineCursor(Bottom)。
+    X 新版响应结构（旧版兼容）：
+    - 用户条目 entryType 为 ``TimelineTimelineItem``（旧版 ``TimelineUser``）；
+    - 资料在 ``content.itemContent.user_results.result``（新，snake_case）或
+      ``content.itemContent.userResults.result`` / ``content.userResults.result``（旧）；
+    - 游标在 ``TimelineTimelineCursor(Bottom)``。
     """
     user = ((data.get('data', {}) or {}).get('user') or {}).get('result') or {}
     tl = (user.get('timeline_v2') or {}).get('timeline') or user.get('timeline') or {}
@@ -1187,17 +1190,23 @@ def _extract_users(data):
             c = entry.get('content') or {}
             if not isinstance(c, dict):
                 continue
+            et = c.get('entryType')
             ur = None
-            if c.get('entryType') == 'TimelineUser':
+            if et in ('TimelineUser', 'TimelineTimelineItem'):
                 ic = c.get('itemContent') or {}
-                ur = (ic.get('userResults') or {}).get('result')
+                urs = (ic.get('user_results') or ic.get('userResults') or {})
+                ur = urs.get('result')
+                if not ur:
+                    urs = (c.get('user_results') or c.get('userResults') or {})
+                    ur = urs.get('result')
             else:
-                ur = (c.get('userResults') or {}).get('result')
+                urs = (c.get('user_results') or c.get('userResults') or {})
+                ur = urs.get('result')
             if ur:
                 prof = _user_profile_from_result(ur)
                 if prof and prof.get('rest_id'):
                     users.append(prof)
-            if c.get('entryType') == 'TimelineTimelineCursor' and c.get('cursorType') == 'Bottom':
+            if et == 'TimelineTimelineCursor' and c.get('cursorType') == 'Bottom':
                 next_cursor = c.get('value')
     return users, next_cursor
 
@@ -1242,6 +1251,62 @@ def user_by_screen_name(cookie_header, screen_name, extra_headers=None, txid_fun
         if e.code == 404:
             _GQL_USER_BY_SCREEN_NAME_QID = None
             new_qid = _discover_op_qid(opener, cookie_header, _GQL_USER_BY_SCREEN_NAME_OPN)
+            if new_qid and new_qid != qid:
+                qid = new_qid
+                data = _do(qid)
+            else:
+                raise
+        else:
+            raise
+    if isinstance(data, dict) and data.get('errors'):
+        raise RuntimeError('X 返回错误: ' + '; '.join(
+            str(x.get('message', x)) for x in data['errors'] if isinstance(x, dict)))
+    ur = ((data.get('data', {}) or {}).get('user') or {}).get('result') or {}
+    if not ur:
+        raise RuntimeError('未找到该用户（可能不存在、被封禁或已注销）')
+    return _user_profile_from_result(ur)
+
+
+def user_by_rest_id(cookie_header, rest_id, extra_headers=None, txid_func=None):
+    """内部 rest_id → 用户资料（含昵称、简介、头像、关注/粉丝/推文数）。
+
+    与 user_by_screen_name 同源，仅以 userId 代替 screen_name 查询 UserByRestId。
+    X 新版 UserTweets 的 user.result 仅含 timeline、不再带资料字段，故 /me 个人
+    资料必须走本专用查询，而非从 user_tweets 的 user.result 取（那样会得到全空资料）。
+    query id 会轮换：404 说明当前 id 失效，自动重新发现后重试一次（与 user_by_screen_name 一致）。
+    """
+    global _GQL_USER_BY_REST_ID_QID
+    opener = make_opener(None)
+    qid = _GQL_USER_BY_REST_ID_QID
+    if not qid:
+        qid = _discover_op_qid(opener, cookie_header, _GQL_USER_BY_REST_ID_OPN)
+        _GQL_USER_BY_REST_ID_QID = qid
+    if not qid:
+        raise RuntimeError('未能发现 UserByRestId query id')
+    variables = {"userId": str(rest_id), "withHighlightedLabel": True}
+    def _do(qid):
+        url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_USER_BY_REST_ID_OPN}'
+               f'?variables={urllib.parse.quote(json.dumps(variables, ensure_ascii=False))}'
+               f'&features={urllib.parse.quote(json.dumps(_GQL_USER_FEATURES, ensure_ascii=False))}')
+        headers = build_headers(cookie_header, with_bearer=True)
+        if extra_headers or txid_func:
+            headers = dict(headers)
+            if extra_headers:
+                headers.update(extra_headers)
+            if txid_func:
+                try:
+                    tid = txid_func('GET', urllib.parse.urlparse(url).path)
+                    if tid:
+                        headers['x-client-transaction-id'] = tid
+                except Exception:
+                    pass
+        return _gql_fetch_json(url, opener, headers, _GQL_USER_BY_REST_ID_OPN)
+    try:
+        data = _do(qid)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            _GQL_USER_BY_REST_ID_QID = None
+            new_qid = _discover_op_qid(opener, cookie_header, _GQL_USER_BY_REST_ID_OPN)
             if new_qid and new_qid != qid:
                 qid = new_qid
                 data = _do(qid)
