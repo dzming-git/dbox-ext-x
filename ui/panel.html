@@ -1806,12 +1806,12 @@
      重要：从 URL 进来只渲染已有缓存，**绝不自动发起搜索**；只有点「搜索」按钮
      才真正请求 X 刷新缓存。
   */
-  const VIEW_ROUTES = ['browse', 'search', 'bookmarks', 'history', 'cache', 'download'];
+  const VIEW_ROUTES = ['browse', 'search', 'bookmarks', 'history', 'cache', 'download', 'stars'];
   const ROUTE_PATH = { browse: 'home', search: 'search', bookmarks: 'bookmarks',
-                       history: 'history', cache: 'cache', download: 'download' };
+                       history: 'history', cache: 'cache', download: 'download', stars: 'stars' };
   const PATH_VIEW = { home: 'browse', search: 'search', bookmarks: 'bookmarks',
                       history: 'history', cache: 'cache', download: 'download',
-                      browse: 'browse', download: 'download' };
+                      browse: 'browse', download: 'download', stars: 'stars' };
   // X 原生 URL 命名空间：把推文/用户页的 URL 对齐到 x.com 真实结构
   // （#/<seg>/<screen_name> 与 #/<seg>/<screen_name>/status/<id>）。改名只需改这一处。
   const NATIVE_SEG = 'tw';
@@ -2007,6 +2007,7 @@
     viewHistory.style.display = v === 'history' ? '' : 'none';
     viewCache.style.display = v === 'cache' ? '' : 'none';
     viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
+    viewStarsView.style.display = v === 'stars' ? '' : 'none';
     viewStars.style.display = v === 'stars' ? '' : 'none';
     viewSearch.style.display = v === 'search' ? '' : 'none';
     // 一级 URL：每个视图一个（silent=true：URL 与视图都由本次调用决定，不回环再应用一次）
@@ -2136,7 +2137,7 @@
         updateMasterLight();   // 对账后刷新主控状态灯（可能已被其它设备接管）
         startMasterPoll();     // 此后持续对账，主控被抢能及时反映到指示灯
         const v = XSTATE.get('active_view');
-        const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search'];
+        const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search', 'stars'];
         if (v && !userSwitchedView && v !== activeView && VALID.includes(v)) {
           switchView(v, { silent: true });
         }
@@ -2175,6 +2176,7 @@
   const meFollow = $('me-follow');
   const meFollowers = $('me-followers');
   const viewStars = $('me-stars');
+  const viewStarsView = $('view-stars');
   const meTabs = $('me-tabs');
   let meSub = 'xbook';
   let meLoaded = { xbook: false, likes: false, stars: false, follow: false, followers: false };
