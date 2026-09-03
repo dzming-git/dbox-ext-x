@@ -963,6 +963,12 @@
       resKey = restoreRes();
       startPolling();
     }
+    // 搜索批量任务同样断线续爬：刷新/关浏览器回来后按持久 resource_key 恢复轮询
+    const savedSrch = restoreSrchTask();
+    if (savedSrch && latestToken()) {
+      srchTaskKey = savedSrch;
+      startSearchPoll();
+    }
   });
   // token 到达时也尝试恢复（token 可能比 load 晚）
   const _origTokenHandler = null; // 标记需要在 message 监听里加恢复逻辑
@@ -4425,31 +4431,60 @@
     if (!kk || srchRefreshingAll) return Promise.resolve();
     return searchKeyword(kk);   // searchKeyword 本就是全量重取 Top+Latest，无需额外参数
   }
-  // 全部重搜：串行逐个重爬。并发容易触发 X 反爬（令牌/限流）且无法看进度，
-  // 串行更稳，chip 上的 ⟳ 与按钮进度会逐个亮起。
+  // 搜索批量任务的持久句柄（断线续爬）：resource_key 存 localStorage，刷新/关浏览器后可取回
+  let srchTaskKey = null;
+  const SRCH_TASK_KEY = 'xsearch_rk';
+  function saveSrchTask(rk) { try { if (rk) localStorage.setItem(SRCH_TASK_KEY, rk); else localStorage.removeItem(SRCH_TASK_KEY); } catch(_) {} }
+  function restoreSrchTask() { try { return localStorage.getItem(SRCH_TASK_KEY) || null; } catch(_) { return null; } }
+
+  let srchPoller = null;
+  function stopSearchPoll() { if (srchPoller) { clearInterval(srchPoller); srchPoller = null; } }
+  function startSearchPoll() {
+    if (srchPoller) clearInterval(srchPoller);
+    srchPoller = setInterval(async () => {
+      if (!srchTaskKey) return;
+      try {
+        const r = await req(`${API}/status?resource_key=${encodeURIComponent(srchTaskKey)}`);
+        const d = await r.json();
+        if (!d.success) { stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; return; }
+        if (srchRefreshAllBtn) srchRefreshAllBtn.textContent = `⟳ 爬取 ${d.percent || 0}%`;
+        if (d.done) {
+          stopSearchPoll(); saveSrchTask(null); srchTaskKey = null;
+          if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.textContent = '⟳ 全部重搜'; }
+          // 后端已把结果写进 UserState 缓存（search:kw:<key> + tweets feed），拉取最新后重渲染
+          try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
+          srchKwList.forEach((e) => loadKwCache(e.key));
+          if (srchActiveKey === ALL_KEY) rebuildMerged();
+          if (srchActiveKey) { renderSrchProduct(); resetSearchPos(); updateSrchBottom(); }
+          renderKwChips();
+        }
+      } catch (_) {}
+    }, 1000);
+  }
+
+  // 全部重搜：改为后台异步批量爬取（连接无关，可关浏览器后回来续看）。
+  // 旧实现串行同步逐个爬，跑在浏览器里——关掉浏览器剩余关键词不爬、进度也丢。
   async function refreshAllKeywords() {
     if (srchRefreshingAll || !srchKwList.length) return;
     srchRefreshingAll = true;
-    if (srchRefreshAllBtn) srchRefreshAllBtn.disabled = true;
+    if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = true; srchRefreshAllBtn.textContent = '⟳ 提交中…'; }
     const list = srchKwList.slice();
     try {
-      for (let i = 0; i < list.length; i++) {
-        if (srchRefreshAllBtn) srchRefreshAllBtn.textContent = `⟳ 重搜 ${i + 1}/${list.length}`;
-        await searchKeyword(list[i].key, { quiet: true });
-      }
+      const r = await req(`${API}/search/run`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keywords: list.map((e) => e.q), product: srchProduct }),
+      });
+      const d = await r.json();
+      if (!d.success) throw new Error(d.message || '启动失败');
+      srchTaskKey = d.resource_key || null;
+      saveSrchTask(srchTaskKey);
+      startSearchPoll();
+    } catch (e) {
+      if (srchRefreshAllBtn) srchRefreshAllBtn.textContent = '⟳ 全部重搜';
+      if (pstStat) pstStat.textContent = '启动批量爬取失败: ' + (e && e.message ? e.message : e);
     } finally {
       srchRefreshingAll = false;
-      if (srchRefreshAllBtn) {
-        srchRefreshAllBtn.disabled = false;
-        srchRefreshAllBtn.textContent = '⟳ 全部重搜';
-      }
-      renderKwChips();
-      if (srchActiveKey === ALL_KEY) rebuildMerged();
-      if (srchActiveKey) {
-        renderSrchProduct();
-        resetSearchPos();      // 全部内容都换了，位置回顶部
-        updateSrchBottom();
-      }
+      if (srchRefreshAllBtn) srchRefreshAllBtn.disabled = false;
     }
   }
 
@@ -4779,6 +4814,10 @@
         return b;
       };
       ops.appendChild(mk('应用', '切换到该方案的关键词与过滤（不自动搜索）', '', () => applyPreset(p.id)));
+      ops.appendChild(mk('运行', '后台批量爬取该方案的全部关键词（可关浏览器后回来续看）', 'run', () => {
+        applyPreset(p.id);
+        refreshAllKeywords();   // 改为后台异步任务，连接无关
+      }));
       ops.appendChild(mk('更新', '用当前关键词与过滤覆盖该方案', '', () => updatePreset(p.id)));
       ops.appendChild(mk('删除', '删除该方案（不影响当前关键词）', 'del', () => deletePreset(p.id)));
       row.appendChild(main); row.appendChild(ops);
