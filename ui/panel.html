@@ -2491,9 +2491,25 @@
       const r = await req(`${API}/stars`);
       const d = await r.json();
       if (!d.success) { viewStars.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
-      const items = d.items || [];
+      let items = d.items || [];
       starSet.clear();
       items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+      // 兜底恢复：新 dbox 星标为空时，从旧「收藏夹」(x_bookmarks.db) 取回，
+      // 避免下午重构个人页时旧收藏看似丢失；并一次性迁移到新星标存储（跨设备）。
+      if (!items.length) {
+        try {
+          const fr = await req(`${API}/bookmarks/folder`);
+          const fd = await fr.json();
+          const fitems = (fd && fd.success && fd.items) || [];
+          if (fitems.length) {
+            for (const it of fitems) {
+              try { await req(`${API}/stars`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(it) }); } catch (_) {}
+            }
+            items = fitems;
+            items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+          }
+        } catch (_) {}
+      }
       starsLoaded = true;
       if (!items.length) {
         viewStars.innerHTML = '<div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div>';
@@ -2675,6 +2691,8 @@
         const r = await req(`${API}/stars/${encodeURIComponent(tid)}`, { method: 'DELETE' });
         const d = await r.json();
         if (d.success) { starSet.delete(String(tid)); starsLoaded = false; }
+        // 同步清理旧收藏夹存储，避免兜底恢复时残留已取消的收藏
+        try { await req(`${API}/bookmarks/folder/${encodeURIComponent(tid)}`, { method: 'DELETE' }); } catch (_) {}
       } else {
         const payload = item || {};
         payload.tweet_id = tid;
@@ -2685,6 +2703,8 @@
         });
         const d = await r.json();
         if (d.success) { starSet.add(String(tid)); starsLoaded = false; }
+        // 镜像写入旧收藏夹存储，保持双源一致
+        try { await req(`${API}/bookmarks/folder`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); } catch (_) {}
       }
     } catch (e) {
       alert('收藏操作失败: ' + e.message);
@@ -2698,6 +2718,14 @@
       if (d.success && Array.isArray(d.items)) {
         starSet.clear();
         d.items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+      }
+      // 兜底：新星标为空时，从旧收藏夹补全集，保证各视图收藏按钮态正确
+      if (!starSet.size) {
+        try {
+          const fr = await req(`${API}/bookmarks/folder`);
+          const fd = await fr.json();
+          (fd && fd.items || []).forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+        } catch (_) {}
       }
     } catch (_) {}
   }
