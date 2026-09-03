@@ -244,7 +244,7 @@
   #view-bookmarks, #view-browse, #view-search, #view-history, #view-cache {
     flex: 1; overflow-y: auto; min-height: 0; padding: 12px;
   }
-  .bm-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .bm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .bm-toolbar button { flex: 1; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; border: 1px solid #e3e6eb; }
   .bm-toolbar .primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .bm-toolbar .secondary { background: #fff; color: #536471; }
@@ -256,8 +256,8 @@
   .bm-toolbar .srch-prod button:hover:not(.primary) { color: #0f1419; }
   .bm-toolbar .srch-prod button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; font-weight: 600; }
   /* 操作组：过滤 / 方案 属于「配置」操作，与排序控件分开放置在右侧 */
-  .bm-toolbar .srch-actions { display: inline-flex; align-items: center; gap: 8px;
-    margin-left: auto; flex: 0 0 auto; }
+  .bm-toolbar .srch-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    flex: 0 0 auto; }
   .bm-toolbar .srch-actions button { flex: 0 0 auto; padding: 9px 12px; font-size: 13px;
     border: 1px solid #e3e6eb; background: #fff; color: #536471; border-radius: 9px; }
   .bm-toolbar .srch-actions button:hover { border-color: #1d9bf0; color: #1d9bf0; }
