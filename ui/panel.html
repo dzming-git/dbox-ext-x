@@ -511,6 +511,10 @@
   .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
   .me-tab { flex: 1 1 auto; min-width: 84px; padding: 8px 10px; border: 1px solid var(--border, #2f3336); border-radius: 18px; background: transparent; color: inherit; cursor: pointer; font-size: 13px; }
   .me-tab.active { background: var(--accent, #1d9bf0); border-color: var(--accent, #1d9bf0); color: #fff; }
+  .me-refresh { margin-left: auto; padding: 6px 12px; border: 1px solid var(--border, #2f3336); border-radius: 18px; background: transparent; color: inherit; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .me-refresh:hover { background: var(--accent, #1d9bf0); border-color: var(--accent, #1d9bf0); color: #fff; }
+  .me-refresh-row { margin-bottom: 8px; min-height: 16px; }
+  .me-cache-age { font-size: 12px; color: #8899a6; }
   .user-card { border: 1px solid var(--border, #2f3336); border-radius: 12px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
   .user-card .head { display: flex; gap: 10px; align-items: center; }
   .user-card .avatar { width: 44px; height: 44px; border-radius: 50%; }
@@ -562,12 +566,12 @@
     <div id="me-profile" class="me-profile"><div class="bm-empty">资料加载中…</div></div>
     <div class="me-tabs" id="me-tabs">
       <button class="me-tab active" data-me="xbook">⭐ X 收藏</button>
-      <button class="me-tab" data-me="stars">🔖 dbox 收藏</button>
       <button class="me-tab" data-me="follow">👥 关注</button>
       <button class="me-tab" data-me="followers">👤 粉丝</button>
+      <button id="me-refresh" class="me-refresh" title="重新从 X 拉取（收藏/关注基本不变，手动触发）">🔄 刷新</button>
     </div>
+    <div class="me-refresh-row"><span id="me-cache-age" class="me-cache-age"></span></div>
     <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「X 收藏」加载你在 X 上收藏的推文。</div></div>
-    <div class="bm-list" id="me-stars" style="display:none"><div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div></div>
     <div class="bm-list" id="me-follow" style="display:none"><div class="bm-empty">加载你关注的人…</div></div>
     <div class="bm-list" id="me-followers" style="display:none"><div class="bm-empty">加载你的粉丝…</div></div>
   </div>
@@ -2125,13 +2129,34 @@
   /* ---- 我的 X（个人页）---- */
   const meProfile = $('me-profile');
   const meXBook = $('me-xbook');
-  const meStars = $('me-stars');
   const meFollow = $('me-follow');
   const meFollowers = $('me-followers');
   const meTabs = $('me-tabs');
   let meSub = 'xbook';
   let meLoaded = { xbook: false, stars: false, follow: false, followers: false };
   const starSet = new Set();
+  const meCacheAge = $('me-cache-age');
+  const meRefreshBtn = $('me-refresh');
+
+  // 个人页数据本地缓存：收藏/关注/粉丝/资料基本不变，打开即读缓存（瞬时），
+  // 仅用户点「刷新」才重新从 X 爬取。profile 单独存 user 字段。
+  var ME_CACHE_KEY = 'x:me:cache:v1';
+  var meCache = (function () { try { return JSON.parse(localStorage.getItem(ME_CACHE_KEY)) || {}; } catch (e) { return {}; } })();
+  function meCacheSave() { try { localStorage.setItem(ME_CACHE_KEY, JSON.stringify(meCache)); } catch (e) {} }
+  function meListGet(sub) { var c = meCache[sub]; return (c && c.items) ? c : null; }
+  function meListPut(sub, items, next_cursor) { meCache[sub] = { ts: Date.now(), items: items || [], next_cursor: next_cursor || null }; meCacheSave(); }
+  function meProfileGet() { var c = meCache.profile; return (c && c.user) ? c : null; }
+  function meProfilePut(user) { meCache.profile = { ts: Date.now(), user: user }; meCacheSave(); }
+  function meCacheAgeText(sub) {
+    var c = sub === 'profile' ? meCache.profile : meCache[sub];
+    if (!c || !c.ts) return '';
+    var s = Math.max(0, (Date.now() - c.ts) / 1000);
+    if (s < 60) return '刚刚缓存';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前缓存';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前缓存';
+    return Math.floor(s / 86400) + ' 天前缓存';
+  }
+  function updateMeCacheAge() { if (meCacheAge) meCacheAge.textContent = meCacheAgeText(meSub); }
 
   function esc2(s) {
     return String(s == null ? '' : s)
@@ -2255,9 +2280,15 @@
         return card;
         }
 
-  async function loadXBookmarks() {
-    // 先渲染本地缓存（瞬时），再拉 X 实时收藏覆盖
-    try { await restoreBookmarks(); } catch (_) {}
+  async function loadXBookmarks(force) {
+    // 缓存优先：打开即渲染本地已缓存的 X 收藏（XTWEETS + bm:list），不重新爬 X；
+    // 仅 force=true（用户点「刷新」）才重新从 X 同步。
+    if (!force) {
+      if (renderBookmarksFromLocal()) { meLoaded.xbook = true; updateMeCacheAge(); return; }
+      try { await restoreBookmarks(); } catch (_) {}
+      if (meXBook.children.length) { meLoaded.xbook = true; updateMeCacheAge(); return; }
+      // 本地/同步后仍无内容 → 首次需要真从 X 拉一次
+    }
     meXBook.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
     const all = [];
     let cursor = null;
@@ -2287,9 +2318,25 @@
       merged.forEach((it) => meXBook.appendChild(renderBmCard(it, false)));
       // 只存成员 id（不重复存内容）；完整内容在 XTWEETS
       if (XSTATE) try { XSTATE.set('bm:list', toMembership(merged).slice(0, 600), { strategy: 'lww' }); } catch (_) {}
+      if (meCacheAge) meCacheAge.textContent = '已从 X 同步 ' + merged.length + ' 条';
     } catch (e) {
       if (!all.length) meXBook.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
+  }
+
+  // 仅读本地缓存（XTWEETS + XSTATE bm:list 的成员 id），不触发任何网络请求
+  function renderBookmarksFromLocal() {
+    var cached = null;
+    try { cached = XSTATE ? XSTATE.get('bm:list') : null; } catch (_) {}
+    if (!cached || !cached.length) return false;
+    meXBook.innerHTML = '';
+    var any = false;
+    cached.forEach((entry) => {
+      var id = entry && (entry.tweet_id || entry.id);
+      var t = tweetCacheGet(id);
+      if (t) { meXBook.appendChild(renderBmCard(t, false)); any = true; }
+    });
+    return any;
   }
 
   // 收藏列表本地缓存 + 多设备同步：打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）
@@ -2317,12 +2364,11 @@
       t.classList.toggle('active', t.dataset.me === sub);
     });
     meXBook.style.display = sub === 'xbook' ? '' : 'none';
-    meStars.style.display = sub === 'stars' ? '' : 'none';
     meFollow.style.display = sub === 'follow' ? '' : 'none';
     meFollowers.style.display = sub === 'followers' ? '' : 'none';
+    updateMeCacheAge();
     if (!meLoaded[sub]) {
       if (sub === 'xbook') loadXBookmarks();
-      else if (sub === 'stars') loadStars();
       else if (sub === 'follow') loadFollowing();
       else if (sub === 'followers') loadFollowers();
     }
@@ -2330,19 +2376,37 @@
   meTabs.querySelectorAll('.me-tab').forEach((t) => {
     t.addEventListener('click', () => switchMeSub(t.dataset.me));
   });
+  if (meRefreshBtn) meRefreshBtn.addEventListener('click', refreshMe);
+  function refreshMe() {
+    loadMeProfile(true);
+    if (meSub === 'xbook') loadXBookmarks(true);
+    else if (meSub === 'follow') loadFollowing(true);
+    else if (meSub === 'followers') loadFollowers(true);
+    if (meCacheAge) meCacheAge.textContent = '正在从 X 重新拉取…';
+  }
 
-  async function loadMeProfile() {
+  async function loadMeProfile(force) {
     if (!meProfile) return;
+    var cached = meProfileGet();
+    if (!force && cached) {
+      renderMeProfile(cached.user);
+      updateMeCacheAge();
+      return;
+    }
     meProfile.innerHTML = '<div class="bm-empty">资料加载中…</div>';
     try {
       const r = await req(`${API}/me`);
       const d = await r.json();
       if (!d.success || !d.user) {
+        if (cached) { renderMeProfile(cached.user); updateMeCacheAge(); return; }
         meProfile.innerHTML = `<div class="bm-empty err">${esc2((d && d.message) || '获取个人资料失败')}</div>`;
         return;
       }
+      meProfilePut(d.user);
       renderMeProfile(d.user);
+      updateMeCacheAge();
     } catch (e) {
+      if (cached) { renderMeProfile(cached.user); updateMeCacheAge(); return; }
       meProfile.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
   }
@@ -2368,56 +2432,62 @@
       </div>`;
   }
 
-  async function loadStars() {
-    meStars.innerHTML = '<div class="bm-empty">加载中…</div>';
-    try {
-      const r = await req(`${API}/stars`);
-      const d = await r.json();
-      if (!d.success) { meStars.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
-      const items = d.items || [];
-      starSet.clear();
-      items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
-      meLoaded.stars = true;
-      if (!items.length) {
-        meStars.innerHTML = '<div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div>';
-        return;
-      }
-      tweetCachePut(items);
-      meStars.innerHTML = '';
-      items.forEach((it) => meStars.appendChild(renderBmCard(it, false)));
-    } catch (e) {
-      meStars.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+  async function loadFollowing(force) {
+    var cached = meListGet('follow');
+    if (!force && cached) {
+      renderUserList(meFollow, cached.items, '你还没有关注任何人。');
+      meLoaded.follow = true;
+      updateMeCacheAge();
+      return;
     }
-  }
-
-  async function loadFollowing() {
-    meFollow.innerHTML = '<div class="bm-empty">加载中…</div>';
+    if (!cached) meFollow.innerHTML = '<div class="bm-empty">加载中…</div>';
     try {
       const r = await req(`${API}/following?count=40`);
       const d = await r.json();
-      if (!d.success) { meFollow.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      if (!d.success) {
+        if (cached) { renderUserList(meFollow, cached.items, '你还没有关注任何人。'); updateMeCacheAge(); return; }
+        meFollow.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return;
+      }
       const users = d.items || [];
+      meListPut('follow', users, d.next_cursor);
       meLoaded.follow = true;
-      if (!users.length) { meFollow.innerHTML = '<div class="bm-empty">你还没有关注任何人。</div>'; return; }
-      meFollow.innerHTML = '';
-      users.forEach((u) => meFollow.appendChild(renderUserCard(u, 'following')));
+      renderUserList(meFollow, users, '你还没有关注任何人。');
+      updateMeCacheAge();
     } catch (e) {
+      if (cached) { renderUserList(meFollow, cached.items, '你还没有关注任何人。'); updateMeCacheAge(); return; }
       meFollow.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
   }
 
-  async function loadFollowers() {
-    meFollowers.innerHTML = '<div class="bm-empty">加载中…</div>';
+  function renderUserList(el, users, emptyMsg) {
+    if (!users.length) { el.innerHTML = `<div class="bm-empty">${emptyMsg}</div>`; return; }
+    el.innerHTML = '';
+    users.forEach((u) => el.appendChild(renderUserCard(u, el === meFollowers ? 'followers' : 'following')));
+  }
+
+  async function loadFollowers(force) {
+    var cached = meListGet('followers');
+    if (!force && cached) {
+      renderUserList(meFollowers, cached.items, '你还没有粉丝。');
+      meLoaded.followers = true;
+      updateMeCacheAge();
+      return;
+    }
+    if (!cached) meFollowers.innerHTML = '<div class="bm-empty">加载中…</div>';
     try {
       const r = await req(`${API}/followers?count=40`);
       const d = await r.json();
-      if (!d.success) { meFollowers.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      if (!d.success) {
+        if (cached) { renderUserList(meFollowers, cached.items, '你还没有粉丝。'); updateMeCacheAge(); return; }
+        meFollowers.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return;
+      }
       const users = d.items || [];
+      meListPut('followers', users, d.next_cursor);
       meLoaded.followers = true;
-      if (!users.length) { meFollowers.innerHTML = '<div class="bm-empty">你还没有粉丝。</div>'; return; }
-      meFollowers.innerHTML = '';
-      users.forEach((u) => meFollowers.appendChild(renderUserCard(u, 'followers')));
+      renderUserList(meFollowers, users, '你还没有粉丝。');
+      updateMeCacheAge();
     } catch (e) {
+      if (cached) { renderUserList(meFollowers, cached.items, '你还没有粉丝。'); updateMeCacheAge(); return; }
       meFollowers.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
   }
