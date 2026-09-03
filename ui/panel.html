@@ -733,7 +733,9 @@
   let standaloneRoute = '';
   let _lbItems = [];    // lightbox 左右切换的混合序列（图片 + 视频）
   let _lbIdx = 0;
-  const API = '/api/ext/x';
+  // 平台注入真实 API 前缀：框架 serve 面板时把 __EXT_API_PREFIX__ 替换为 /api/ext/<key>/。
+  // 去掉末尾斜杠以兼容下方 API + '/xxx' 拼接；前缀不再硬编码，平台改规则只改一处。
+  const API = '__EXT_API_PREFIX__'.replace(/\/$/, '');
   const JOB_KEY = 'xd_job';  // localStorage key for active job
 
   // ── 统一跨设备状态（框架 SDK，命名空间自动隔离为 x）──────────────────
