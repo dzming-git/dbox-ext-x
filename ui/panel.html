@@ -233,7 +233,29 @@
     background: #fff; border-right: 1px solid #e3e6eb; padding: 18px 12px; gap: 4px; }
   .side-brand { display: flex; align-items: center; gap: 10px; padding: 2px 12px 18px;
     font-weight: 800; font-size: 19px; color: #0f1419; letter-spacing: .3px; }
-  .side-brand .ico { font-size: 22px; line-height: 1; }
+  .side-brand .brand-mark { width: 22px; height: 22px; flex: 0 0 auto; fill: currentColor; }
+  .side-brand .lbl { letter-spacing: .5px; }
+
+  /* ---- SVG 图标体系 ----
+     原先满屏彩色 emoji（🏠🔍⭐🕘…）是「廉价感」的主因：各平台字形不同、
+     自带杂色、线宽风格互不统一。这里统一改为单色 SVG：
+       · stroke/fill 走 currentColor → 自动继承主题色、选中态与 hover 色；
+       · 同一套 viewBox(24) 与线宽 → 视觉重量一致；
+       · 跨平台渲染完全一致。 */
+  .ico-svg { width: 1em; height: 1em; display: inline-block; vertical-align: -.14em;
+    fill: none; stroke: currentColor; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round; }
+  .ico-svg.is-fill { fill: currentColor; stroke: none; }
+  .tab .ico-svg { width: 21px; height: 21px; vertical-align: middle; }
+  /* 按钮内的图标：与文字基线对齐，右侧留一点间隙 */
+  .bm-toolbar button .ico-svg, .bm-btn .ico-svg { width: 15px; height: 15px; margin-right: 4px; }
+  /* 推文卡片操作按钮（收藏/重新获取/下载等）：略大于纯 1em，视觉重量与文字更均衡 */
+  .actions button .ico-svg, .dt-actions button .ico-svg { width: 14px; height: 14px; margin-right: 4px; }
+  /* 统计行（评论/转推/喜欢/引用/浏览）与认证标记 */
+  .dt-counts .ico-svg { width: 14px; height: 14px; margin-right: 3px; }
+  .uprof-name .ico-svg, .name .ico-svg { width: 13px; height: 13px; }
+  .rt-icon .ico-svg { width: 13px; height: 13px; vertical-align: -.12em; }
+  .me-tab .ico-svg { width: 14px; height: 14px; margin-right: 4px; vertical-align: -.14em; }
   .side-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; min-height: 0; }
   .side-foot { padding-top: 12px; border-top: 1px solid #eef0f2; margin-top: 4px; }
   .side-foot .tb-refresh { width: 100%; height: 42px; border-radius: 999px; margin-left: 0;
@@ -554,6 +576,12 @@
   .user-card .ustats b { color: var(--text, #e7e9ea); }
   .star { border: 1px solid var(--border, #2f3336); border-radius: 16px; background: transparent; color: inherit; padding: 4px 10px; cursor: pointer; }
   .star.on { color: #ffd400; border-color: #ffd400; }
+  /* 卡片内收藏选中态：必须盖过 `.bm-card .actions button` 的 color——
+     后者特异性(0,2,1)高于 `.star.on`(0,2,0)，此前金色一直不生效、始终显示灰色。
+     金色改用略深的琥珀色：纯 #ffd400 在白底上对比度不足、发飘。 */
+  .bm-card .actions .star.on, .dt-actions .star.on {
+    color: #d99700; border-color: #f0c040; background: #fffbf0; font-weight: 600;
+  }
 
   /* ---- 设置页卡片块（缓存上限 / 首页 / 书签 / 喜欢 共用） ---- */
   .ac-box { border: 1px solid var(--border, #2f3336); border-radius: 12px; padding: 12px; margin-bottom: 14px; }
@@ -579,23 +607,118 @@
 </style>
 </head>
 <body>
+<!-- 图标精灵：全部 24×24 单色描边图标，统一 viewBox 与线宽，
+     用 currentColor 着色以自动适配主题、选中态与 hover。
+     替代原先散落各处的彩色 emoji（跨平台字形不一、风格杂、显廉价）。 -->
+<svg class="ico-sprite" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden">
+  <symbol id="xi-brand" viewBox="0 0 24 24">
+    <path d="M4 3.5h5.4L20 20.5h-5.4z"/><path d="M20 3.5h-5.4L4 20.5h5.4z"/>
+  </symbol>
+  <symbol id="xi-home" viewBox="0 0 24 24">
+    <path d="M3 10.6 12 3.4l9 7.2"/><path d="M5.6 9.5V19a1.6 1.6 0 0 0 1.6 1.6h9.6A1.6 1.6 0 0 0 18.4 19V9.5"/>
+    <path d="M9.6 20.6v-6.2h4.8v6.2"/>
+  </symbol>
+  <symbol id="xi-link" viewBox="0 0 24 24">
+    <path d="M10.6 13.4a3.8 3.8 0 0 0 5.4 0l2.2-2.2a3.8 3.8 0 0 0-5.4-5.4l-1 1"/>
+    <path d="M13.4 10.6a3.8 3.8 0 0 0-5.4 0l-2.2 2.2a3.8 3.8 0 0 0 5.4 5.4l1-1"/>
+  </symbol>
+  <symbol id="xi-search" viewBox="0 0 24 24">
+    <circle cx="11" cy="11" r="6.6"/><path d="M15.8 15.8 20.5 20.5"/>
+  </symbol>
+  <symbol id="xi-user" viewBox="0 0 24 24">
+    <circle cx="12" cy="8.2" r="3.7"/><path d="M4.8 20.4a7.2 7.2 0 0 1 14.4 0"/>
+  </symbol>
+  <symbol id="xi-users" viewBox="0 0 24 24">
+    <circle cx="9.2" cy="8.2" r="3.4"/><path d="M2.8 19.8a6.4 6.4 0 0 1 12.8 0"/>
+    <path d="M16.2 5.2a3.4 3.4 0 0 1 0 6.6"/><path d="M17.6 14.3a6.4 6.4 0 0 1 3.6 5.5"/>
+  </symbol>
+  <symbol id="xi-star" viewBox="0 0 24 24">
+    <path d="M12 3.6l2.65 5.37 5.93.86-4.29 4.18 1.01 5.9L12 17.15l-5.3 2.76 1.01-5.9L3.42 9.83l5.93-.86z"/>
+  </symbol>
+  <symbol id="xi-history" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3.4 2.1"/>
+  </symbol>
+  <symbol id="xi-archive" viewBox="0 0 24 24">
+    <path d="M3.6 7.6h16.8v10.8a1.6 1.6 0 0 1-1.6 1.6H5.2a1.6 1.6 0 0 1-1.6-1.6z"/>
+    <path d="M2.4 4.4h19.2v3.2H2.4z"/><path d="M9.6 12.4h4.8"/>
+  </symbol>
+  <symbol id="xi-settings" viewBox="0 0 24 24">
+    <path d="M4 7.5h8.5"/><path d="M17 7.5h3"/><circle cx="14.6" cy="7.5" r="2.4"/>
+    <path d="M4 16.5h3"/><path d="M11.5 16.5h8.5"/><circle cx="9.2" cy="16.5" r="2.4"/>
+  </symbol>
+  <symbol id="xi-bookmark" viewBox="0 0 24 24">
+    <path d="M6.6 3.6h10.8a1 1 0 0 1 1 1v16.2L12 16.6l-6.4 4.2V4.6a1 1 0 0 1 1-1z"/>
+  </symbol>
+  <symbol id="xi-heart" viewBox="0 0 24 24">
+    <path d="M12 20.4c-1.9-1.3-7.3-4.9-7.3-9.5a4.3 4.3 0 0 1 7.3-2.8 4.3 4.3 0 0 1 7.3 2.8c0 4.6-5.4 8.2-7.3 9.5z"/>
+  </symbol>
+  <symbol id="xi-refresh" viewBox="0 0 24 24">
+    <path d="M20.2 12a8.2 8.2 0 1 1-2.4-5.8"/><path d="M20.6 4.2v4.6h-4.6"/>
+  </symbol>
+  <symbol id="xi-download" viewBox="0 0 24 24">
+    <path d="M12 3.6v11"/><path d="M7.6 10.4 12 14.8l4.4-4.4"/><path d="M4 19.6h16"/>
+  </symbol>
+  <symbol id="xi-trash" viewBox="0 0 24 24">
+    <path d="M4.4 6.6h15.2"/><path d="M9.2 6.6V4.4h5.6v2.2"/>
+    <path d="M6.6 6.6l.9 12.6a1.2 1.2 0 0 0 1.2 1.1h6.6a1.2 1.2 0 0 0 1.2-1.1l.9-12.6"/>
+  </symbol>
+  <symbol id="xi-close" viewBox="0 0 24 24">
+    <path d="M6.4 6.4 17.6 17.6"/><path d="M17.6 6.4 6.4 17.6"/>
+  </symbol>
+  <symbol id="xi-check" viewBox="0 0 24 24"><path d="M5 12.8 9.6 17.4 19 7.4"/></symbol>
+  <symbol id="xi-comment" viewBox="0 0 24 24">
+    <path d="M20.5 12.4c0 3.8-3.8 6.9-8.5 6.9-1 0-2-.14-2.9-.4L4.6 20.4l1.2-3.3a6.5 6.5 0 0 1-2.3-4.7c0-3.8 3.8-6.9 8.5-6.9s8.5 3.1 8.5 6.9z"/>
+  </symbol>
+  <symbol id="xi-retweet" viewBox="0 0 24 24">
+    <path d="M17 2.8 20.5 6.3 17 9.8"/><path d="M20.5 6.3H8A3.5 3.5 0 0 0 4.5 9.8v1"/>
+    <path d="M7 21.2 3.5 17.7 7 14.2"/><path d="M3.5 17.7H16a3.5 3.5 0 0 0 3.5-3.5v-1"/>
+  </symbol>
+  <symbol id="xi-quote" viewBox="0 0 24 24">
+    <path d="M9 6.4c-2.1 1.3-3.4 3.5-3.4 5.8V16h3.9v-4H7.6c0-1.5.7-2.8 2.1-3.8z"/>
+    <path d="M18.2 6.4c-2.1 1.3-3.4 3.5-3.4 5.8V16h3.9v-4h-1.9c0-1.5.7-2.8 2.1-3.8z"/>
+  </symbol>
+  <symbol id="xi-eye" viewBox="0 0 24 24">
+    <path d="M2.6 12S6.2 5.9 12 5.9 21.4 12 21.4 12 17.8 18.1 12 18.1 2.6 12 2.6 12z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </symbol>
+  <symbol id="xi-arrow-left" viewBox="0 0 24 24">
+    <path d="M19.5 12H4.5"/><path d="M10.5 6 4.5 12l6 6"/>
+  </symbol>
+  <symbol id="xi-info" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.6"/><path d="M12 11.2v5"/><path d="M12 7.9h.01"/>
+  </symbol>
+  <symbol id="xi-external" viewBox="0 0 24 24">
+    <path d="M14 4.4h5.6V10"/><path d="M19.6 4.4 11.4 12.6"/>
+    <path d="M18 14.6v3.8a1.6 1.6 0 0 1-1.6 1.6H5.6A1.6 1.6 0 0 1 4 18.4V7.6A1.6 1.6 0 0 1 5.6 6h3.8"/>
+  </symbol>
+  <symbol id="xi-filter" viewBox="0 0 24 24">
+    <path d="M3.6 5.6h16.8"/><path d="M6.6 12h10.8"/><path d="M10 18.4h4"/>
+  </symbol>
+  <symbol id="xi-alert" viewBox="0 0 24 24">
+    <path d="M12 4.4 21.2 20H2.8z"/><path d="M12 10v4.2"/><path d="M12 17.2h.01"/>
+  </symbol>
+</svg>
 <div class="wrap">
   <aside class="sidebar">
-    <div class="side-brand"><span class="ico">🐦</span><span class="lbl">X</span></div>
-    <!-- 标签切换：首页（浏览）为主；链接（粘贴 X 推文链接 → 解析/预览/仅浏览 → 下载）紧随其后，作为独立页常驻导航。
-         下载只是「链接」页里的子动作，故不再单独占一个标签；资源库选择也推迟到真正点下载时才弹出。 -->
+    <div class="side-brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><use href="#xi-brand"/></svg>
+      <span class="lbl">X</span>
+    </div>
+    <!-- 标签切换：首页（浏览）为主；链接（粘贴 X 推文链接 → 解析/预览）紧随其后，作为独立页常驻导航。
+         下载只是「链接」页里的子动作，故不再单独占一个标签；资源库选择也推迟到真正点下载时才弹出。
+         标签名统一为两字，视觉重量一致；图标走 SVG 精灵（见 .ico-svg）。 -->
     <nav class="side-nav" id="tabs">
-      <button class="tab active" data-view="browse"><span class="ico">🏠</span><span class="lbl">首页</span></button>
-      <button class="tab" data-view="download"><span class="ico">🔗</span><span class="lbl">链接</span></button>
-      <button class="tab" data-view="search"><span class="ico">🔍</span><span class="lbl">搜索</span></button>
-      <button class="tab" data-view="bookmarks"><span class="ico">👤</span><span class="lbl">我的 X</span></button>
-      <button class="tab" data-view="stars"><span class="ico">⭐</span><span class="lbl">dbox 收藏</span></button>
-      <button class="tab" data-view="history"><span class="ico">🕘</span><span class="lbl">历史</span></button>
-      <button class="tab" data-view="cache"><span class="ico">📦</span><span class="lbl">缓存</span></button>
-      <button class="tab" data-view="settings"><span class="ico">⚙️</span><span class="lbl">设置</span></button>
+      <button class="tab active" data-view="browse"><span class="ico"><svg class="ico-svg"><use href="#xi-home"/></svg></span><span class="lbl">首页</span></button>
+      <button class="tab" data-view="download"><span class="ico"><svg class="ico-svg"><use href="#xi-link"/></svg></span><span class="lbl">链接</span></button>
+      <button class="tab" data-view="search"><span class="ico"><svg class="ico-svg"><use href="#xi-search"/></svg></span><span class="lbl">搜索</span></button>
+      <button class="tab" data-view="bookmarks"><span class="ico"><svg class="ico-svg"><use href="#xi-user"/></svg></span><span class="lbl">我的</span></button>
+      <button class="tab" data-view="stars"><span class="ico"><svg class="ico-svg"><use href="#xi-star"/></svg></span><span class="lbl">收藏</span></button>
+      <button class="tab" data-view="history"><span class="ico"><svg class="ico-svg"><use href="#xi-history"/></svg></span><span class="lbl">历史</span></button>
+      <button class="tab" data-view="cache"><span class="ico"><svg class="ico-svg"><use href="#xi-archive"/></svg></span><span class="lbl">缓存</span></button>
+      <button class="tab" data-view="settings"><span class="ico"><svg class="ico-svg"><use href="#xi-settings"/></svg></span><span class="lbl">设置</span></button>
     </nav>
     <div class="side-foot">
-      <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新">↻</button>
+      <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新"><svg class="ico-svg"><use href="#xi-refresh"/></svg></button>
     </div>
   </aside>
   <main class="main">
@@ -619,11 +742,11 @@
   <div class="view" id="view-bookmarks" style="display:none">
     <div id="me-profile" class="me-profile"><div class="bm-empty">资料加载中…</div></div>
     <div class="me-tabs" id="me-tabs">
-      <button class="me-tab active" data-me="xbook">🔖 书签</button>
-      <button class="me-tab" data-me="likes">❤️ 喜欢</button>
-      <button class="me-tab" data-me="follow">👥 关注</button>
-      <button class="me-tab" data-me="followers">👤 粉丝</button>
-      <button id="me-refresh" class="me-refresh" title="重新从 X 拉取（书签/喜欢/关注基本不变，手动触发）">🔄 刷新</button>
+      <button class="me-tab active" data-me="xbook"><svg class="ico-svg"><use href="#xi-bookmark"/></svg>书签</button>
+      <button class="me-tab" data-me="likes"><svg class="ico-svg"><use href="#xi-heart"/></svg>喜欢</button>
+      <button class="me-tab" data-me="follow"><svg class="ico-svg"><use href="#xi-users"/></svg>关注</button>
+      <button class="me-tab" data-me="followers"><svg class="ico-svg"><use href="#xi-user"/></svg>粉丝</button>
+      <button id="me-refresh" class="me-refresh" title="重新从 X 拉取（书签/喜欢/关注基本不变，手动触发）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>刷新</button>
     </div>
     <div class="me-refresh-row"><span id="me-cache-age" class="me-cache-age"></span></div>
     <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「书签」加载你在 X 上收藏的推文。</div></div>
@@ -632,15 +755,15 @@
     <div class="bm-list" id="me-followers" style="display:none"><div class="bm-empty">加载你的粉丝…</div></div>
   </div>
 
-  <!-- dbox 收藏视图（独立页，不在个人页内；在任意推文上点「☆ 收藏」即进入此列表） -->
+  <!-- dbox 收藏视图（独立页，不在个人页内；在任意推文上点「收藏」即进入此列表） -->
   <div class="view" id="view-stars" style="display:none">
-    <div class="bm-list" id="me-stars"><div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div></div>
+    <div class="bm-list" id="me-stars"><div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「收藏」即可加入。</div></div>
   </div>
 
   <!-- 历史视图（P1-7 本地浏览历史） -->
   <div class="view" id="view-history" style="display:none">
     <div class="bm-toolbar">
-      <button id="hs-clear" class="secondary">🗑 清空</button>
+      <button id="hs-clear" class="secondary"><svg class="ico-svg"><use href="#xi-trash"/></svg>清空</button>
     </div>
     <div id="hs-list" class="bm-list"><div class="bm-empty">浏览过的推文会记录在这里，可回看。</div></div>
   </div>
@@ -648,7 +771,7 @@
   <!-- 缓存管理视图（P2-9） -->
   <div class="view" id="view-cache" style="display:none">
     <div class="bm-toolbar">
-      <button id="mc-clear" class="secondary">🗑 清空缓存</button>
+      <button id="mc-clear" class="secondary"><svg class="ico-svg"><use href="#xi-trash"/></svg>清空缓存</button>
     </div>
     <div id="mc-stats" class="mc-stats"></div>
     <div id="mc-list" class="bm-list"><div class="bm-empty">点开的图片/视频会缓存到本地。</div></div>
@@ -657,7 +780,7 @@
   <!-- 设置视图：缓存上限 + 首页/书签/喜欢三类后台任务的定时与限量 -->
   <div class="view" id="view-settings" style="display:none">
     <div class="ac-box">
-      <div class="ac-head"><span class="ac-title">💾 媒体缓存</span></div>
+      <div class="ac-head"><span class="ac-title"><svg class="ico-svg"><use href="#xi-archive"/></svg>媒体缓存</span></div>
       <div class="ac-desc">图片／视频下载后缓存在本地磁盘，回看不再访问 X。超出上限时按最久未使用自动回收。</div>
       <div class="ac-grid">
         <label>上限(MB) <input type="number" id="st-cache-mb" min="64" max="4096" step="64" /></label>
@@ -669,7 +792,7 @@
     <div class="ac-box">
       <div class="ac-head">
         <label class="ac-switch">
-          <input type="checkbox" id="st-home-en" /><span>🏠 首页后台预取</span>
+          <input type="checkbox" id="st-home-en" /><span><svg class="ico-svg"><use href="#xi-home"/></svg>首页后台预取</span>
         </label>
         <button id="st-home-run" class="ac-btn">立即运行</button>
       </div>
@@ -707,7 +830,7 @@
     <div class="ac-box">
       <div class="ac-head">
         <label class="ac-switch">
-          <input type="checkbox" id="st-bm-en" /><span>🔖 书签后台同步</span>
+          <input type="checkbox" id="st-bm-en" /><span><svg class="ico-svg"><use href="#xi-bookmark"/></svg>书签后台同步</span>
         </label>
         <button id="st-bm-run" class="ac-btn">立即运行</button>
       </div>
@@ -738,7 +861,7 @@
     <div class="ac-box">
       <div class="ac-head">
         <label class="ac-switch">
-          <input type="checkbox" id="st-lk-en" /><span>❤️ 喜欢后台同步</span>
+          <input type="checkbox" id="st-lk-en" /><span><svg class="ico-svg"><use href="#xi-heart"/></svg>喜欢后台同步</span>
         </label>
         <button id="st-lk-run" class="ac-btn">立即运行</button>
       </div>
@@ -767,7 +890,7 @@
     </div>
 
     <div class="ac-box">
-      <div class="ac-head"><span class="ac-title">ℹ️ 说明</span></div>
+      <div class="ac-head"><span class="ac-title"><svg class="ico-svg"><use href="#xi-info"/></svg>说明</span></div>
       <div class="ac-desc">后台任务运行在服务端，面板关闭也会照常执行；三个任务共用一个调度线程，每分钟巡检一次，改动间隔下一分钟即生效。所有设置保存在服务端，对所有设备生效。</div>
     </div>
   </div>
@@ -788,22 +911,22 @@
       </div>
       <div class="kw-chips" id="srch-chips"></div>
       <div class="kw-bar-foot">
-        <span class="kw-hint">点关键词切换查看 · ⟳ 单独重搜 · ✕ 移除（缓存保留）</span>
-        <button id="srch-refresh-all" title="放弃所有关键词的缓存，依次重新爬取">⟳ 全部重搜</button>
+        <span class="kw-hint">点关键词切换查看；关键词上的按钮可单独重搜 / 移除（缓存保留）</span>
+        <button id="srch-refresh-all" title="放弃所有关键词的缓存，依次重新爬取"><svg class="ico-svg"><use href="#xi-refresh"/></svg>全部重搜</button>
       </div>
     </div>
     <div class="bm-toolbar">
       <span class="srch-actions">
-        <button id="srch-filter-btn" class="sm" title="配置搜索过滤（屏蔽广告/机器人）">🚫 过滤<span id="srch-filter-badge"></span></button>
-        <button id="srch-preset-btn" class="sm" title="把「关键词组合 + 过滤配置」存成方案，一键切换常用搜索">📋 方案<span id="srch-preset-badge"></span></button>
+        <button id="srch-filter-btn" class="sm" title="配置搜索过滤（屏蔽广告/机器人）"><svg class="ico-svg"><use href="#xi-filter"/></svg>过滤<span id="srch-filter-badge"></span></button>
+        <button id="srch-preset-btn" class="sm" title="把「关键词组合 + 过滤配置」存成方案，一键切换常用搜索"><svg class="ico-svg"><use href="#xi-bookmark"/></svg>方案<span id="srch-preset-badge"></span></button>
       </span>
     </div>
     <!-- 搜索过滤配置浮层：屏蔽关键词/用户 + 反垃圾特征 -->
     <div id="srch-filter-modal" class="flt-modal" style="display:none">
       <div class="flt-box">
         <div class="flt-head">
-          <b>🚫 搜索过滤</b>
-          <button id="flt-close" class="flt-x" title="关闭">✕</button>
+          <b><svg class="ico-svg"><use href="#xi-filter"/></svg>搜索过滤</b>
+          <button id="flt-close" class="flt-x" title="关闭"><svg class="ico-svg"><use href="#xi-close"/></svg></button>
         </div>
         <div class="flt-body">
           <label for="flt-keywords">屏蔽关键词（每行一个，正文命中即隐藏）</label>
@@ -840,7 +963,7 @@
       <div class="flt-box">
         <div class="flt-head">
           <b>📋 搜索方案</b>
-          <button id="pst-close" class="flt-x" title="关闭">✕</button>
+          <button id="pst-close" class="flt-x" title="关闭"><svg class="ico-svg"><use href="#xi-close"/></svg></button>
         </div>
         <div class="flt-body">
           <div class="pst-save">
@@ -857,8 +980,8 @@
     </div>
     <!-- 排序条：热门/最新 紧贴结果流，作为内容区的视图切换 -->
     <div class="srch-sortbar" id="srch-prod">
-      <button id="srch-prod-top" class="primary sm">🔥 热门</button>
-      <button id="srch-prod-latest" class="sm">🕐 最新</button>
+      <button id="srch-prod-top" class="primary sm">热门</button>
+      <button id="srch-prod-latest" class="sm">最新</button>
     </div>
     <div id="srch-list" class="bm-list"><div class="bm-empty">输入关键词搜索 X 推文。</div></div>
     <div class="bm-loadmore" id="srch-loadmore" style="display:none"><button id="srch-more">加载更多</button></div>
@@ -872,7 +995,7 @@
     </div>
     <div class="grid" id="pv-grid"></div>
     <div class="actions">
-      <button id="pv-download" class="primary">⬇ 下载整个帖子</button>
+      <button id="pv-download" class="primary"><svg class="ico-svg"><use href="#xi-download"/></svg>下载整个帖子</button>
       <button id="pv-cancel" class="cancel">关闭预览</button>
     </div>
   </div>
@@ -903,7 +1026,7 @@
   <div class="detail" id="detail">
     <div class="detail-box">
       <div class="detail-top">
-        <button class="detail-back" id="dt-back">← 返回</button>
+        <button class="detail-back" id="dt-back"><svg class="ico-svg"><use href="#xi-arrow-left"/></svg>返回</button>
         <span class="detail-title">推文详情</span>
       </div>
       <div class="detail-scroll" id="dt-scroll">
@@ -918,7 +1041,7 @@
   <div class="detail" id="user">
     <div class="detail-box">
       <div class="detail-top">
-        <button class="detail-back" id="user-back">← 返回</button>
+        <button class="detail-back" id="user-back"><svg class="ico-svg"><use href="#xi-arrow-left"/></svg>返回</button>
         <span class="detail-title">用户</span>
       </div>
       <div class="detail-scroll" id="user-scroll">
@@ -1669,7 +1792,7 @@
     const _vh = Math.round(_rect.height);
     v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#000;display:block`;
     const close = document.createElement('button');
-    close.className = 'bm-vclose'; close.textContent = '✕';
+    close.className = 'bm-vclose'; close.innerHTML = icon('xi-close');
     close.addEventListener('click', (e) => { e.stopPropagation(); stopInlineVideo(_inlineVid); });
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
@@ -2425,13 +2548,13 @@
       <div class="text">${linkifyMentions(item.text)}</div>
       ${mediaHtml}
       <div class="actions">
-        <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starSet.has(String(tid)) ? '★ 已收藏' : '☆ 收藏'}</button>
+        <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starLabel(starSet.has(String(tid)))}</button>
         ${inFolder
-          ? `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
-             <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
+          ? `<button class="open" data-url="${esc2(item.url || '')}">${icon('xi-external')}打开原推文</button>
+             <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}重新获取</button>
              <button class="del" data-tid="${esc2(tid)}">移出收藏夹</button>`
-          : `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
-             <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>`}
+          : `<button class="open" data-url="${esc2(item.url || '')}">${icon('xi-external')}打开原推文</button>
+             <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}重新获取</button>`}
       </div>`;
     // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
     // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
@@ -2468,7 +2591,7 @@
       await toggleStar(t, item);
       const on = starSet.has(String(t));
       b.classList.toggle('on', on);
-      b.textContent = on ? '★ 已收藏' : '☆ 收藏';
+      b.innerHTML = starLabel(on);
     }));
     // dbox 收藏（跨设备星标）统一走 toggleStar / starSet，见各卡片 .star 按钮。
     // （旧「收藏夹」本地功能已移除，renderBmCard 不再使用 inFolder 分支。）
@@ -2477,7 +2600,7 @@
         e.stopPropagation();
         reloadCardMedia(card);
         b.textContent = '获取中…';
-        setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
+        setTimeout(() => { b.innerHTML = icon('xi-refresh') + '重新获取'; }, 1500);
         }));
         return card;
         }
@@ -2658,7 +2781,7 @@
       }
       starsLoaded = true;
       if (!items.length) {
-        viewStars.innerHTML = '<div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div>';
+        viewStars.innerHTML = '<div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「收藏」即可加入。</div>';
         return;
       }
       tweetCachePut(items);
@@ -2738,7 +2861,7 @@
         <div class="uprof-head">
           ${p.avatar ? `<img class="uprof-avatar" src="${esc2(p.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : '<div class="uprof-avatar"></div>'}
           <div class="uprof-id">
-            <div class="uprof-name">${esc2(p.name || '')}${p.verified ? ' ✔' : ''}</div>
+            <div class="uprof-name">${esc2(p.name || '')}${p.verified ? ' ' + icon('xi-check') : ''}</div>
             <div class="uprof-handle">${esc2(handle)}</div>
           </div>
         </div>
@@ -2819,7 +2942,7 @@
       <div class="head">
         ${u.avatar ? `<img class="avatar" src="${esc2(u.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
         <div class="uinfo">
-          <div class="name">${esc2(u.name || '')}${u.verified ? ' ✔' : ''}</div>
+          <div class="name">${esc2(u.name || '')}${u.verified ? ' ' + icon('xi-check') : ''}</div>
           <div class="handle">${esc2(handle)}</div>
         </div>
       </div>
@@ -3197,9 +3320,9 @@
       ${mediaHtml}
       ${item.quoted ? quotedHtml(item.quoted) : ''}
       <div class="actions">
-        <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starSet.has(String(tid)) ? '★ 已收藏' : '☆ 收藏'}</button>
-        <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
-        <button class="dl" data-tid="${esc2(tid)}">⬇ 下载</button>
+        <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starLabel(starSet.has(String(tid)))}</button>
+        <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}重新获取</button>
+        <button class="dl" data-tid="${esc2(tid)}">${icon('xi-download')}下载</button>
       </div>`;
     // 点击图片/视频缩略图 → lightbox 大图/播放视频（不是打开帖子）。
     // 点击正文/标题 → 打开 DBox 内推文详情页。
@@ -3240,7 +3363,7 @@
       await toggleStar(t, item);
       const on = starSet.has(String(t));
       b.classList.toggle('on', on);
-      b.textContent = on ? '★ 已收藏' : '☆ 收藏';
+      b.innerHTML = starLabel(on);
     }));
     // 下载
     card.querySelectorAll('.dl').forEach((b) => b.addEventListener('click', () => {
@@ -3249,7 +3372,7 @@
       downloadedTweetIds.add(t);
       b.disabled = true; b.textContent = '下载中…';
       downloadTweet(tweetUrl)
-        .then((ok) => { b.textContent = ok ? '已下载 ✓' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
+        .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已下载' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
         .catch(() => { b.textContent = '下载失败'; downloadedTweetIds.delete(t); b.disabled = false; });
     }));
     // 重新获取：以推文为单位重新拉取完整内容（正文+媒体），确保列表里旧的
@@ -3352,6 +3475,17 @@
       const tb = b.created_at ? Date.parse(b.created_at) : 0;
       return tb - ta;
     });
+  }
+
+  // ---- 图标：统一走 SVG 精灵（单色、currentColor、跨平台一致）----
+  // 替换原先的彩色 emoji（☆★↻⬇…）：emoji 各平台字形不同且自带杂色，
+  // 混排时线宽与风格都不统一，是界面显廉价的主因。
+  function icon(id, cls) {
+    return `<svg class="ico-svg${cls ? ' ' + cls : ''}"><use href="#${id}"/></svg>`;
+  }
+  // 收藏按钮：未收藏描边星、已收藏实心星（is-fill）
+  function starLabel(on) {
+    return (on ? icon('xi-star', 'is-fill') : icon('xi-star')) + (on ? '已收藏' : '收藏');
   }
 
   // 信息流续读改用框架原语 DBoxState.feed()：内容缓存(union_by_id) / 视口锚点(lww) /
@@ -3863,7 +3997,7 @@
       const msg = (d && d.message) || 'X 状态异常';
       // 只有 Cookie 相关问题才让用户去凭证库；其余（网络/服务异常）引导重试
       const cookieIssue = (reason === 'no_cookie' || reason === 'incomplete' || reason === 'expired');
-      const title = cookieIssue ? '⚠️ X 登录态失效' : '⚠️ 暂时连不上 X';
+      const title = (cookieIssue ? icon('xi-alert') + 'X 登录态失效' : icon('xi-alert') + '暂时连不上 X');
       const sub = cookieIssue
         ? '请到「凭证库」中重新注册有效的 x.com Cookie（需含 auth_token 与 ct0），再刷新本面板。'
         : '这通常是网络或代理问题，与 Cookie 无关；网络恢复后本提示会自动消失，无需重新注册 Cookie。';
@@ -3925,7 +4059,7 @@
     }
     if (on) {
       el.style.display = '';
-      el.innerHTML = '<button disabled style="width:100%;padding:9px;border:none;border-radius:9px;font-size:13px;background:#eef5fd;color:#1d9bf0;cursor:default">🔄 正在后台加载最新推文…</button>';
+      el.innerHTML = '<button disabled style="width:100%;padding:9px;border:none;border-radius:9px;font-size:13px;background:#eef5fd;color:#1d9bf0;cursor:default">' + icon('xi-refresh') + '正在后台加载最新推文…</button>';
     } else {
       el.style.display = 'none';
       el.innerHTML = '';
@@ -4453,7 +4587,7 @@
       } else {
         srchList.innerHTML = (c && c.err)
           ? `<div class="bm-empty err">获取失败: ${esc2(c.err)}</div>`
-          : '<div class="bm-empty">该模式暂无缓存，点关键词上的 ⟳ 获取。</div>';
+          : '<div class="bm-empty">该模式暂无缓存，点关键词上的重搜按钮获取。</div>';
       }
       updateFilterBadge();
       return;
@@ -4861,12 +4995,12 @@
       }
       const re = document.createElement('button');
       re.className = 'kw-btn kw-re';
-      re.textContent = '⟳';
+      re.innerHTML = icon('xi-refresh');
       re.title = '重新搜索「' + e.q + '」（放弃缓存重新爬取）';
       re.addEventListener('click', (ev) => { ev.stopPropagation(); refreshKeyword(e.key); });
       const del = document.createElement('button');
       del.className = 'kw-btn kw-del';
-      del.textContent = '✕';
+      del.innerHTML = icon('xi-close');
       del.title = '移除关键词「' + e.q + '」（缓存保留，再加回来可恢复）';
       del.addEventListener('click', (ev) => { ev.stopPropagation(); removeKeyword(e.key); });
       chip.append(spin, txt, cnt, re, del);
@@ -4963,10 +5097,11 @@
         const r = await req(`${API}/status?resource_key=${encodeURIComponent(srchTaskKey)}`);
         const d = await r.json();
         if (!d.success) { stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; return; }
-        if (srchRefreshAllBtn) srchRefreshAllBtn.textContent = `⟳ 爬取 ${d.percent || 0}%`;
+        // 改成 innerHTML 后必须转义动态值：percent 来自服务端，直接拼接等于开一个注入口子
+        if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '爬取 ' + (parseInt(d.percent, 10) || 0) + '%';
         if (d.done) {
           stopSearchPoll(); saveSrchTask(null); srchTaskKey = null;
-          if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.textContent = '⟳ 全部重搜'; }
+          if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
           // 后端已把结果写进 UserState 缓存（search:kw:<key> + tweets feed），拉取最新后重渲染
           try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
           srchKwList.forEach((e) => loadKwCache(e.key));
@@ -4983,7 +5118,7 @@
   async function refreshAllKeywords() {
     if (srchRefreshingAll || !srchKwList.length) return;
     srchRefreshingAll = true;
-    if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = true; srchRefreshAllBtn.textContent = '⟳ 提交中…'; }
+    if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = true; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '提交中…'; }
     const list = srchKwList.slice();
     try {
       const r = await req(`${API}/search/run`, {
@@ -4996,7 +5131,7 @@
       saveSrchTask(srchTaskKey);
       startSearchPoll();
     } catch (e) {
-      if (srchRefreshAllBtn) srchRefreshAllBtn.textContent = '⟳ 全部重搜';
+      if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜';
       if (pstStat) pstStat.textContent = '启动批量爬取失败: ' + (e && e.message ? e.message : e);
     } finally {
       srchRefreshingAll = false;
@@ -5631,16 +5766,16 @@
       ${mediaHtml ? `<div class="dt-media">${mediaHtml}</div>` : ''}
       ${t.quoted ? quotedHtml(t.quoted) : ''}
       <div class="dt-counts">
-        ${t.reply_count != null ? `<span>💬 <b>${t.reply_count}</b></span>` : ''}
-        ${t.retweet_count != null ? `<span>🔁 <b>${t.retweet_count}</b></span>` : ''}
-        ${t.favorite_count != null ? `<span>❤️ <b>${t.favorite_count}</b></span>` : ''}
-        ${t.quote_count != null ? `<span>💭 <b>${t.quote_count}</b></span>` : ''}
-        ${t.view_count != null ? `<span>👁 <b>${t.view_count}</b></span>` : ''}
+        ${t.reply_count != null ? `<span><svg class="ico-svg"><use href="#xi-comment"/></svg><b>${t.reply_count}</b></span>` : ''}
+        ${t.retweet_count != null ? `<span><svg class="ico-svg"><use href="#xi-retweet"/></svg><b>${t.retweet_count}</b></span>` : ''}
+        ${t.favorite_count != null ? `<span><svg class="ico-svg"><use href="#xi-heart"/></svg><b>${t.favorite_count}</b></span>` : ''}
+        ${t.quote_count != null ? `<span><svg class="ico-svg"><use href="#xi-quote"/></svg><b>${t.quote_count}</b></span>` : ''}
+        ${t.view_count != null ? `<span><svg class="ico-svg"><use href="#xi-eye"/></svg><b>${t.view_count}</b></span>` : ''}
       </div>
       <div class="dt-actions">
-        <button class="star ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${isFav ? '★ 已收藏' : '☆ 收藏'}</button>
-        <button class="refetch" data-tid="${esc2(t.tweet_id)}">↻ 重新获取</button>
-        <button class="dl" data-url="${esc2(t.url || '')}">⬇ 下载</button>
+        <button class="star ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${starLabel(isFav)}</button>
+        <button class="refetch" data-tid="${esc2(t.tweet_id)}">${icon('xi-refresh')}重新获取</button>
+        <button class="dl" data-url="${esc2(t.url || '')}">${icon('xi-download')}下载</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
       </div>`;
     // 视频：点按原地点播，复用浏览卡片那套 hls.js 播放逻辑（封面 + ▶）
@@ -5689,14 +5824,14 @@
       await toggleStar(tid, t);
       const on = starSet.has(String(tid));
       b.classList.toggle('on', on);
-      b.textContent = on ? '★ 已收藏' : '☆ 收藏';
+      b.innerHTML = starLabel(on);
     }));
     // 下载
     card.querySelectorAll('.dl').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url;
       b.disabled = true; b.textContent = '下载中…';
       downloadTweet(u || t.url)
-        .then((ok) => { b.textContent = ok ? '已下载 ✓' : '下载失败'; b.disabled = !ok; })
+        .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已下载' : '下载失败'; b.disabled = !ok; })
         .catch(() => { b.textContent = '下载失败'; b.disabled = false; });
     }));
     // 打开原文（明确点击才跳 X）
@@ -5883,7 +6018,7 @@
         <div class="uprof-head">
           ${p.avatar ? `<img class="uprof-avatar" src="${esc2(p.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : '<div class="uprof-avatar"></div>'}
           <div class="uprof-id">
-            <div class="uprof-name">${esc2(p.name || '')}${p.verified ? ' ✔' : ''}</div>
+            <div class="uprof-name">${esc2(p.name || '')}${p.verified ? ' ' + icon('xi-check') : ''}</div>
             <div class="uprof-handle">${esc2(handle)}</div>
           </div>
         </div>
