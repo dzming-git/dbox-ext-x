@@ -834,6 +834,9 @@ _GQL_TWEET_DETAIL_FIELDTOGGLES = {"withArticlePlainText": False}
 # ---------------------------------------------------------------------------
 _GQL_BOOKMARKS_QID = 'iblrFnKr6PZUR-dWpfXG6g'  # 已知兜底（会轮换，优先自动发现）
 _GQL_BOOKMARKS_OPN = 'Bookmarks'
+# GraphQL Likes（读取账号「喜欢」的推文列表；按 userId 取，query id 自动发现）
+_GQL_LIKES_QID = None
+_GQL_LIKES_OPN = 'Likes'
 # 与 X 收藏页一致的 features（2026-08 实测捕获）
 _GQL_BOOKMARKS_FEATURES = {
     "rweb_video_screen_enabled": False,
@@ -1096,15 +1099,17 @@ _GQL_FOLLOWERS_LIST_QID = None
 _GQL_FOLLOWERS_LIST_OPN = 'Followers'
 
 
-def _discover_op_qid(opener, cookie_header, op_name):
-    """通用：从 X 首页 bundle 自动发现任意 operationName 对应的 query id。
+def _discover_op_qid(opener, cookie_header, op_name, page_url='https://x.com/'):
+    """通用：从 X 页面 bundle 自动发现任意 operationName 对应的 query id。
 
     与 _discover_search_qid 同理，但目标 operation 可变（UserTweets、
     UserByScreenName 等），避免为每个接口各写一份扫描逻辑。query id 会轮换，
     发现失败时由调用方降级报错（前端再以友好提示兜底）。
+    page_url 默认首页；某些 operation（如 Likes）只在该功能页 bundle 内出现，
+    调用方可传对应页面（如 https://x.com/i/likes）以提高命中率。
     """
     try:
-        html = fetch_text('https://x.com/', opener,
+        html = fetch_text(page_url, opener,
                           build_headers(cookie_header, with_bearer=False), timeout=20)
     except Exception:
         html = ''
@@ -2140,6 +2145,50 @@ def list_bookmarks(cookie_header, count=20, cursor=None):
             if tl is None:
                 tl = ((d.get('search_by_raw_query') or {})
                       .get('bookmarks_search_timeline') or {}).get('timeline')
+            for inst in (tl or {}).get('instructions', []):
+                for entry in (inst.get('entries') or []):
+                    c = entry.get('content') or {}
+                    if c.get('entryType') == 'TimelineTimelineCursor' and \
+                            c.get('cursorType') == 'Bottom':
+                        next_cursor = c.get('value')
+        except Exception:
+            pass
+    return items, next_cursor
+
+
+def list_likes(cookie_header, rest_id, count=20, cursor=None):
+    """读取 X 账号「喜欢」的推文列表（Likes timeline，按登录用户 rest_id 取）。
+
+    与 Bookmarks 不同，Likes 必须带 userId（喜欢的是「哪个用户」的列表）。
+    沿用 Bookmarks 同款 features，query id 走自动发现。
+    """
+    opener = make_opener(None)
+    global _GQL_LIKES_QID
+    qid = _GQL_LIKES_QID
+    if not qid:
+        qid = _discover_op_qid(opener, cookie_header, _GQL_LIKES_OPN, 'https://x.com/i/likes')
+    if not qid:
+        raise RuntimeError('未能发现 Likes query id')
+    variables = {"userId": str(rest_id), "count": count, "includePromotedContent": True}
+    if cursor:
+        variables["cursor"] = cursor
+    url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_LIKES_OPN}'
+           f'?variables={urllib.parse.quote(json.dumps(variables))}'
+           f'&features={urllib.parse.quote(json.dumps(_GQL_BOOKMARKS_FEATURES))}')
+    headers = build_headers(cookie_header, with_bearer=True)
+    raw = fetch_text(url, opener, headers, timeout=30)
+    data = json.loads(raw)
+    # Likes 当前响应结构：data.user.result.timeline.timeline（liked 推文时间线），
+    # 旧字段 data.likes.timeline 已不返回，这里两个都兼容。
+    _user = ((data.get('data', {}) or {}).get('user') or {}).get('result') or {}
+    tl = (((data.get('data', {}) or {}).get('likes') or {}).get('timeline')
+          or (_user.get('timeline', {}) or {}).get('timeline'))
+    items = _extract_bookmark_tweets(
+        {'data': {'bookmark_timeline_v2': {'timeline': tl}}}) if tl else []
+    # 提取下一页 cursor（Bottom 类型）
+    next_cursor = None
+    if items and tl:
+        try:
             for inst in (tl or {}).get('instructions', []):
                 for entry in (inst.get('entries') or []):
                     c = entry.get('content') or {}

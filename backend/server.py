@@ -1644,6 +1644,28 @@ def create_blueprint(host):
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
 
+    @bp.route('/likes', methods=['GET'])
+    @host.login_required
+    def likes():
+        """实时从 X 账号「喜欢」列表拉取推文。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False,
+                            'message': '未配置 x.com 登录 Cookie'}), 400
+        rest_id = _my_rest_id(cookie)
+        if not rest_id:
+            return jsonify({'success': False,
+                            'message': '无法从 Cookie 识别登录用户'}), 400
+        try:
+            count = min(int(request.args.get('count', 30)), 100)
+            cursor = request.args.get('cursor') or None
+            items, next_cursor = xrun.list_likes(cookie, rest_id, count, cursor)
+        except Exception as e:
+            return jsonify({'success': False,
+                            'message': '拉取 X 喜欢失败: ' + str(e)}), 502
+        return jsonify({'success': True, 'items': items,
+                        'next_cursor': next_cursor})
+
     @bp.route('/bookmarks/folder', methods=['GET'])
     @host.login_required
     def folder_list():
