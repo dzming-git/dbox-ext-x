@@ -3411,18 +3411,37 @@
       if (!ids.length) return false;
       const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id)).filter(Boolean);
       if (!list.length) return false;
-      brList.innerHTML = '';
-      brSeenIds.clear();
-      sortItemsByTime(list).forEach((it) => {
-        const id = it.tweet_id || it.id;
-        if (!id || brSeenIds.has(String(id))) return;
-        brSeenIds.add(String(id));
-        brList.appendChild(renderBrowseCard(it));
-      });
+      rebuildBrowseList(list);
       brCursor = (XFEED && XFEED.cursor()) || null;
       brLoadmore.style.display = 'none';
       return true;
     } catch (_) { return false; }
+  }
+
+  // 按时间整表重建列表（清空后统一渲染），不复用 brSeenIds 之外的任何既有 DOM。
+  //
+  // 必须与 prependNewTweets 区分开：prepend 的语义是「这一批全都是新推文，
+  // 插到顶部」，一旦喂给它的是「服务端合并后的完整列表」（刷新时后端返回的
+  // canonical，最多 1500 条、横跨新与旧），更旧的那部分会被插到最新推文上面
+  // ——时间顺序错乱；且一次性插入上千张卡片会把锚点定位冲掉，视图落回列表顶部
+  // （即「深度滚动后刷新，位置被强制刷到最新」）。
+  // 完整列表的正确处理是整表按时间重建，再由调用方定位到锚点。
+  function rebuildBrowseList(items) {
+    const list = mergeTweets(items || []);
+    tweetCachePut(list);            // 内容并回全局单缓存，保证其它视图同源
+    brList.innerHTML = '';
+    brSeenIds.clear();
+    sortItemsByTime(list).forEach((it) => {
+      const id = it.tweet_id || it.id;
+      if (!id || brSeenIds.has(String(id))) return;
+      const full = tweetCacheGet(String(id)) || it;   // 内容回查全局单缓存
+      // 内容残缺（连作者都没有）坚决不渲染，与 prependNewTweets 保持一致，
+      // 否则会渲染出 @unknown 空卡片
+      const _fa = (full && full.author) || {};
+      if (!_fa.screen_name) return;
+      brSeenIds.add(String(id));
+      brList.appendChild(renderBrowseCard(full));
+    });
   }
 
   // ---- 浏览位置记忆：交给框架 feed()，记住上次看到的推文，重进时定位回去 ----
@@ -3470,6 +3489,16 @@
   // 约 5s 后放弃；用户一旦自己滚动立即让位，绝不把正在看的用户拽回去。
   let _restoreIv = null;
   let brUserScrolled = false;
+  // 「等待定位」阶段：刷新/首次加载后，从清空列表、重建上百张卡片、图片陆续加载撑开
+  // 布局，到网络返回并按锚点定位，全程可持续数秒。期间布局抖动会不断触发 scroll 事件，
+  // 而 brRestoring 是有上限的短窗口（BR_RESTORE_MAX_MS=2500ms），必然先于定位到期——
+  // 于是这些并非用户操作的 scroll 把 brUserScrolled 置真，后续 reanchor 与
+  // restoreBrowseScroll 全部放弃定位，视图就停在渲染完的默认位置＝列表顶部（最新）。
+  // 这正是「深度滚动后刷新，位置被强制刷到最新」的直接成因：卡片越多、图片越多、
+  // 抖动持续越久，越必然触发。
+  // 本标志覆盖「整段等待定位期」，只屏蔽 scroll 事件这条不可靠的判定通道；
+  // 真实输入（滚轮 / 触摸 / 键盘）仍走各自的监听直接接管，不受影响。
+  let brAwaitingRestore = false;
   let brRestoring = false;   // 程序化定位（恢复锚点）期间抑制「滚动事件＝用户操作」误判，
                              // 避免重定位把 scrollTop 改到顶部后误把"顶部"当成用户位置写回服务端
   let _brRestoreToken = 0;   // 抑制窗口令牌：reanchor 会被 ResizeObserver / 图片 load 反复
@@ -3531,9 +3560,26 @@
     _stableRo.observe(brList);
     setTimeout(() => { if (_stableRo) { try { _stableRo.disconnect(); } catch (e) {} _stableRo = null; } }, 4000);
   }
+  // ---- 「等待定位」阶段（brAwaitingRestore）的开关 ----
+  // 带兜底定时器：若定位始终没落地（比如异常分支提前 return），也必须到期解除，
+  // 否则 brUserScrolled 永远无法由 scroll 事件置真，用户后续滚动不再被记录。
+  let _awaitRestoreTimer = null;
+  function beginAwaitRestore(ms) {
+    brAwaitingRestore = true;
+    if (_awaitRestoreTimer) clearTimeout(_awaitRestoreTimer);
+    _awaitRestoreTimer = setTimeout(() => {
+      brAwaitingRestore = false; _awaitRestoreTimer = null;
+    }, ms || 10000);
+  }
+  function endAwaitRestore() {
+    brAwaitingRestore = false;
+    if (_awaitRestoreTimer) { clearTimeout(_awaitRestoreTimer); _awaitRestoreTimer = null; }
+  }
+
   // 正常收尾：延迟解除抑制，覆盖 restore() 之后异步到达的 scroll 事件
   function finishAutoRestore() {
     if (_restoreIv) { clearInterval(_restoreIv); _restoreIv = null; }
+    endAwaitRestore();
     holdBrRestoring(200);
   }
   // 用户接管：立即中断自动重定位（含重试 interval 与抑制窗口）
@@ -3553,6 +3599,7 @@
   function markUserScrolled() {
     if (brUserScrolled) return;
     brUserScrolled = true;
+    endAwaitRestore();     // 用户真实接管：等待定位阶段立即结束
     cancelAutoRestore();
   }
   function restoreBrowseScroll() {
@@ -3563,7 +3610,7 @@
     if (_restoreIv) return;        // 已有重试在跑，别再叠一个 interval 反复定位
     holdBrRestoring(200);
     _lastAnchorAt = Date.now();
-    if (XFEED.restore()) return;
+    if (XFEED.restore()) { endAwaitRestore(); return; }   // 定位成功即结束等待阶段
     let tries = 0;
     _restoreIv = setInterval(() => {
       if (brUserScrolled) { cancelAutoRestore(); return; }
@@ -3606,11 +3653,28 @@
     const em = brList.querySelector('.bm-empty');
     if (em) em.remove();
     tweetCachePut(items);
+    // 只插「比当前列表顶部更新」的推文。
+    // 后端在无 cursor 时返回的是服务端完整列表（canonical，横跨新与旧，最多 1500 条）。
+    // 若照单全收，其中更旧的那部分会被插到最新推文上面 → 时间顺序错乱，并平白改动
+    // 用户当前的浏览位置（自动轮询尤其不能动位置）。故以列表顶部卡片的时间为闸门，
+    // 更旧的条目一律不参与本次顶部插入。列表为空时不做过滤（首次加载要全量渲染）。
+    let topTime = null;
+    const topCard = brList.querySelector('.bm-card');
+    if (topCard && topCard.dataset && topCard.dataset.tid) {
+      const _tc = tweetCacheGet(topCard.dataset.tid);
+      const _t = _tc && _tc.created_at ? Date.parse(_tc.created_at) : NaN;
+      if (!isNaN(_t)) topTime = _t;
+    }
     const frag = document.createDocumentFragment();
     let inserted = 0;
     sortItemsByTime(mergeTweets(items)).forEach((it) => {
       const id = it.tweet_id || it.id;
       if (!id) return;
+      // 比列表顶部更旧的条目不属于「新推文」：插到顶部会破坏时间顺序
+      if (topTime !== null) {
+        const _tt = it.created_at ? Date.parse(it.created_at) : NaN;
+        if (!isNaN(_tt) && _tt < topTime) return;
+      }
       const full = tweetCacheGet(id) || it;   // 内容回查全局单缓存
       // 内容残缺（连作者都没有）坚决不渲染：此前 tweetCacheGet 返回 null 时会回退到
       // it（可能只是个带 id 的空壳/脏条目），直接渲染出 @unknown 空卡片。跳过它们，
@@ -3809,6 +3873,10 @@
     let syncP = null;
     if (reset) {
       brUserScrolled = false;
+      // 刷新/首次加载进入「等待定位」阶段：此后数秒内图片加载撑开布局引发的 scroll
+      // 一律不算用户操作，否则定位会被放弃、视图停在顶部（最新）。
+      // 真实输入（滚轮/触摸/键盘）仍可随时接管（markUserScrolled 会结束本阶段）。
+      beginAwaitRestore(10000);
       // 打开/刷新浏览视图＝刻意使用本设备 → 抢占主控权（内含强制对账 pull）。
       // 故意不 await：先让「打开即秒开」用本地缓存把首屏渲染出来，缩短白屏；
       // 但取锚点定位前必须等它落地（见下方 await syncP），否则用的是本机旧锚点。
@@ -3848,7 +3916,17 @@
         // 而本设备刚抢占为主控，随后一滚动就把陈旧位置推回服务端、覆盖真正进度。
         if (syncP) { try { await syncP; } catch (_) {} }
         const anchorTid = getBrowseAnchor();
-        if (openMode || preview) {
+        if (d.canonical) {
+          // 后端无 cursor 时返回的是「服务端合并后的完整列表」（canonical），横跨新与旧。
+          // 绝不能交给 prependNewTweets：它按「这一批全是新推文」的语义往顶部插入，
+          // 于是更旧的那部分被插到最新推文上面 → 时间顺序错乱；且一次性插入上千张
+          // 卡片会把锚点定位冲掉，视图落回列表顶部——正是「深度滚动后刷新，位置被
+          // 强制刷到最新」的根因。完整列表的正确处理是整表按时间重建再定位锚点。
+          rebuildBrowseList(items);
+          saveBrowseCache(items, true);
+          if (anchorTid) anchorTo(anchorTid, 0);
+          else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
+        } else if (openMode || preview) {
           // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
           // 但恢复上次查看位置（框架 feed 锚点，按 id 定位），不跳到顶部——
           // 新推文在上方，用户停在原来的位置，上滑即见更新。
@@ -5231,6 +5309,10 @@
     let brScrollTimer = null;
     brScroll.addEventListener('scroll', () => {
       if (brRestoring) return;          // 重定位（恢复锚点）引发的程序化滚动：不当作用户操作、不保存
+      // 等待定位阶段：布局抖动（图片逐张撑开卡片）触发的 scroll 并非用户操作，
+      // 据其判定「用户已滚动」会让定位被放弃、视图停在顶部（最新）。
+      // 真实输入另有 wheel / touch / keydown 通道直接接管，不受此处屏蔽影响。
+      if (brAwaitingRestore) return;
       markUserScrolled();
       scheduleSavePos();
       if (brScrollTimer) return;
