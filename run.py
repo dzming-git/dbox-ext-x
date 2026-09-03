@@ -835,7 +835,7 @@ _GQL_TWEET_DETAIL_FIELDTOGGLES = {"withArticlePlainText": False}
 _GQL_BOOKMARKS_QID = 'iblrFnKr6PZUR-dWpfXG6g'  # 已知兜底（会轮换，优先自动发现）
 _GQL_BOOKMARKS_OPN = 'Bookmarks'
 # GraphQL Likes（读取账号「喜欢」的推文列表；按 userId 取，query id 自动发现）
-_GQL_LIKES_QID = None
+_GQL_LIKES_QID = 'xA8fDIbrJfy4ojjjXmSR-A'  # 已知兜底（会轮换，优先自动发现）
 _GQL_LIKES_OPN = 'Likes'
 # 与 X 收藏页一致的 features（2026-08 实测捕获）
 _GQL_BOOKMARKS_FEATURES = {
@@ -2167,6 +2167,8 @@ def list_likes(cookie_header, rest_id, count=20, cursor=None):
     qid = _GQL_LIKES_QID
     if not qid:
         qid = _discover_op_qid(opener, cookie_header, _GQL_LIKES_OPN, 'https://x.com/i/likes')
+        if qid:
+            _GQL_LIKES_QID = qid   # 缓存发现结果，避免每次调用都重新发现（12s+ 耗时）
     if not qid:
         raise RuntimeError('未能发现 Likes query id')
     variables = {"userId": str(rest_id), "count": count, "includePromotedContent": True}
