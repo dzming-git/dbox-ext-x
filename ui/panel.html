@@ -541,6 +541,7 @@
     <button class="tab" data-view="download">🔗 链接</button>
     <button class="tab" data-view="search">🔍 搜索</button>
     <button class="tab" data-view="bookmarks">👤 我的 X</button>
+    <button class="tab" data-view="stars">⭐ dbox 收藏</button>
     <button class="tab" data-view="history">🕘 历史</button>
     <button class="tab" data-view="cache">📦 缓存</button>
   </div>
@@ -574,6 +575,11 @@
     <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「X 收藏」加载你在 X 上收藏的推文。</div></div>
     <div class="bm-list" id="me-follow" style="display:none"><div class="bm-empty">加载你关注的人…</div></div>
     <div class="bm-list" id="me-followers" style="display:none"><div class="bm-empty">加载你的粉丝…</div></div>
+  </div>
+
+  <!-- dbox 收藏视图（独立页，不在个人页内；在任意推文上点「☆ 收藏」即进入此列表） -->
+  <div class="view" id="view-stars" style="display:none">
+    <div class="bm-list" id="me-stars"><div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div></div>
   </div>
 
   <!-- 历史视图（P1-7 本地浏览历史） -->
@@ -1969,6 +1975,7 @@
     viewHistory.style.display = v === 'history' ? '' : 'none';
     viewCache.style.display = v === 'cache' ? '' : 'none';
     viewBookmarks.style.display = v === 'bookmarks' ? '' : 'none';
+    viewStars.style.display = v === 'stars' ? '' : 'none';
     viewSearch.style.display = v === 'search' ? '' : 'none';
     // 一级 URL：每个视图一个（silent=true：URL 与视图都由本次调用决定，不回环再应用一次）
     if (opts.url !== false) {
@@ -1989,9 +1996,12 @@
       // 不发请求（点「搜索」按钮才刷新缓存）。
       restoreSearch(opts.params || {});
     } else if (v === 'bookmarks') {
-      // 个人页：先拉资料卡，再按当前子页加载（X收藏 / dbox收藏 / 关注 / 粉丝）
+      // 个人页：先拉资料卡，再按当前子页加载（X收藏 / 关注 / 粉丝）
       loadMeProfile();
       switchMeSub(meSub);
+    } else if (v === 'stars') {
+      // dbox 收藏：独立页，列出在 dbox 内点 ☆ 收藏的推文（不走个人页）
+      if (!starsLoaded) loadStars();
     }
   }
 
@@ -2131,9 +2141,11 @@
   const meXBook = $('me-xbook');
   const meFollow = $('me-follow');
   const meFollowers = $('me-followers');
+  const viewStars = $('me-stars');
   const meTabs = $('me-tabs');
   let meSub = 'xbook';
   let meLoaded = { xbook: false, stars: false, follow: false, followers: false };
+  let starsLoaded = false;
   const starSet = new Set();
   const meCacheAge = $('me-cache-age');
   const meRefreshBtn = $('me-refresh');
@@ -2357,6 +2369,29 @@
   }
 
   /* ---- 我的 X（个人页）子页切换 ---- */
+  async function loadStars() {
+    if (!viewStars) return;
+    viewStars.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await req(`${API}/stars`);
+      const d = await r.json();
+      if (!d.success) { viewStars.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      const items = d.items || [];
+      starSet.clear();
+      items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+      starsLoaded = true;
+      if (!items.length) {
+        viewStars.innerHTML = '<div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div>';
+        return;
+      }
+      tweetCachePut(items);
+      viewStars.innerHTML = '';
+      items.forEach((it) => viewStars.appendChild(renderBmCard(it, false)));
+    } catch (e) {
+      viewStars.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
   function switchMeSub(sub) {
     if (!sub) sub = 'xbook';
     meSub = sub;
@@ -2521,7 +2556,7 @@
       if (on) {
         const r = await req(`${API}/stars/${encodeURIComponent(tid)}`, { method: 'DELETE' });
         const d = await r.json();
-        if (d.success) { starSet.delete(String(tid)); meLoaded.stars = false; }
+        if (d.success) { starSet.delete(String(tid)); starsLoaded = false; }
       } else {
         const payload = item || {};
         payload.tweet_id = tid;
@@ -2531,7 +2566,7 @@
           body: JSON.stringify(payload),
         });
         const d = await r.json();
-        if (d.success) { starSet.add(String(tid)); meLoaded.stars = false; }
+        if (d.success) { starSet.add(String(tid)); starsLoaded = false; }
       }
     } catch (e) {
       alert('收藏操作失败: ' + e.message);
