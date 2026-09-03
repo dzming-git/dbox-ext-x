@@ -1237,6 +1237,244 @@ def create_blueprint(host):
             'working_dir': rec.get('working_dir'),
         })
 
+    # ---------- 首页（关注流）后台定时预取 ----------
+    # 场景：用户可能隔几天才看一次 X。若只在打开面板时才拉，每次都要现等网络 +
+    # 现下媒体，体验是「点开一片空白、图慢慢出」。
+    # 这里在服务端后台定时把首页时间线抓下来存进 feed:main:items——与 /timeline、
+    # 前端共用同一份服务端真相（跨设备一致），并把新推文的图片/视频预先下载进
+    # 本地 LRU 媒体缓存。打开面板时内容已在服务端、媒体已在本地磁盘 → 直接渲染。
+    #
+    # 关于「不改用户浏览位置」：本模块只写服务端状态，不向客户端推送、也不触发
+    # 任何前端重渲染。前端仍按自己的节奏 poll，且新推文一律走 prependNewTweets
+    # （插前记录视口顶部卡片 + 卡内偏移，插后 anchorTo 还原），位置由前端负责保持。
+    _AC_CFG_FILE = os.path.join(host.data_dir, 'autocrawl.json')
+    _AC_DEFAULTS = {
+        'enabled': True,          # 总开关
+        'interval_min': 120,      # 抓取间隔（分钟）
+        'pages': 3,               # 每次抓取页数（每页 50 条）
+        'prefetch_media': True,   # 是否预下载图片/视频
+        # 图片与视频分开限量：实测单张图片百 KB 级、单个视频可达 89MB，
+        # 而 LRU 缓存上限 512MB。若不分开控量，几段视频就能把已缓存的图片
+        # 全挤掉——反而比不预取更慢。故图片放宽、视频严格限量。
+        'image_limit': 60,        # 每轮最多预取图片数（体积小，主要收益来源）
+        'video_limit': 3,         # 每轮最多预取视频数（体积大，严格限量）
+    }
+    _ac_cfg = None
+    _ac_lock = threading.Lock()
+    _ac_state = {
+        'running': False, 'last_start': 0, 'last_finish': 0,
+        'last_ok': False, 'last_error': '', 'last_tweets': 0,
+        'last_media': 0, 'runs': 0,
+    }
+
+    def _ac_load_cfg():
+        nonlocal _ac_cfg
+        if _ac_cfg is not None:
+            return _ac_cfg
+        cfg = dict(_AC_DEFAULTS)
+        try:
+            with open(_AC_CFG_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                for k, v in saved.items():
+                    # 只接受已知键且类型一致的值，避免旧版/手改配置把类型搞乱
+                    if k in _AC_DEFAULTS and isinstance(v, type(_AC_DEFAULTS[k])):
+                        cfg[k] = v
+        except Exception:
+            pass
+        _ac_cfg = cfg
+        return cfg
+
+    def _ac_save_cfg(cfg):
+        nonlocal _ac_cfg
+        with _ac_lock:
+            _ac_cfg = dict(cfg)
+        try:
+            with open(_AC_CFG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _ac_collect_media(items, image_limit, video_limit):
+        """从一批推文收集待预取的媒体 URL：图片与视频分开（视频大，单独限量）。"""
+        imgs, vids = [], []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            for m in (it.get('media') or []):
+                if not isinstance(m, dict):
+                    continue
+                u = m.get('url')
+                if not u or not str(u).startswith('http'):
+                    continue
+                t = (m.get('type') or '').lower()
+                if t in ('video', 'gif', 'animated_gif'):
+                    if len(vids) < video_limit:
+                        vids.append(u)
+                    # 视频封面单独算图片：不预取封面，列表里就是个黑框
+                    cov = m.get('cover')
+                    if cov and str(cov).startswith('http') and len(imgs) < image_limit:
+                        imgs.append(cov)
+                elif len(imgs) < image_limit:
+                    imgs.append(u)
+        return imgs, vids
+
+    def _ac_prefetch(urls, mtype):
+        """把尚未缓存的媒体交给后台下载线程。幂等：已缓存/下载中的直接跳过。"""
+        n = 0
+        for u in urls:
+            try:
+                if _cache_get(u) is not None:
+                    continue
+                ext, _ct = _media_ext_ct(u, mtype)
+                tmp = os.path.join(_CACHE_LRU_DIR, _cache_key(u) + ext + '.part')
+                if os.path.exists(tmp):
+                    continue                       # 已在下载中
+                with _media_dl_lock:
+                    if u in _media_dl_active:
+                        continue
+                _start_media_download(u, tmp, ext)
+                n += 1
+            except Exception:
+                pass
+        return n
+
+    def _ac_run_once():
+        """抓一轮首页 + 预取媒体。返回 (ok, tweets, media, err)。"""
+        cfg = _ac_load_cfg()
+        cookie = _x_cookie_header()
+        if not cookie:
+            return False, 0, 0, '未配置 x.com 登录 Cookie'
+        items, cursor = [], None
+        pages = max(1, min(int(cfg.get('pages') or 1), 10))
+        for _p in range(pages):
+            try:
+                # 第一页不带 cursor（拉最新）；后续页带 cursor 往更旧翻
+                page_items, cursor = xrun.list_following_timeline(
+                    cookie, 50, cursor if _p else None)
+            except Exception as e:
+                # 第一页就失败才算真失败；翻页中途断掉则保留已抓到的部分
+                if not items:
+                    return False, 0, 0, str(e)
+                break
+            if not page_items:
+                break
+            items.extend(page_items)
+            if not cursor:
+                break
+        if not items:
+            return True, 0, 0, ''
+        # 合并进服务端唯一真相源（与 /timeline、前端共用同一份，跨设备一致）
+        norm = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            rec = dict(it)
+            tid = it.get('tweet_id')
+            rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
+            rec['order'] = it.get('created_at')
+            norm.append(rec)
+        try:
+            host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
+        except Exception:
+            pass
+        media_n = 0
+        if cfg.get('prefetch_media'):
+            imgs, vids = _ac_collect_media(
+                items,
+                int(cfg.get('image_limit') or 0),
+                int(cfg.get('video_limit') or 0))
+            media_n += _ac_prefetch(imgs, 'image')
+            media_n += _ac_prefetch(vids, 'video')
+        return True, len(items), media_n, ''
+
+    def _ac_tick():
+        with _ac_lock:
+            if _ac_state['running']:
+                return False
+            _ac_state['running'] = True
+            _ac_state['last_start'] = time.time()
+        ok, tweets, media, err = False, 0, 0, ''
+        try:
+            ok, tweets, media, err = _ac_run_once()
+        except Exception as e:
+            err = '%s: %s' % (type(e).__name__, e)
+        finally:
+            with _ac_lock:
+                _ac_state['running'] = False
+                _ac_state['last_finish'] = time.time()
+                _ac_state['last_ok'] = bool(ok)
+                _ac_state['last_error'] = err or ''
+                _ac_state['last_tweets'] = tweets
+                _ac_state['last_media'] = media
+                _ac_state['runs'] = _ac_state.get('runs', 0) + 1
+        try:
+            print('[x.autocrawl] 一轮结束 ok=%s 推文=%s 媒体=%s %s'
+                  % (ok, tweets, media, ('err=' + err) if err else ''),
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return ok
+
+    def _ac_loop():
+        # 启动后先等一会，避免与插件加载、其他初始化抢资源
+        time.sleep(30)
+        while True:
+            try:
+                if _ac_load_cfg().get('enabled'):
+                    _ac_tick()
+            except Exception:
+                pass
+            try:
+                interval = max(5, int(_ac_load_cfg().get('interval_min') or 60))
+            except Exception:
+                interval = 60
+            time.sleep(interval * 60)
+
+    try:
+        threading.Thread(target=_ac_loop, daemon=True).start()
+    except Exception:
+        pass
+
+    @bp.route('/autocrawl', methods=['GET'])
+    @host.login_required
+    def autocrawl_get():
+        """返回首页后台预取的配置与运行状态。"""
+        with _ac_lock:
+            st = dict(_ac_state)
+        return jsonify({'success': True, 'config': _ac_load_cfg(), 'state': st})
+
+    @bp.route('/autocrawl', methods=['POST'])
+    @host.login_required
+    def autocrawl_set():
+        """更新后台预取配置（只接受已知字段，做类型与范围钳制）。"""
+        data = request.get_json(force=True, silent=True) or {}
+        cfg = dict(_ac_load_cfg())
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if k not in _AC_DEFAULTS:
+                    continue
+                if isinstance(_AC_DEFAULTS[k], bool):
+                    cfg[k] = bool(v)
+                elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                    cfg[k] = int(v)
+        cfg['interval_min'] = max(5, min(int(cfg['interval_min']), 1440))
+        cfg['pages'] = max(1, min(int(cfg['pages']), 10))
+        cfg['image_limit'] = max(0, min(int(cfg['image_limit']), 300))
+        cfg['video_limit'] = max(0, min(int(cfg['video_limit']), 50))
+        _ac_save_cfg(cfg)
+        return jsonify({'success': True, 'config': cfg})
+
+    @bp.route('/autocrawl/run', methods=['POST'])
+    @host.login_required
+    def autocrawl_run():
+        """立即跑一轮（异步，不阻塞请求）。"""
+        with _ac_lock:
+            if _ac_state['running']:
+                return jsonify({'success': False, 'message': '上一轮仍在运行'}), 409
+        threading.Thread(target=_ac_tick, daemon=True).start()
+        return jsonify({'success': True})
+
     @bp.route('/timeline', methods=['GET'])
     @host.login_required
     def timeline():
