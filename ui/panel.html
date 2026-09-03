@@ -18,7 +18,7 @@
   /* 用 100% 而非 100vh：面板跑在 iframe 里，100vh 取的是「iframe 视口」且形态切换（小窗↔全屏）
      时尺寸变化后不会可靠重算，导致内部 flex 容器高度错乱（需刷新才恢复）。100% 配合 html/body
      的 height:100% 形成百分比链，iframe 尺寸一变就自动重排。 */
-  .wrap { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+  .wrap { display: flex; flex-direction: row; height: 100%; overflow: hidden; }
 
   /* ---- 工具栏 ---- */
   .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid #e3e6eb; background: #fff; flex-shrink: 0; }
@@ -208,7 +208,7 @@
   .bm-newbar { text-align: center; margin-bottom: 10px; }
   .bm-newbar button { width: 100%; padding: 9px; border: none; background: #fff5d6; color: #b58900; border-radius: 9px; font-size: 13px; cursor: pointer; font-weight: 500; }
   /* X 登录态失效告警条：置顶、跨视图常驻，直到自检通过 */
-  .xd-session-alert { position: sticky; top: 0; z-index: 30; margin: 6px 8px 0; }
+  .xd-session-alert { flex-shrink: 0; position: relative; z-index: 30; margin: 8px 12px 0; }
   .xd-session-alert .xa-inner { background: #fdecec; color: #c0392b; border: 1px solid #f5c6c6; border-radius: 9px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5; font-weight: 500; }
   .xd-session-alert .xa-sub { color: #a33; font-size: 11.5px; font-weight: 400; }
   .xd-session-alert .xa-retry { display: block; margin-top: 8px; padding: 4px 12px; border: 1px solid #f5c6c6; border-radius: 6px; background: #fff; color: #c0392b; font-size: 12px; cursor: pointer; }
@@ -227,10 +227,34 @@
   .pick label { display: block; padding: 4px 0; font-size: 13px; }
   .pick button { margin-top: 8px; background: #1d9bf0; color: #fff; border: none; border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
 
-  /* 标签切换 */
-  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
-  .tab { flex: 1; background: #f3f5f7; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 10px; font-size: 13px; cursor: pointer; color: #536471; }
-  .tab.active { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
+  /* ---- 侧边导航（替换原横向密集小格子） ---- */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden; background: #f7f8fa; position: relative; }
+  .sidebar { flex: 0 0 auto; width: 220px; display: flex; flex-direction: column;
+    background: #fff; border-right: 1px solid #e3e6eb; padding: 18px 12px; gap: 4px; }
+  .side-brand { display: flex; align-items: center; gap: 10px; padding: 2px 12px 18px;
+    font-weight: 800; font-size: 19px; color: #0f1419; letter-spacing: .3px; }
+  .side-brand .ico { font-size: 22px; line-height: 1; }
+  .side-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; min-height: 0; }
+  .side-foot { padding-top: 12px; border-top: 1px solid #eef0f2; margin-top: 4px; }
+  .side-foot .tb-refresh { width: 100%; height: 42px; border-radius: 999px; margin-left: 0;
+    font-size: 17px; transition: background .12s, color .12s, border-color .12s; }
+  .side-foot .tb-refresh:hover { background: #eef3f7; }
+  .tab { display: flex; align-items: center; gap: 12px; width: 100%; background: transparent;
+    border: none; border-radius: 12px; padding: 11px 14px; font-size: 15px; font-weight: 600;
+    color: #0f1419; cursor: pointer; text-align: left; transition: background .12s, color .12s; }
+  .tab .ico { font-size: 19px; width: 22px; text-align: center; flex: 0 0 auto; line-height: 1; }
+  .tab .lbl { white-space: nowrap; }
+  .tab:hover { background: #eef3f7; }
+  .tab.active { background: #e8f5fe; color: #1d9bf0; }
+  /* 窄面板（迷你窗）：收成图标栏，标签隐藏 */
+  @media (max-width: 560px) {
+    .sidebar { width: 66px; padding: 18px 8px; align-items: stretch; }
+    .side-brand { justify-content: center; padding: 2px 0 18px; }
+    .side-brand .lbl { display: none; }
+    .tab { justify-content: center; padding: 12px 0; gap: 0; }
+    .tab .lbl { display: none; }
+    .side-foot .tb-refresh { width: 100%; }
+  }
   .quickdl { display: flex; gap: 6px; margin-bottom: 10px; }
   .quickdl input { flex: 1; border: 1px solid #e3e6eb; border-radius: 9px; padding: 9px 12px; font-size: 13px; color: #0f1419; background: #fff; }
   .quickdl input:focus { outline: none; border-color: #1d9bf0; box-shadow: 0 0 0 3px rgba(29,155,240,.15); }
@@ -529,23 +553,24 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="toolbar">
-    <span class="title">🐦 X</span>
-    <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新">↻</button>
-  </div>
-
-  <!-- 标签切换：首页（浏览）为主；链接（粘贴 X 推文链接 → 解析/预览/仅浏览 → 下载）紧随其后，作为独立页常驻导航。
-       下载只是「链接」页里的子动作，故不再单独占一个标签；资源库选择也推迟到真正点下载时才弹出。 -->
-  <div class="tabs" id="tabs">
-    <button class="tab active" data-view="browse">🏠 首页</button>
-    <button class="tab" data-view="download">🔗 链接</button>
-    <button class="tab" data-view="search">🔍 搜索</button>
-    <button class="tab" data-view="bookmarks">👤 我的 X</button>
-    <button class="tab" data-view="stars">⭐ dbox 收藏</button>
-    <button class="tab" data-view="history">🕘 历史</button>
-    <button class="tab" data-view="cache">📦 缓存</button>
-  </div>
-
+  <aside class="sidebar">
+    <div class="side-brand"><span class="ico">🐦</span><span class="lbl">X</span></div>
+    <!-- 标签切换：首页（浏览）为主；链接（粘贴 X 推文链接 → 解析/预览/仅浏览 → 下载）紧随其后，作为独立页常驻导航。
+         下载只是「链接」页里的子动作，故不再单独占一个标签；资源库选择也推迟到真正点下载时才弹出。 -->
+    <nav class="side-nav" id="tabs">
+      <button class="tab active" data-view="browse"><span class="ico">🏠</span><span class="lbl">首页</span></button>
+      <button class="tab" data-view="download"><span class="ico">🔗</span><span class="lbl">链接</span></button>
+      <button class="tab" data-view="search"><span class="ico">🔍</span><span class="lbl">搜索</span></button>
+      <button class="tab" data-view="bookmarks"><span class="ico">👤</span><span class="lbl">我的 X</span></button>
+      <button class="tab" data-view="stars"><span class="ico">⭐</span><span class="lbl">dbox 收藏</span></button>
+      <button class="tab" data-view="history"><span class="ico">🕘</span><span class="lbl">历史</span></button>
+      <button class="tab" data-view="cache"><span class="ico">📦</span><span class="lbl">缓存</span></button>
+    </nav>
+    <div class="side-foot">
+      <button class="tb-refresh" id="tb-refresh" title="刷新" aria-label="刷新">↻</button>
+    </div>
+  </aside>
+  <main class="main">
   <!-- X 登录态自检告警：Cookie 失效/残缺时整条横幅置顶，不打断浏览但必须可见 -->
   <div id="xd-session-alert" class="xd-session-alert" style="display:none"></div>
 
@@ -763,6 +788,7 @@
     <div class="log" id="log" style="display:none"></div>
     <div id="pick"></div>
   </div>
+  </main>
 </div>
 <script>
   let TOKEN = '';
