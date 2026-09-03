@@ -317,6 +317,24 @@
   .flt-foot { display: flex; align-items: center; gap: 8px; padding: 12px 14px;
     border-top: 1px solid #eef0f2; }
   .flt-stat { flex: 1; font-size: 12px; color: #536471; }
+  /* ---- 搜索方案：关键词组合 + 过滤配置的预设 ---- */
+  .pst-save { display: flex; gap: 6px; }
+  .pst-save input { flex: 1; min-width: 0; border: 1px solid #e3e6eb; border-radius: 8px;
+    padding: 7px 10px; font-size: 13px; }
+  .pst-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .pst-item { display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    border: 1px solid #e3e6eb; border-radius: 8px; background: #fff; }
+  .pst-item .pst-main { flex: 1; min-width: 0; }
+  .pst-item .pst-name { font-size: 13px; font-weight: 600; color: #0f1419;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pst-item .pst-meta { font-size: 11px; color: #71767b; margin-top: 2px; }
+  .pst-item .pst-ops { display: flex; gap: 4px; flex: 0 0 auto; }
+  .pst-item .pst-ops button { border: 1px solid #cfd9de; background: #fff; color: #0f1419;
+    border-radius: 6px; padding: 4px 8px; font-size: 11.5px; cursor: pointer; }
+  .pst-item .pst-ops button:hover { background: #f7f9fa; }
+  .pst-item .pst-ops button.del:hover { border-color: #f4212e; color: #f4212e; }
+  .pst-empty { padding: 14px; text-align: center; font-size: 12px; color: #71767b;
+    line-height: 1.6; }
   .flt-foot button { border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer;
     border: 1px solid #e3e6eb; background: #fff; color: #536471; }
   .flt-foot button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -573,6 +591,7 @@
         <button id="srch-prod-latest" class="sm">🕐 最新</button>
       </span>
       <button id="srch-filter-btn" class="sm" title="配置搜索过滤（屏蔽广告/机器人）">🚫 过滤<span id="srch-filter-badge"></span></button>
+      <button id="srch-preset-btn" class="sm" title="把「关键词组合 + 过滤配置」存成方案，一键切换常用搜索">📋 方案<span id="srch-preset-badge"></span></button>
     </div>
     <!-- 搜索过滤配置浮层：屏蔽关键词/用户 + 反垃圾特征 -->
     <div id="srch-filter-modal" class="flt-modal" style="display:none">
@@ -608,6 +627,26 @@
           <span id="flt-stat" class="flt-stat"></span>
           <button id="flt-reset" class="sm">重置</button>
           <button id="flt-save" class="primary sm">保存并应用</button>
+        </div>
+      </div>
+    </div>
+    <!-- 搜索方案浮层：把「关键词组合 + 过滤配置」存成方案，一键直达常用搜索 -->
+    <div id="srch-preset-modal" class="flt-modal" style="display:none">
+      <div class="flt-box">
+        <div class="flt-head">
+          <b>📋 搜索方案</b>
+          <button id="pst-close" class="flt-x" title="关闭">✕</button>
+        </div>
+        <div class="flt-body">
+          <div class="pst-save">
+            <input type="text" id="pst-name" placeholder="方案名称，如「每日 AI 资讯」" maxlength="40" />
+            <button id="pst-save" class="primary sm">＋ 保存当前</button>
+          </div>
+          <div class="pst-list" id="pst-list"></div>
+        </div>
+        <div class="flt-foot">
+          <span id="pst-stat" class="flt-stat"></span>
+          <button id="pst-clear" class="sm" title="只清空当前关键词清单，方案不受影响">仅清空关键词</button>
         </div>
       </div>
     </div>
@@ -3744,13 +3783,15 @@
   let srchFilterCfg = Object.assign({}, SRCH_FILTER_DEF);
   let _fltHidden = 0;                 // 上一轮被过滤掉的数量（用于统计提示）
 
-  function loadSearchFilter() {
-    let raw = null;
-    try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(SRCH_FILTER_KEY) : null; } catch (_) {}
+  // 把任意来源（XSTATE / 方案快照 / URL）的配置规整成合法结构，非法字段一律回退默认值。
+  // 方案里存的是过滤配置的**快照**，可能与当前版本字段不一致（旧字段、类型变了、
+  // keywords 被存成字符串等），必须与存储读取走同一套校验——否则一份旧快照就能让
+  // 后续 keywords.length / users.includes 直接崩掉，且崩在渲染循环里很难定位。
+  function normalizeFilter(raw) {
     const c = Object.assign({}, SRCH_FILTER_DEF, (raw && typeof raw === 'object') ? raw : {});
-    srchFilterCfg = {
-      keywords: Array.isArray(c.keywords) ? c.keywords : [],
-      users: Array.isArray(c.users) ? c.users : [],
+    return {
+      keywords: Array.isArray(c.keywords) ? c.keywords.map((s) => String(s || '').trim()).filter(Boolean) : [],
+      users: Array.isArray(c.users) ? c.users.map((s) => String(s || '').trim()).filter(Boolean) : [],
       regex: !!c.regex,
       dedupe: c.dedupe !== false,
       noAvatar: !!c.noAvatar,
@@ -3758,6 +3799,11 @@
       minFollowers: Number(c.minFollowers) || 0,
       maxRatio: Number(c.maxRatio) || 0,
     };
+  }
+  function loadSearchFilter() {
+    let raw = null;
+    try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(SRCH_FILTER_KEY) : null; } catch (_) {}
+    srchFilterCfg = normalizeFilter(raw);
   }
   function saveSearchFilter() { xSet(SRCH_FILTER_KEY, srchFilterCfg, { strategy: 'lww' }); }
   // 「是否需要执行过滤」：含 dedupe（默认开），决定渲染时是否走过滤分支
@@ -3768,11 +3814,11 @@
   }
   // 「用户是否配置了屏蔽规则」：不含 dedupe（它是默认行为，不是用户配的），
   // 用于按钮高亮——否则默认状态下按钮就是亮的，会误导用户以为自己开过过滤。
-  function filterConfigured() {
-    const c = srchFilterCfg;
+  function filterConfiguredOf(c) {
     return !!(c.keywords.length || c.users.length || c.noAvatar
       || c.minLikes > 0 || c.minFollowers > 0 || c.maxRatio > 0);
   }
+  function filterConfigured() { return filterConfiguredOf(srchFilterCfg); }
   // 返回 true=保留；false=屏蔽。seenText 为本次渲染的正文集合（供去重）
   function srchFilterOk(t, seenText) {
     const c = srchFilterCfg;
@@ -4538,6 +4584,201 @@
   });
   // 启动时载入过滤配置（跨设备同步）
   loadSearchFilter();
+
+  /* ---- 搜索方案：关键词组合 + 过滤配置的预设 ----
+     数据布局沿用关键词那套「独立键」：清单 search:presets 只存条目，详情各自存
+     search:preset:<id>。理由与关键词完全相同——lww 是整值覆盖，若把全部方案挤进
+     一个键，多设备各改一个方案时后到达的那次写会把前者整包盖掉；独立键让每次写
+     只影响自己。方案名与关键词数冗余进清单，是为了列表不必逐个拉详情就能渲染。 */
+  const PST_LIST_KEY = 'search:presets';
+  const pstKey = (id) => 'search:preset:' + id;
+  let srchPresets = [];                 // [{ id, name, kwCount, updated_at }]
+
+  const pstModal = $('srch-preset-modal');
+  const pstListEl = $('pst-list');
+  const pstNameEl = $('pst-name');
+  const pstStat = $('pst-stat');
+  const pstBadge = $('srch-preset-badge');
+
+  function pstNewId() {
+    return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+  function loadPresets() {
+    let raw = null;
+    try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(PST_LIST_KEY) : null; } catch (_) { raw = null; }
+    const items = (raw && Array.isArray(raw.items)) ? raw.items : [];
+    srchPresets = items.map((x) => ({
+      id: String((x && x.id) || ''),
+      name: String((x && x.name) || '未命名'),
+      kwCount: Number((x && x.kwCount) || 0),
+      updated_at: Number((x && x.updated_at) || 0),
+    })).filter((x) => x.id);
+  }
+  function savePresetList() { xSet(PST_LIST_KEY, { items: srchPresets }, { strategy: 'lww' }); }
+  // 详情：缺失/损坏返回 null，绝不让一个坏方案卡住整个面板
+  function loadPresetDetail(id) {
+    let raw = null;
+    try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(pstKey(id)) : null; } catch (_) { raw = null; }
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+      name: String(raw.name || '未命名'),
+      keywords: Array.isArray(raw.keywords)
+        ? raw.keywords.map((s) => String(s || '').trim()).filter(Boolean) : [],
+      filter: (raw.filter && typeof raw.filter === 'object') ? raw.filter : null,
+      created_at: Number(raw.created_at) || 0,
+      updated_at: Number(raw.updated_at) || 0,
+    };
+  }
+  function savePresetDetail(id, detail) { xSet(pstKey(id), detail, { strategy: 'lww' }); }
+
+  // 应用方案：用方案的关键词**整体替换**当前清单，并覆盖过滤配置。
+  // 绝不自动搜索——与关键词那套约定一致（只有「＋添加」和 ⟳ 才打网络），
+  // 否则一点方案就替用户爬一堆关键词。
+  // 命中同 key 的关键词时缓存天然复用：移除时服务端缓存是保留的，加回来旧结果立刻回来，
+  // 所以切回常用方案往往瞬间就有内容，这正是每词独立缓存的红利。
+  function applyPreset(id) {
+    const d = loadPresetDetail(id);
+    if (!d) { if (pstStat) pstStat.textContent = '方案读取失败（可能已损坏）'; return; }
+    if (d.filter) {
+      srchFilterCfg = normalizeFilter(d.filter);
+      saveSearchFilter();
+      fltFillForm();                     // 同步过滤表单，避免弹窗里显示的还是旧值
+      updateFilterBadge();
+    }
+    const next = [];
+    d.keywords.forEach((q) => {
+      const kk = kwKey(q);
+      if (!next.some((e) => e.key === kk)) next.push({ q, key: kk, added_at: Date.now() });
+    });
+    srchKwList = next;
+    srchActiveKey = srchKwList.length ? ALL_KEY : null;
+    saveKwList();
+    // 把各词缓存补进内存，否则 chip 显示 0 条，看着像应用失败
+    srchKwList.forEach((e) => {
+      const c = loadKwCache(e.key);
+      if (c) tweetCachePut((c.top || []).concat(c.latest || []));
+    });
+    renderKwChips();
+    if (activeView === 'search') {
+      if (srchKwList.length) {
+        rebuildMerged();
+        srchCursor = null; srchSeenIds = new Set();
+        renderSrchProduct(); updateSrchBottom();
+      } else {
+        srchList.innerHTML = '<div class="bm-empty">该方案没有关键词。</div>';
+        setSrchBottom('hidden');
+      }
+    }
+    if (pstStat) {
+      pstStat.textContent = srchKwList.length
+        ? `已应用「${d.name}」（${srchKwList.length} 词，未自动搜索）`
+        : `已应用「${d.name}」`;
+    }
+  }
+  function saveCurrentAsPreset() {
+    const name = String((pstNameEl && pstNameEl.value) || '').trim();
+    if (!name) { if (pstStat) pstStat.textContent = '请先填方案名称'; return; }
+    if (!srchKwList.length) { if (pstStat) pstStat.textContent = '当前没有关键词，先添加再保存'; return; }
+    const id = pstNewId();
+    const now = Date.now();
+    const kws = srchKwList.map((e) => e.q);
+    savePresetDetail(id, {
+      name, keywords: kws, filter: Object.assign({}, srchFilterCfg),
+      created_at: now, updated_at: now,
+    });
+    srchPresets.push({ id, name, kwCount: kws.length, updated_at: now });
+    savePresetList();
+    if (pstNameEl) pstNameEl.value = '';
+    renderPresetList();
+    if (pstStat) pstStat.textContent = `已保存「${name}」（${kws.length} 个关键词）`;
+  }
+  function updatePreset(id) {
+    const d = loadPresetDetail(id);
+    if (!d) return;
+    d.keywords = srchKwList.map((e) => e.q);
+    d.filter = Object.assign({}, srchFilterCfg);
+    d.updated_at = Date.now();
+    savePresetDetail(id, d);
+    const it = srchPresets.find((x) => x.id === id);
+    if (it) { it.kwCount = d.keywords.length; it.updated_at = d.updated_at; savePresetList(); }
+    renderPresetList();
+    if (pstStat) pstStat.textContent = `已用当前状态更新「${d.name}」`;
+  }
+  function deletePreset(id) {
+    const i = srchPresets.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    const [it] = srchPresets.splice(i, 1);
+    savePresetList();
+    // lww 没有真删除，写空值即可；不清也无害，但留着会持续占同步流量
+    xSet(pstKey(id), null, { strategy: 'lww' });
+    renderPresetList();
+    if (pstStat) pstStat.textContent = `已删除「${it.name}」`;
+  }
+  function renderPresetList() {
+    if (!pstListEl) return;
+    if (!srchPresets.length) {
+      pstListEl.innerHTML = '<div class="pst-empty">还没有方案。<br>'
+        + '先添加关键词、配好过滤，再点上方「＋ 保存当前」即可存成方案。</div>';
+      if (pstBadge) pstBadge.textContent = '';
+      return;
+    }
+    pstListEl.innerHTML = '';
+    srchPresets.slice().sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0)).forEach((p) => {
+      const row = document.createElement('div');
+      row.className = 'pst-item';
+      const main = document.createElement('div');
+      main.className = 'pst-main';
+      const nm = document.createElement('div');
+      nm.className = 'pst-name'; nm.textContent = p.name;
+      const meta = document.createElement('div');
+      meta.className = 'pst-meta';
+      const d = loadPresetDetail(p.id);
+      const hasFlt = !!(d && d.filter && filterConfiguredOf(normalizeFilter(d.filter)));
+      meta.textContent = `${p.kwCount || 0} 个关键词 · ${hasFlt ? '含过滤' : '无过滤'}`;
+      main.appendChild(nm); main.appendChild(meta);
+      const ops = document.createElement('div');
+      ops.className = 'pst-ops';
+      const mk = (label, title, cls, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label; b.title = title;
+        if (cls) b.className = cls;
+        b.addEventListener('click', fn);
+        return b;
+      };
+      ops.appendChild(mk('应用', '切换到该方案的关键词与过滤（不自动搜索）', '', () => applyPreset(p.id)));
+      ops.appendChild(mk('更新', '用当前关键词与过滤覆盖该方案', '', () => updatePreset(p.id)));
+      ops.appendChild(mk('删除', '删除该方案（不影响当前关键词）', 'del', () => deletePreset(p.id)));
+      row.appendChild(main); row.appendChild(ops);
+      pstListEl.appendChild(row);
+    });
+    if (pstBadge) pstBadge.textContent = ` ${srchPresets.length}`;
+  }
+  function openPresets() {
+    if (!pstModal) return;
+    loadPresets();          // 每次打开都重读：别的设备可能刚改过
+    renderPresetList();
+    if (pstStat) pstStat.textContent = '';
+    pstModal.style.display = '';
+  }
+  function closePresets() { if (pstModal) pstModal.style.display = 'none'; }
+
+  if ($('srch-preset-btn')) $('srch-preset-btn').addEventListener('click', openPresets);
+  if ($('pst-close')) $('pst-close').addEventListener('click', closePresets);
+  if (pstModal) pstModal.addEventListener('click', (e) => { if (e.target === pstModal) closePresets(); });
+  if ($('pst-save')) $('pst-save').addEventListener('click', saveCurrentAsPreset);
+  if (pstNameEl) pstNameEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveCurrentAsPreset();
+  });
+  if ($('pst-clear')) $('pst-clear').addEventListener('click', () => {
+    // 只清当前清单，方案不动——给用户一个「回到空白」的出口，不必逐个 ✕
+    const list = srchKwList.slice();
+    list.forEach((e) => removeKeyword(e.key));
+    renderPresetList();
+    if (pstStat) pstStat.textContent = '已清空当前关键词（方案不受影响）';
+  });
+  // 启动时载入方案清单（跨设备同步）
+  loadPresets();
+  renderPresetList();
 
   // 自动加载（无限滚动）
   const srchScroll = viewSearch;
