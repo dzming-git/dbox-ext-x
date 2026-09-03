@@ -1357,6 +1357,142 @@ def create_blueprint(host):
         return jsonify({'success': True, 'items': items,
                         'next_cursor': next_cursor})
 
+    # ---- 多关键词批量爬取：后台异步任务（连接无关） ----
+    # 把"方案 / 全部重搜"的逐词爬取从浏览器循环搬到服务端线程，直接写入同一份
+    # UserState 缓存（search:kw:<key> + tweets feed），用户关掉浏览器任务仍继续，
+    # 回来按持久 resource_key 轮询进度即可。前端 searchKeyword 写入的就是这两个键。
+    _B36 = '0123456789abcdefghijklmnopqrstuvwxyz'
+    def _kw_key(q):
+        s = ' '.join(str(q).strip().lower().split())  # trim + 折叠空白，与前端 kwKey 一致
+        h = 5381
+        for ch in s:
+            h = ((h << 5) + h + ord(ch)) & 0xffffffff  # >>> 0 无符号 32 位
+        n = h
+        if n == 0:
+            return '0'
+        out = ''
+        while n:
+            out = _B36[n % 36] + out
+            n //= 36
+        return out
+
+    def _merge_tweet(t):
+        if not isinstance(t, dict):
+            return t
+        tid = t.get('tweet_id')
+        if tid is None:
+            tid = t.get('id')
+        if tid is None:
+            return t
+        rec = dict(t)
+        rec['tweet_id'] = str(tid)
+        return rec
+
+    def _bg_state_put(key, value, strategy=None, cap=None, auth=None, device=None):
+        """后台线程写 UserState：请求上下文已丢，需显式带鉴权头（代理默认读 flask.request）。"""
+        try:
+            base = host.state._base()
+            ns = host.state._ns
+            url = '%s/api/user-state/%s/%s' % (base, ns, key)
+            body = {'value': value, 'scope': 'user'}
+            if strategy:
+                body['strategy'] = strategy
+            if cap is not None:
+                body['cap'] = cap
+            hdr = {'Content-Type': 'application/json'}
+            if auth:
+                hdr['Authorization'] = auth
+            if device:
+                hdr['X-Dbox-Device-Id'] = device
+            req = urllib.request.Request(url, data=json.dumps(body).encode('utf-8'),
+                                         headers=hdr, method='PUT')
+            urllib.request.urlopen(req, timeout=20).read()
+        except Exception:
+            pass
+
+    @bp.route('/search/run', methods=['POST'])
+    @host.login_required
+    def search_run():
+        """后台批量爬取多个关键词到本地缓存，返回持久 task_id + resource_key。"""
+        data = request.get_json(force=True, silent=True) or {}
+        keywords = [str(k).strip() for k in (data.get('keywords') or []) if str(k).strip()]
+        if not keywords:
+            return jsonify({'success': False, 'message': '缺少关键词'}), 400
+        owner_id = data.get('owner_id', getattr(g, 'user_id', None))
+        library_id = data.get('library_id') or (data.get('params') or {}).get('library_id')
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False, 'message': '未配置 x.com 登录 Cookie'}), 400
+        auth = request.headers.get('Authorization')
+        device = request.headers.get('X-Dbox-Device-Id')
+
+        job_id = uuid.uuid4().hex
+        resource_key = 'xsearch:' + uuid.uuid4().hex[:16]
+        task_id = None
+        try:
+            _t = host.tasks.create(
+                title=data.get('title') or ('X 搜索 ' + (keywords[0] if len(keywords) == 1
+                                                          else ('%d 个关键词' % len(keywords)))),
+                owner_id=owner_id, status='running', progress=0,
+                stage='准备中', detail='开始批量爬取', library_id=library_id,
+                params={'resource_key': resource_key, 'keywords': keywords, 'job_id': job_id},
+            )
+            task_id = _t.get('task_id') if isinstance(_t, dict) else getattr(_t, 'task_id', None)
+        except Exception:
+            task_id = None
+
+        def _txid(method, path):
+            return get_transaction_id(xrun.build_headers(cookie, with_bearer=False),
+                                      method, path, ua=xrun.UA)
+
+        def worker():
+            n = len(keywords)
+            try:
+                for i, q in enumerate(keywords):
+                    kk = _kw_key(q)
+                    top_items, top_cur = [], None
+                    latest_items, latest_cur = [], None
+                    try:
+                        top_items, top_cur = xrun.search_tweets(
+                            cookie, q, 50, None, 'Top', txid_func=_txid)
+                    except Exception:
+                        top_cur = None
+                    try:
+                        latest_items, latest_cur = xrun.search_tweets(
+                            cookie, q, 50, None, 'Latest', txid_func=_txid)
+                    except Exception:
+                        latest_cur = None
+                    merged = [_merge_tweet(it) for it in ((top_items or []) + (latest_items or []))]
+                    if merged:
+                        # 与前端 XTWEETS 同一份内容缓存：feed('tweets') 在 UserState 的键是 feed:tweets:items
+                        _bg_state_put('feed:tweets:items', merged, strategy='union_by_id', cap=1500,
+                                      auth=auth, device=device)
+                    members_top = [{'tweet_id': str(it.get('tweet_id')
+                                       if it.get('tweet_id') is not None else it.get('id')),
+                                   'created_at': it.get('created_at')} for it in (top_items or [])]
+                    members_latest = [{'tweet_id': str(it.get('tweet_id')
+                                         if it.get('tweet_id') is not None else it.get('id')),
+                                       'created_at': it.get('created_at')} for it in (latest_items or [])]
+                    err = '' if (top_items or latest_items) else '未返回结果'
+                    _bg_state_put('search:kw:' + kk,
+                                  {'q': q, 'top': members_top, 'latest': members_latest,
+                                   'cursorTop': top_cur, 'cursorLatest': latest_cur,
+                                   'ts': int(time.time() * 1000), 'err': err},
+                                  strategy='lww', auth=auth, device=device)
+                    pct = int((i + 1) / n * 100)
+                    _report_task(task_id, progress=pct, stage='爬取中', detail='已爬取: ' + q)
+                    _progress_store.update(resource_key, percent=pct, message='已爬取: ' + q)
+                _report_task(task_id, status='completed', progress=100, stage='完成',
+                             detail='全部关键词已爬取')
+                _progress_store.mark_completed(resource_key, '全部关键词已爬取')
+            except Exception as e:
+                _report_task(task_id, status='failed', detail=str(e))
+                _progress_store.mark_failed(resource_key, str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
+        return jsonify({'success': True, 'task_id': task_id,
+                        'resource_key': resource_key, 'job_id': job_id})
+
     @bp.route('/user_tweets', methods=['GET'])
     @host.login_required
     def user_tweets_ep():
