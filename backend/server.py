@@ -196,18 +196,47 @@ def create_blueprint(host):
         return auth[7:] if auth.startswith('Bearer ') else auth
 
     def _x_cookie_header():
-        """从保险库读取 x.com 原始 cookie，拼成 HTTP Cookie 头。"""
+        """从保险库读取 x.com 原始 cookie，拼成 HTTP Cookie 头。
+
+        凭证库里 cookie 有两种存储形态，都要能拼出可用的 ``name=value; ...`` 头：
+        - 结构化列表：``rec['cookies']`` 为 ``[{name,value}, ...]``；
+        - Netscape 文本：``rec['_raw']`` 为 cookies.txt（``# Netscape...`` 头 + 7 列
+          tab 分隔行，末两列为 name/value）。netscape 形态的 cookie 经保险库解码后
+          ``cookies`` 为空列表、原始文本落在 ``_raw``，这里必须回退解析，否则会拼出
+          空 Cookie 头导致 X 全部以游客态请求、个人页/关注/收藏全空。
+        """
         try:
             rec = host.vault._vault.get_by_domain('x.com', kind='cookie')
         except Exception:
             return ''
         if not rec:
             return ''
-        cookies = rec.get('cookies') or []
-        return '; '.join(
-            f"{c.get('name')}={c.get('value')}" for c in cookies
-            if c.get('name') and c.get('value') is not None
-        )
+        # 1) 结构化 cookie 列表（标准 JSON 形态）
+        cookies = rec.get('cookies')
+        if isinstance(cookies, list) and cookies:
+            pairs = [f"{c.get('name')}={c.get('value')}" for c in cookies
+                     if isinstance(c, dict) and c.get('name') and c.get('value') is not None]
+            if pairs:
+                return '; '.join(pairs)
+        # 2) Netscape / 原始文本：解析成 name=value 对
+        raw = rec.get('_raw') or (cookies if isinstance(cookies, str) else '') or ''
+        if raw:
+            pairs = []
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '\t' in line:
+                    parts = line.split('\t')
+                    if len(parts) >= 7:
+                        name, val = parts[5].strip(), parts[6].strip()
+                        if name:
+                            pairs.append(f'{name}={val}')
+                elif '=' in line:
+                    pairs.append(line)
+            if pairs:
+                return '; '.join(pairs)
+        return ''
 
     # ---------- 媒体预览缓存（LRU 磁盘缓存，对标 ehentai 下载器） ----------
     # 用户点开的图片/视频预览直接代理下载并落盘缓存，回看命中本地字节，
@@ -1749,7 +1778,7 @@ def create_blueprint(host):
             return jsonify({'success': False,
                             'message': '无法从 Cookie 识别登录用户，请重新登录 X 或刷新凭证'}), 400
         try:
-            _, _, profile = xrun.user_tweets(cookie, rest_id)
+            profile = xrun.user_by_rest_id(cookie, rest_id)
         except Exception as e:
             return jsonify({'success': False, 'message': '获取个人资料失败: ' + str(e)}), 502
         if profile:
