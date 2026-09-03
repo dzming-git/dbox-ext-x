@@ -299,9 +299,24 @@ def create_blueprint(host):
         except Exception:
             pass
 
+    def _cache_max_bytes():
+        """缓存上限（字节），取自统一设置；设置未就绪时退回默认 512MB。"""
+        try:
+            return int(_settings_load().get('cache_max_mb') or 512) * 1024 * 1024
+        except Exception:
+            return 512 * 1024 * 1024
+
+    def _cache_stats():
+        """供设置页展示：文件数 / 已占用 / 上限。"""
+        with _LRU_LOCK:
+            return {'files': len(_lru_meta), 'bytes': _lru_total,
+                    'max_bytes': _cache_max_bytes()}
+
     def _cache_evict():
         nonlocal _lru_total
-        while _lru_total > _CACHE_MAX_BYTES and len(_lru_meta) > 1:
+        # 上限改为可配置（设置页可调），故每次回收都现取，不缓存成常量
+        limit = _cache_max_bytes()
+        while _lru_total > limit and len(_lru_meta) > 1:
             old_key, old_val = _lru_meta.popitem(last=False)
             _lru_total -= old_val.get('size', 0)
             try:
@@ -1247,53 +1262,113 @@ def create_blueprint(host):
     # 关于「不改用户浏览位置」：本模块只写服务端状态，不向客户端推送、也不触发
     # 任何前端重渲染。前端仍按自己的节奏 poll，且新推文一律走 prependNewTweets
     # （插前记录视口顶部卡片 + 卡内偏移，插后 anchorTo 还原），位置由前端负责保持。
-    _AC_CFG_FILE = os.path.join(host.data_dir, 'autocrawl.json')
-    _AC_DEFAULTS = {
-        'enabled': True,          # 总开关
-        'interval_min': 120,      # 抓取间隔（分钟）
-        'pages': 3,               # 每次抓取页数（每页 50 条）
-        'prefetch_media': True,   # 是否预下载图片/视频
-        # 图片与视频分开限量：实测单张图片百 KB 级、单个视频可达 89MB，
-        # 而 LRU 缓存上限 512MB。若不分开控量，几段视频就能把已缓存的图片
-        # 全挤掉——反而比不预取更慢。故图片放宽、视频严格限量。
-        'image_limit': 60,        # 每轮最多预取图片数（体积小，主要收益来源）
-        'video_limit': 3,         # 每轮最多预取视频数（体积大，严格限量）
+    _SETTINGS_FILE = os.path.join(host.data_dir, 'settings.json')
+    _SETTINGS_DEFAULTS = {
+        # ---- 媒体缓存 ----
+        'cache_max_mb': 512,          # 本地媒体缓存上限（MB）
+        # ---- 首页（关注流）后台预取 ----
+        'home_enabled': True,
+        'home_interval_min': 120,
+        'home_pages': 3,              # 每次抓取页数（每页 50 条）
+        'home_prefetch_media': True,
+        # 图片与视频分开限量：实测单张图片百 KB 级、单个视频可达 89MB。
+        # 若不分开控量，几段视频就能把已缓存的图片全挤掉——反而比不预取更慢。
+        'home_image_limit': 60,       # 图片体积小，是预取的主要收益来源
+        'home_video_limit': 3,        # 视频体积大，严格限量
+        # ---- 书签 / 喜欢 后台同步 ----
+        # 这两个列表变动远不如首页频繁，默认关闭、间隔拉长（12 小时），
+        # 由用户在设置页按需开启。
+        'bookmarks_enabled': False,
+        'bookmarks_interval_min': 720,
+        'bookmarks_pages': 2,
+        'likes_enabled': False,
+        'likes_interval_min': 720,
+        'likes_pages': 2,
     }
-    _ac_cfg = None
-    _ac_lock = threading.Lock()
-    _ac_state = {
-        'running': False, 'last_start': 0, 'last_finish': 0,
-        'last_ok': False, 'last_error': '', 'last_tweets': 0,
-        'last_media': 0, 'runs': 0,
-    }
+    _settings = None
+    _settings_lock = threading.Lock()
 
-    def _ac_load_cfg():
-        nonlocal _ac_cfg
-        if _ac_cfg is not None:
-            return _ac_cfg
-        cfg = dict(_AC_DEFAULTS)
+    def _new_job_state():
+        return {'running': False, 'last_start': 0, 'last_finish': 0,
+                'last_ok': False, 'last_error': '', 'last_count': 0,
+                'last_extra': '', 'runs': 0}
+
+    _JOB_NAMES = ('home', 'bookmarks', 'likes')
+    _job_state = {n: _new_job_state() for n in _JOB_NAMES}
+    _job_last = {n: 0.0 for n in _JOB_NAMES}     # 各任务上次成功排程时间
+
+    def _settings_load():
+        nonlocal _settings
+        if _settings is not None:
+            return _settings
+        cfg = dict(_SETTINGS_DEFAULTS)
+        # 兼容迁移：早期版本把首页预取单独存在 autocrawl.json（键名不同）
         try:
-            with open(_AC_CFG_FILE, 'r', encoding='utf-8') as f:
+            with open(os.path.join(host.data_dir, 'autocrawl.json'),
+                      'r', encoding='utf-8') as f:
+                legacy = json.load(f) or {}
+            if isinstance(legacy, dict):
+                for old, new in (('enabled', 'home_enabled'),
+                                 ('interval_min', 'home_interval_min'),
+                                 ('pages', 'home_pages'),
+                                 ('prefetch_media', 'home_prefetch_media'),
+                                 ('image_limit', 'home_image_limit'),
+                                 ('video_limit', 'home_video_limit')):
+                    if old in legacy:
+                        cfg[new] = legacy[old]
+        except Exception:
+            pass
+        try:
+            with open(_SETTINGS_FILE, 'r', encoding='utf-8') as f:
                 saved = json.load(f)
             if isinstance(saved, dict):
                 for k, v in saved.items():
-                    # 只接受已知键且类型一致的值，避免旧版/手改配置把类型搞乱
-                    if k in _AC_DEFAULTS and isinstance(v, type(_AC_DEFAULTS[k])):
-                        cfg[k] = v
+                    if k not in _SETTINGS_DEFAULTS:
+                        continue
+                    d = _SETTINGS_DEFAULTS[k]
+                    if isinstance(d, bool):
+                        cfg[k] = bool(v)
+                    elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                        cfg[k] = int(v)
         except Exception:
             pass
-        _ac_cfg = cfg
+        cfg = _settings_clamp(cfg)
+        _settings = cfg
         return cfg
 
-    def _ac_save_cfg(cfg):
-        nonlocal _ac_cfg
-        with _ac_lock:
-            _ac_cfg = dict(cfg)
+    def _settings_clamp(cfg):
+        """把配置钳制到合法区间：手改文件、旧版升级、非法输入都靠它兜住。"""
+        c = dict(cfg)
+        c['cache_max_mb'] = max(64, min(int(c['cache_max_mb']), 4096))
+        c['home_interval_min'] = max(5, min(int(c['home_interval_min']), 1440))
+        c['home_pages'] = max(1, min(int(c['home_pages']), 10))
+        c['home_image_limit'] = max(0, min(int(c['home_image_limit']), 300))
+        c['home_video_limit'] = max(0, min(int(c['home_video_limit']), 50))
+        c['bookmarks_interval_min'] = max(30, min(int(c['bookmarks_interval_min']), 10080))
+        c['bookmarks_pages'] = max(1, min(int(c['bookmarks_pages']), 10))
+        c['likes_interval_min'] = max(30, min(int(c['likes_interval_min']), 10080))
+        c['likes_pages'] = max(1, min(int(c['likes_pages']), 10))
+        for k in ('home_enabled', 'home_prefetch_media',
+                  'bookmarks_enabled', 'likes_enabled'):
+            c[k] = bool(c[k])
+        return c
+
+    def _settings_save(cfg):
+        nonlocal _settings
+        cfg = _settings_clamp(cfg)
+        with _settings_lock:
+            _settings = dict(cfg)
         try:
-            with open(_AC_CFG_FILE, 'w', encoding='utf-8') as f:
+            with open(_SETTINGS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+        # 上限调小后可能已超限：立即按新上限回收一次
+        try:
+            _cache_evict()
+        except Exception:
+            pass
+        return cfg
 
     def _ac_collect_media(items, image_limit, video_limit):
         """从一批推文收集待预取的媒体 URL：图片与视频分开（视频大，单独限量）。"""
@@ -1341,12 +1416,12 @@ def create_blueprint(host):
 
     def _ac_run_once():
         """抓一轮首页 + 预取媒体。返回 (ok, tweets, media, err)。"""
-        cfg = _ac_load_cfg()
+        cfg = _settings_load()
         cookie = _x_cookie_header()
         if not cookie:
             return False, 0, 0, '未配置 x.com 登录 Cookie'
         items, cursor = [], None
-        pages = max(1, min(int(cfg.get('pages') or 1), 10))
+        pages = max(1, min(int(cfg.get('home_pages') or 1), 10))
         for _p in range(pages):
             try:
                 # 第一页不带 cursor（拉最新）；后续页带 cursor 往更旧翻
@@ -1379,100 +1454,249 @@ def create_blueprint(host):
         except Exception:
             pass
         media_n = 0
-        if cfg.get('prefetch_media'):
+        if cfg.get('home_prefetch_media'):
             imgs, vids = _ac_collect_media(
                 items,
-                int(cfg.get('image_limit') or 0),
-                int(cfg.get('video_limit') or 0))
+                int(cfg.get('home_image_limit') or 0),
+                int(cfg.get('home_video_limit') or 0))
             media_n += _ac_prefetch(imgs, 'image')
             media_n += _ac_prefetch(vids, 'video')
         return True, len(items), media_n, ''
 
-    def _ac_tick():
-        with _ac_lock:
-            if _ac_state['running']:
-                return False
-            _ac_state['running'] = True
-            _ac_state['last_start'] = time.time()
-        ok, tweets, media, err = False, 0, 0, ''
+    # ---- 书签 / 喜欢 后台同步 ----
+    # 这两个列表此前只能等用户打开对应标签才现拉（首次进入要转圈数秒，喜欢尤甚）。
+    # 这里同样提供后台定时：内容进全局单缓存 feed:tweets:items（与首页/搜索/详情
+    # 共用一份内容），成员 id 进 bm:list / like:list——正是前端读取的那两个键，
+    # 因此后台跑过一轮后，用户点开书签/喜欢即为秒开。
+    def _membership(items, limit=600):
+        """转成前端 toMembership() 的同构列表：[{tweet_id, created_at}]。"""
+        out = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            tid = it.get('tweet_id') or it.get('id')
+            if not tid:
+                continue
+            out.append({'tweet_id': str(tid), 'created_at': it.get('created_at')})
+            if len(out) >= limit:
+                break
+        return out
+
+    def _merge_membership(key, items, limit=600):
+        """把新抓到的成员并入既有成员列表（按 tweet_id 去重、时间倒序、封顶）。
+
+        绝不能直接 lww 整体覆盖：后台任务每次只翻 N 页（默认 2 页），抓到的是
+        「最近若干页」而非全量，覆盖式写入会把用户此前缓存的更旧条目整段抹掉，
+        列表反而越同步越短。故先读回既有列表再按 id 归并。
+        """
+        cur = []
         try:
-            ok, tweets, media, err = _ac_run_once()
+            v = host.state.get(key)
+            if isinstance(v, list):
+                cur = v
+            elif isinstance(v, dict) and isinstance(v.get('value'), list):
+                cur = v['value']
+        except Exception:
+            cur = []
+        seen = {}
+        for m in list(cur) + list(_membership(items, limit)):
+            if not isinstance(m, dict):
+                continue
+            tid = str(m.get('tweet_id') or m.get('id') or '')
+            if not tid:
+                continue
+            rec = {'tweet_id': tid, 'created_at': m.get('created_at')}
+            prev = seen.get(tid)
+            if prev is None or (rec['created_at'] or '') > (prev.get('created_at') or ''):
+                seen[tid] = rec
+        merged = list(seen.values())
+        merged.sort(key=lambda x: (x.get('created_at') or ''), reverse=True)
+        return merged[:limit]
+
+    def _merge_into_tweet_store(items):
+        """把一批推文内容并入全局单缓存（与前端 XTWEETS 同一份，跨设备共享）。"""
+        norm = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            rec = dict(it)
+            rec['id'] = str(it.get('tweet_id') or it.get('id') or '')
+            rec['order'] = it.get('created_at')
+            norm.append(rec)
+        if norm:
+            try:
+                host.state.put('feed:tweets:items', norm,
+                               strategy='union_by_id', cap=1500)
+            except Exception:
+                pass
+        return len(norm)
+
+    def _fetch_paged(fetcher, pages, count=50):
+        """通用翻页：连续翻到指定页数或没有下一页为止，返回合并后的条目。
+
+        首页第一页不带 cursor（拉最新），书签/喜欢同理；翻页中途失败时
+        保留已抓到的部分，不算整轮失败。
+        """
+        items, cursor = [], None
+        for p in range(max(1, pages)):
+            try:
+                page_items, cursor = fetcher(count, cursor if p else None)
+            except Exception:
+                if not items:
+                    raise
+                break
+            if not page_items:
+                break
+            items.extend(page_items)
+            if not cursor:
+                break
+        return items
+
+    def _job_bookmarks(cfg):
+        cookie = _x_cookie_header()
+        if not cookie:
+            return False, 0, '未配置 x.com 登录 Cookie'
+        items = _fetch_paged(
+            lambda c, cur: xrun.list_bookmarks(cookie, c, cur),
+            int(cfg.get('bookmarks_pages') or 1))
+        if not items:
+            return True, 0, ''
+        n = _merge_into_tweet_store(items)
+        try:
+            host.state.put('bm:list', _merge_membership('bm:list', items),
+                           strategy='lww')
+        except Exception:
+            pass
+        return True, n, ''
+
+    def _job_likes(cfg):
+        cookie = _x_cookie_header()
+        if not cookie:
+            return False, 0, '未配置 x.com 登录 Cookie'
+        rest_id = _my_rest_id(cookie)
+        if not rest_id:
+            return False, 0, '无法从 Cookie 识别登录用户'
+        items = _fetch_paged(
+            lambda c, cur: xrun.list_likes(cookie, rest_id, c, cur),
+            int(cfg.get('likes_pages') or 1))
+        if not items:
+            return True, 0, ''
+        n = _merge_into_tweet_store(items)
+        try:
+            host.state.put('like:list', _merge_membership('like:list', items),
+                           strategy='lww')
+        except Exception:
+            pass
+        return True, n, ''
+
+    def _run_job(name, cfg=None):
+        """跑一个后台任务并记账。返回是否成功。"""
+        st = _job_state[name]
+        with _settings_lock:
+            if st['running']:
+                return False
+            st['running'] = True
+            st['last_start'] = time.time()
+        ok, count, err, extra = False, 0, '', ''
+        try:
+            if cfg is None:
+                cfg = _settings_load()
+            if name == 'home':
+                ok, tweets, media, err = _ac_run_once()
+                count = tweets
+                if media:
+                    extra = '媒体 %d' % media
+            elif name == 'bookmarks':
+                ok, count, err = _job_bookmarks(cfg)
+            else:
+                ok, count, err = _job_likes(cfg)
         except Exception as e:
             err = '%s: %s' % (type(e).__name__, e)
         finally:
-            with _ac_lock:
-                _ac_state['running'] = False
-                _ac_state['last_finish'] = time.time()
-                _ac_state['last_ok'] = bool(ok)
-                _ac_state['last_error'] = err or ''
-                _ac_state['last_tweets'] = tweets
-                _ac_state['last_media'] = media
-                _ac_state['runs'] = _ac_state.get('runs', 0) + 1
+            with _settings_lock:
+                st['running'] = False
+                st['last_finish'] = time.time()
+                st['last_ok'] = bool(ok)
+                st['last_error'] = err or ''
+                st['last_count'] = count
+                st['last_extra'] = extra or ''
+                st['runs'] = st.get('runs', 0) + 1
+                if ok:
+                    _job_last[name] = time.time()
         try:
-            print('[x.autocrawl] 一轮结束 ok=%s 推文=%s 媒体=%s %s'
-                  % (ok, tweets, media, ('err=' + err) if err else ''),
+            print('[x.job] %s 一轮结束 ok=%s 条=%s %s'
+                  % (name, ok, count, ('err=' + err) if err else extra),
                   file=sys.stderr, flush=True)
         except Exception:
             pass
         return ok
 
-    def _ac_loop():
-        # 启动后先等一会，避免与插件加载、其他初始化抢资源
-        time.sleep(30)
+    def _sched_loop():
+        """统一调度：每分钟巡检一次，各任务按自己的间隔到点执行。
+
+        三个任务共用一个线程而非各起一个——间隔可在设置页随时改动，
+        单线程巡检能让新间隔在下一分钟即生效；若各起一个线程并按
+        interval 长睡，改完设置要等上一整轮（甚至到下次重启）才生效。
+        """
+        time.sleep(30)          # 启动后先避开插件初始化高峰
         while True:
             try:
-                if _ac_load_cfg().get('enabled'):
-                    _ac_tick()
+                cfg = _settings_load()
+                now = time.time()
+                for name in _JOB_NAMES:
+                    try:
+                        if not cfg.get(name + '_enabled'):
+                            continue
+                        interval = max(1, int(cfg.get(name + '_interval_min') or 60)) * 60
+                        if now - _job_last.get(name, 0) >= interval:
+                            _run_job(name, cfg)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            try:
-                interval = max(5, int(_ac_load_cfg().get('interval_min') or 60))
-            except Exception:
-                interval = 60
-            time.sleep(interval * 60)
+            time.sleep(60)
 
     try:
-        threading.Thread(target=_ac_loop, daemon=True).start()
+        threading.Thread(target=_sched_loop, daemon=True).start()
     except Exception:
         pass
 
-    @bp.route('/autocrawl', methods=['GET'])
+    @bp.route('/settings', methods=['GET'])
     @host.login_required
-    def autocrawl_get():
-        """返回首页后台预取的配置与运行状态。"""
-        with _ac_lock:
-            st = dict(_ac_state)
-        return jsonify({'success': True, 'config': _ac_load_cfg(), 'state': st})
+    def settings_get():
+        """返回统一设置 + 各后台任务运行状态 + 媒体缓存占用。"""
+        with _settings_lock:
+            jobs = {n: dict(_job_state[n]) for n in _JOB_NAMES}
+        return jsonify({'success': True, 'settings': _settings_load(),
+                        'jobs': jobs, 'cache': _cache_stats()})
 
-    @bp.route('/autocrawl', methods=['POST'])
+    @bp.route('/settings', methods=['PUT', 'POST'])
     @host.login_required
-    def autocrawl_set():
-        """更新后台预取配置（只接受已知字段，做类型与范围钳制）。"""
+    def settings_set():
+        """更新设置（只接受已知字段，保存前统一钳制）。PUT/POST 皆可。"""
         data = request.get_json(force=True, silent=True) or {}
-        cfg = dict(_ac_load_cfg())
+        cfg = dict(_settings_load())
         if isinstance(data, dict):
             for k, v in data.items():
-                if k not in _AC_DEFAULTS:
+                if k not in _SETTINGS_DEFAULTS:
                     continue
-                if isinstance(_AC_DEFAULTS[k], bool):
+                if isinstance(_SETTINGS_DEFAULTS[k], bool):
                     cfg[k] = bool(v)
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     cfg[k] = int(v)
-        cfg['interval_min'] = max(5, min(int(cfg['interval_min']), 1440))
-        cfg['pages'] = max(1, min(int(cfg['pages']), 10))
-        cfg['image_limit'] = max(0, min(int(cfg['image_limit']), 300))
-        cfg['video_limit'] = max(0, min(int(cfg['video_limit']), 50))
-        _ac_save_cfg(cfg)
-        return jsonify({'success': True, 'config': cfg})
+        cfg = _settings_save(cfg)
+        return jsonify({'success': True, 'settings': cfg})
 
-    @bp.route('/autocrawl/run', methods=['POST'])
+    @bp.route('/settings/run/<job>', methods=['POST'])
     @host.login_required
-    def autocrawl_run():
-        """立即跑一轮（异步，不阻塞请求）。"""
-        with _ac_lock:
-            if _ac_state['running']:
-                return jsonify({'success': False, 'message': '上一轮仍在运行'}), 409
-        threading.Thread(target=_ac_tick, daemon=True).start()
+    def settings_run(job):
+        """立即跑一轮指定任务（异步，不阻塞请求）。job: home|bookmarks|likes"""
+        if job not in _JOB_NAMES:
+            return jsonify({'success': False, 'message': '未知任务'}), 404
+        with _settings_lock:
+            if _job_state[job]['running']:
+                return jsonify({'success': False, 'message': '该任务正在运行'}), 409
+        threading.Thread(target=_run_job, args=(job,), daemon=True).start()
         return jsonify({'success': True})
 
     @bp.route('/timeline', methods=['GET'])
@@ -2254,6 +2478,6 @@ def create_blueprint(host):
         items.sort(key=lambda x: -x['mtime'])
         total = sum(x['size'] for x in items)
         return jsonify({'success': True, 'items': items, 'count': len(items),
-                        'total_bytes': total})
+                        'total_bytes': total, 'max_bytes': _cache_max_bytes()})
 
     return bp
