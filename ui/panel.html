@@ -249,12 +249,14 @@
   .bm-toolbar .primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .bm-toolbar .secondary { background: #fff; color: #536471; }
   /* 排序分段控件：热门 / 最新 是同一组互斥切换，做成胶囊样式，与右侧操作按钮区分开 */
-  .bm-toolbar .srch-prod { display: inline-flex; flex: 0 0 auto; gap: 2px;
-    background: #eef1f3; border-radius: 10px; padding: 3px; }
-  .bm-toolbar .srch-prod button { flex: 0 0 auto; border: none; background: transparent;
-    color: #536471; padding: 6px 14px; font-size: 13px; border-radius: 8px; line-height: 1.3; }
-  .bm-toolbar .srch-prod button:hover:not(.primary) { color: #0f1419; }
-  .bm-toolbar .srch-prod button.primary { background: #1d9bf0; color: #fff; border-color: #1d9bf0; font-weight: 600; }
+  /* 排序条：热门/最新 紧贴结果流，作为内容区的视图切换（类 X 原生 tab） */
+  .srch-sortbar { display: flex; border-bottom: 1px solid #eff3f4; margin: 2px 0 10px; }
+  .srch-sortbar button { flex: 1 1 0; min-width: 0; background: transparent; border: none; cursor: pointer;
+    padding: 13px 8px; font-size: 15px; color: #536471; font-weight: 700; position: relative; transition: color .12s; }
+  .srch-sortbar button:hover { color: #0f1419; }
+  .srch-sortbar button.primary { color: #0f1419; }
+  .srch-sortbar button.primary::after { content: ''; position: absolute; left: 50%; bottom: -1px;
+    transform: translateX(-50%); width: 52px; height: 4px; border-radius: 4px 4px 0 0; background: #1d9bf0; }
   /* 操作组：过滤 / 方案 属于「配置」操作，与排序控件分开放置在右侧 */
   .bm-toolbar .srch-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
     flex: 0 0 auto; }
@@ -594,10 +596,6 @@
       </div>
     </div>
     <div class="bm-toolbar">
-      <span class="srch-prod" id="srch-prod">
-        <button id="srch-prod-top" class="primary sm">🔥 热门</button>
-        <button id="srch-prod-latest" class="sm">🕐 最新</button>
-      </span>
       <span class="srch-actions">
         <button id="srch-filter-btn" class="sm" title="配置搜索过滤（屏蔽广告/机器人）">🚫 过滤<span id="srch-filter-badge"></span></button>
         <button id="srch-preset-btn" class="sm" title="把「关键词组合 + 过滤配置」存成方案，一键切换常用搜索">📋 方案<span id="srch-preset-badge"></span></button>
@@ -659,6 +657,11 @@
           <button id="pst-clear" class="sm" title="只清空当前关键词清单，方案不受影响">仅清空关键词</button>
         </div>
       </div>
+    </div>
+    <!-- 排序条：热门/最新 紧贴结果流，作为内容区的视图切换 -->
+    <div class="srch-sortbar" id="srch-prod">
+      <button id="srch-prod-top" class="primary sm">🔥 热门</button>
+      <button id="srch-prod-latest" class="sm">🕐 最新</button>
     </div>
     <div id="srch-list" class="bm-list"><div class="bm-empty">输入关键词搜索 X 推文。</div></div>
     <div class="bm-loadmore" id="srch-loadmore" style="display:none"><button id="srch-more">加载更多</button></div>
