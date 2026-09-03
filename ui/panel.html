@@ -595,13 +595,15 @@
   <div class="view" id="view-bookmarks" style="display:none">
     <div id="me-profile" class="me-profile"><div class="bm-empty">资料加载中…</div></div>
     <div class="me-tabs" id="me-tabs">
-      <button class="me-tab active" data-me="xbook">⭐ X 收藏</button>
+      <button class="me-tab active" data-me="xbook">🔖 书签</button>
+      <button class="me-tab" data-me="likes">❤️ 喜欢</button>
       <button class="me-tab" data-me="follow">👥 关注</button>
       <button class="me-tab" data-me="followers">👤 粉丝</button>
-      <button id="me-refresh" class="me-refresh" title="重新从 X 拉取（收藏/关注基本不变，手动触发）">🔄 刷新</button>
+      <button id="me-refresh" class="me-refresh" title="重新从 X 拉取（书签/喜欢/关注基本不变，手动触发）">🔄 刷新</button>
     </div>
     <div class="me-refresh-row"><span id="me-cache-age" class="me-cache-age"></span></div>
-    <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「X 收藏」加载你在 X 上收藏的推文。</div></div>
+    <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「书签」加载你在 X 上收藏的推文。</div></div>
+    <div class="bm-list" id="me-likes" style="display:none"><div class="bm-empty">点击下方「喜欢」加载你在 X 上点过喜欢的推文。</div></div>
     <div class="bm-list" id="me-follow" style="display:none"><div class="bm-empty">加载你关注的人…</div></div>
     <div class="bm-list" id="me-followers" style="display:none"><div class="bm-empty">加载你的粉丝…</div></div>
   </div>
@@ -2051,7 +2053,7 @@
       else if (activeView === 'search') {
         await (srchActiveKey ? refreshKeyword(srchActiveKey) : doSearch());
       }
-      else if (activeView === 'bookmarks') { meLoaded = { xbook: false, stars: false, follow: false, followers: false }; switchMeSub(meSub); }
+      else if (activeView === 'bookmarks') { meLoaded = { xbook: false, likes: false, stars: false, follow: false, followers: false }; switchMeSub(meSub); }
     } catch (e) { /* 忽略刷新异常 */ } finally {
       tbRefresh.classList.remove('spinning');
     }
@@ -2169,12 +2171,13 @@
   /* ---- 我的 X（个人页）---- */
   const meProfile = $('me-profile');
   const meXBook = $('me-xbook');
+  const meLikes = $('me-likes');
   const meFollow = $('me-follow');
   const meFollowers = $('me-followers');
   const viewStars = $('me-stars');
   const meTabs = $('me-tabs');
   let meSub = 'xbook';
-  let meLoaded = { xbook: false, stars: false, follow: false, followers: false };
+  let meLoaded = { xbook: false, likes: false, stars: false, follow: false, followers: false };
   let starsLoaded = false;
   const starSet = new Set();
   const meCacheAge = $('me-cache-age');
@@ -2398,6 +2401,77 @@
     });
   }
 
+  async function loadXLikes(force) {
+    // 缓存优先：打开即渲染本地已缓存的 X 喜欢（XTWEETS + like:list），不重新爬 X；
+    // 仅 force=true（用户点「刷新」）才重新从 X 同步。
+    if (!force) {
+      if (renderLikesFromLocal()) { meLoaded.likes = true; updateMeCacheAge(); return; }
+      try { await restoreLikes(); } catch (_) {}
+      if (meLikes.children.length) { meLoaded.likes = true; updateMeCacheAge(); return; }
+    }
+    meLikes.innerHTML = '<div class="bm-empty">正在从 X 同步喜欢…</div>';
+    const all = [];
+    let cursor = null;
+    let page = 0;
+    const MAX_PAGES = 20;
+    try {
+      while (page < MAX_PAGES) {
+        page++;
+        const url = `${API}/likes?count=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        const r = await req(url);
+        const d = await r.json();
+        if (!d.success) {
+          if (!all.length) { meLikes.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
+          break;
+        }
+        const pageItems = d.items || [];
+        pageItems.forEach((it) => all.push(it));
+        cursor = d.next_cursor || null;
+        if (!cursor || !pageItems.length) break;
+      }
+      if (!all.length) { meLikes.innerHTML = '<div class="bm-empty">你还没有在 X 上点过喜欢的推文。</div>'; return; }
+      const merged = mergeTweets(all);
+      tweetCachePut(merged);
+      meLikes.innerHTML = '';
+      merged.forEach((it) => meLikes.appendChild(renderBmCard(it, false)));
+      if (XSTATE) try { XSTATE.set('like:list', toMembership(merged).slice(0, 600), { strategy: 'lww' }); } catch (_) {}
+      if (meCacheAge) meCacheAge.textContent = '已从 X 同步喜欢 ' + merged.length + ' 条';
+    } catch (e) {
+      if (!all.length) meLikes.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  // 仅读本地缓存（XTWEETS + XSTATE like:list 的成员 id），不触发任何网络请求
+  function renderLikesFromLocal() {
+    var cached = null;
+    try { cached = XSTATE ? XSTATE.get('like:list') : null; } catch (_) {}
+    if (!cached || !cached.length) return false;
+    meLikes.innerHTML = '';
+    var any = false;
+    cached.forEach((entry) => {
+      var id = entry && (entry.tweet_id || entry.id);
+      var t = tweetCacheGet(id);
+      if (t) { meLikes.appendChild(renderBmCard(t, false)); any = true; }
+    });
+    return any;
+  }
+
+  // 喜欢列表本地缓存 + 多设备同步：先 pull 再渲染
+  async function restoreLikes() {
+    if (!XSTATE) return;
+    try { await XSTATE.pull(); } catch (_) {}
+    let cached;
+    try { cached = XSTATE.get('like:list'); } catch (_) { return; }
+    if (!cached || !cached.length) return;
+    meLikes.innerHTML = '';
+    tweetCachePut(cached);
+    cached.forEach((entry) => {
+      const id = entry && (entry.tweet_id || entry.id);
+      const t = tweetCacheGet(id);
+      if (t) meLikes.appendChild(renderBmCard(t, false));
+    });
+  }
+
   /* ---- 我的 X（个人页）子页切换 ---- */
   async function loadStars() {
     if (!viewStars) return;
@@ -2429,11 +2503,13 @@
       t.classList.toggle('active', t.dataset.me === sub);
     });
     meXBook.style.display = sub === 'xbook' ? '' : 'none';
+    meLikes.style.display = sub === 'likes' ? '' : 'none';
     meFollow.style.display = sub === 'follow' ? '' : 'none';
     meFollowers.style.display = sub === 'followers' ? '' : 'none';
     updateMeCacheAge();
     if (!meLoaded[sub]) {
       if (sub === 'xbook') loadXBookmarks();
+      else if (sub === 'likes') loadXLikes();
       else if (sub === 'follow') loadFollowing();
       else if (sub === 'followers') loadFollowers();
     }
@@ -2445,6 +2521,7 @@
   function refreshMe() {
     loadMeProfile(true);
     if (meSub === 'xbook') loadXBookmarks(true);
+    else if (meSub === 'likes') loadXLikes(true);
     else if (meSub === 'follow') loadFollowing(true);
     else if (meSub === 'followers') loadFollowers(true);
     if (meCacheAge) meCacheAge.textContent = '正在从 X 重新拉取…';
