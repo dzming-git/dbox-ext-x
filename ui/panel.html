@@ -604,6 +604,11 @@
   .ac-hint { margin-top: 6px; font-size: 11.5px; color: #8899a6; line-height: 1.5; }
   .ac-title { font-size: 14px; font-weight: 600; }
   .ac-readonly { color: #8899a6; font-size: 12.5px; }
+  /* 确认按钮：改动不立即提交，默认置灰禁用；任一字段改动即点亮（.dirty）可点 */
+  .ac-confirm { padding: 7px 14px; font-size: 13px; border-radius: 9px; cursor: pointer;
+    border: 1px solid #2f3336; background: transparent; color: #8899a6; }
+  .ac-confirm.dirty { border-color: #1d9bf0; background: #1d9bf0; color: #fff; }
+  .ac-confirm:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>
@@ -787,6 +792,10 @@
         <span class="ac-readonly" id="st-cache-use">—</span>
       </div>
       <div class="ac-hint">视频单个可达数十 MB（实测最大 89MB），图片仅百 KB 级。视频缓存过多会挤掉图片，反而更慢。</div>
+      <div class="ac-foot">
+        <span></span>
+        <button id="st-cache-confirm" class="ac-confirm" disabled>确认</button>
+      </div>
     </div>
 
     <div class="ac-box">
@@ -816,14 +825,15 @@
             <option value="5">5 页（约 250 条）</option>
           </select>
         </label>
-        <label>图片上限 <input type="number" id="st-home-img" min="0" max="300" step="10" /></label>
-        <label>视频上限 <input type="number" id="st-home-vid" min="0" max="50" step="1" /></label>
       </div>
       <div class="ac-foot">
         <label class="ac-switch">
           <input type="checkbox" id="st-home-media" /><span>同时预缓存图片／视频</span>
         </label>
-        <span id="st-home-status" class="ac-status"></span>
+        <span style="display:flex;align-items:center;gap:10px">
+          <span id="st-home-status" class="ac-status"></span>
+          <button id="st-home-confirm" class="ac-confirm" disabled>确认</button>
+        </span>
       </div>
     </div>
 
@@ -855,7 +865,12 @@
           </select>
         </label>
       </div>
-      <div class="ac-foot"><span id="st-bm-status" class="ac-status"></span></div>
+      <div class="ac-foot">
+        <span style="display:flex;align-items:center;gap:10px">
+          <span id="st-bm-status" class="ac-status"></span>
+          <button id="st-bm-confirm" class="ac-confirm" disabled>确认</button>
+        </span>
+      </div>
     </div>
 
     <div class="ac-box">
@@ -886,7 +901,12 @@
           </select>
         </label>
       </div>
-      <div class="ac-foot"><span id="st-lk-status" class="ac-status"></span></div>
+      <div class="ac-foot">
+        <span style="display:flex;align-items:center;gap:10px">
+          <span id="st-lk-status" class="ac-status"></span>
+          <button id="st-lk-confirm" class="ac-confirm" disabled>确认</button>
+        </span>
+      </div>
     </div>
 
     <div class="ac-box">
@@ -6198,14 +6218,14 @@
      后台任务只写服务端状态、不向页面推送，因此不会改变用户当前的浏览位置——
      页面侧的新推文一律走 prependNewTweets（插前记锚点、插后还原）。 */
   const stEls = {
-    cacheMb: $('st-cache-mb'), cacheUse: $('st-cache-use'),
+    cacheMb: $('st-cache-mb'), cacheUse: $('st-cache-use'), cacheConfirm: $('st-cache-confirm'),
     homeEn: $('st-home-en'), homeIv: $('st-home-iv'), homePages: $('st-home-pages'),
-    homeImg: $('st-home-img'), homeVid: $('st-home-vid'), homeMedia: $('st-home-media'),
+    homeMedia: $('st-home-media'), homeConfirm: $('st-home-confirm'),
     homeRun: $('st-home-run'), homeStatus: $('st-home-status'),
     bmEn: $('st-bm-en'), bbIv: $('st-bm-iv'), bmPages: $('st-bm-pages'),
-    bmRun: $('st-bm-run'), bmStatus: $('st-bm-status'),
+    bmRun: $('st-bm-run'), bmConfirm: $('st-bm-confirm'), bmStatus: $('st-bm-status'),
     lkEn: $('st-lk-en'), lkIv: $('st-lk-iv'), lkPages: $('st-lk-pages'),
-    lkRun: $('st-lk-run'), lkStatus: $('st-lk-status'),
+    lkRun: $('st-lk-run'), lkConfirm: $('st-lk-confirm'), lkStatus: $('st-lk-status'),
   };
   let stCfg = null;
   let stPollIv = null;
@@ -6264,8 +6284,6 @@
       stSetSel(E.homeIv, stCfg.home_interval_min || 120,
                fmtMinutes(stCfg.home_interval_min || 120));
       stSetSel(E.homePages, stCfg.home_pages || 3, `${stCfg.home_pages || 3} 页`);
-      if (E.homeImg) E.homeImg.value = String(stCfg.home_image_limit == null ? 60 : stCfg.home_image_limit);
-      if (E.homeVid) E.homeVid.value = String(stCfg.home_video_limit == null ? 3 : stCfg.home_video_limit);
       if (E.homeMedia) E.homeMedia.checked = !!stCfg.home_prefetch_media;
       if (E.bmEn) E.bmEn.checked = !!stCfg.bookmarks_enabled;
       stSetSel(E.bbIv, stCfg.bookmarks_interval_min || 720,
@@ -6320,32 +6338,56 @@
   }
 
   const stE = stEls;
-  if (stE.cacheMb) stE.cacheMb.addEventListener('change',
-    () => stSave({ cache_max_mb: parseInt(stE.cacheMb.value, 10) || 512 }));
-  if (stE.homeEn) stE.homeEn.addEventListener('change',
-    () => stSave({ home_enabled: stE.homeEn.checked }));
-  if (stE.homeIv) stE.homeIv.addEventListener('change',
-    () => stSave({ home_interval_min: parseInt(stE.homeIv.value, 10) }));
-  if (stE.homePages) stE.homePages.addEventListener('change',
-    () => stSave({ home_pages: parseInt(stE.homePages.value, 10) }));
-  if (stE.homeImg) stE.homeImg.addEventListener('change',
-    () => stSave({ home_image_limit: parseInt(stE.homeImg.value, 10) || 0 }));
-  if (stE.homeVid) stE.homeVid.addEventListener('change',
-    () => stSave({ home_video_limit: parseInt(stE.homeVid.value, 10) || 0 }));
-  if (stE.homeMedia) stE.homeMedia.addEventListener('change',
-    () => stSave({ home_prefetch_media: stE.homeMedia.checked }));
-  if (stE.bmEn) stE.bmEn.addEventListener('change',
-    () => stSave({ bookmarks_enabled: stE.bmEn.checked }));
-  if (stE.bbIv) stE.bbIv.addEventListener('change',
-    () => stSave({ bookmarks_interval_min: parseInt(stE.bbIv.value, 10) }));
-  if (stE.bmPages) stE.bmPages.addEventListener('change',
-    () => stSave({ bookmarks_pages: parseInt(stE.bmPages.value, 10) }));
-  if (stE.lkEn) stE.lkEn.addEventListener('change',
-    () => stSave({ likes_enabled: stE.lkEn.checked }));
-  if (stE.lkIv) stE.lkIv.addEventListener('change',
-    () => stSave({ likes_interval_min: parseInt(stE.lkIv.value, 10) }));
-  if (stE.lkPages) stE.lkPages.addEventListener('change',
-    () => stSave({ likes_pages: parseInt(stE.lkPages.value, 10) }));
+  // 设置改为「确认才提交」：任意字段改动不立即写服务端（避免输入即确认的反人性体验），
+  // 而是点亮该卡片的「确认」按钮；点「确认」才把本卡片字段一次性提交，提交后熄灭。
+  // 确认按钮默认置灰禁用，改动后即点亮可点。
+  function stPatchCache() { return { cache_max_mb: parseInt(stE.cacheMb.value, 10) || 512 }; }
+  function stPatchHome() {
+    return {
+      home_enabled: stE.homeEn.checked,
+      home_interval_min: parseInt(stE.homeIv.value, 10),
+      home_pages: parseInt(stE.homePages.value, 10),
+      home_prefetch_media: stE.homeMedia.checked,
+    };
+  }
+  function stPatchBm() {
+    return {
+      bookmarks_enabled: stE.bmEn.checked,
+      bookmarks_interval_min: parseInt(stE.bbIv.value, 10),
+      bookmarks_pages: parseInt(stE.bmPages.value, 10),
+    };
+  }
+  function stPatchLk() {
+    return {
+      likes_enabled: stE.lkEn.checked,
+      likes_interval_min: parseInt(stE.lkIv.value, 10),
+      likes_pages: parseInt(stE.lkPages.value, 10),
+    };
+  }
+  function stBindBox(fields, confirmBtn, patchFn) {
+    fields.forEach((el) => {
+      if (el) el.addEventListener('change', () => {
+        if (confirmBtn) { confirmBtn.classList.add('dirty'); confirmBtn.disabled = false; }
+      });
+    });
+    if (confirmBtn) confirmBtn.addEventListener('click', async () => {
+      const old = confirmBtn.textContent;
+      confirmBtn.disabled = true;
+      try {
+        await stSave(patchFn());
+        // 提交成功：无未保存改动，回到置灰禁用态（直到下次改动再点亮）
+        confirmBtn.classList.remove('dirty');
+      } catch (_) {
+        confirmBtn.disabled = false; // 失败可重试
+      } finally {
+        confirmBtn.textContent = old;
+      }
+    });
+  }
+  stBindBox([stE.cacheMb], stE.cacheConfirm, stPatchCache);
+  stBindBox([stE.homeEn, stE.homeIv, stE.homePages, stE.homeMedia], stE.homeConfirm, stPatchHome);
+  stBindBox([stE.bmEn, stE.bbIv, stE.bmPages], stE.bmConfirm, stPatchBm);
+  stBindBox([stE.lkEn, stE.lkIv, stE.lkPages], stE.lkConfirm, stPatchLk);
 
   async function stRun(job, btn) {
     if (!btn) return;
