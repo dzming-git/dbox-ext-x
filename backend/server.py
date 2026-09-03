@@ -1679,6 +1679,134 @@ def create_blueprint(host):
                 conn.close()
         return jsonify({'success': True, 'items': _folder_list()})
 
+
+    @bp.route('/stars', methods=['GET', 'POST'])
+    @host.login_required
+    def stars():
+        """dbox 内「星标推文」：与 X 书签无关，仅存 dbox user_state，可跨设备回看。
+
+        GET 返回星标列表；POST 加入一条（body 为推文项，含 tweet_id）；
+        删除走 DELETE /stars/<tweet_id>。写入用 lww 整表覆盖（个人收藏，并发冲突可接受）。
+        """
+        key = 'feed:stars:items'
+        if request.method == 'POST':
+            item = request.get_json(force=True, silent=True) or {}
+            tid = item.get('tweet_id')
+            if not tid:
+                return jsonify({'success': False, 'message': '缺少 tweet_id'}), 400
+            cur = host.state.get(key) or []
+            if not isinstance(cur, list):
+                cur = []
+            cur = [x for x in cur if isinstance(x, dict) and str(x.get('tweet_id')) != str(tid)]
+            rec = dict(item)
+            rec['id'] = str(tid)
+            rec['starred_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            cur.insert(0, rec)
+            if len(cur) > 2000:
+                cur = cur[:2000]
+            host.state.put(key, cur, strategy='lww')
+            return jsonify({'success': True, 'items': cur})
+        items = host.state.get(key) or []
+        if not isinstance(items, list):
+            items = []
+        return jsonify({'success': True, 'items': items})
+
+    @bp.route('/stars/<tweet_id>', methods=['DELETE'])
+    @host.login_required
+    def star_del(tweet_id):
+        """从 dbox 星标收藏移除一条。"""
+        key = 'feed:stars:items'
+        cur = host.state.get(key) or []
+        if not isinstance(cur, list):
+            cur = []
+        new = [x for x in cur if isinstance(x, dict) and str(x.get('tweet_id')) != str(tweet_id)]
+        host.state.put(key, new, strategy='lww')
+        return jsonify({'success': True, 'items': new})
+
+    def _my_rest_id(cookie):
+        """从 x.com Cookie 的 twid 字段解析登录用户 rest_id（数字 id）。"""
+        if not cookie:
+            return None
+        for part in cookie.split(';'):
+            k, _, v = part.partition('=')
+            if k.strip() == 'twid':
+                v = urllib.parse.unquote(v.strip())
+                rid = v.split('=', 1)[1] if '=' in v else v
+                rid = rid.strip()
+                if rid.isdigit():
+                    return rid
+        return None
+
+    @bp.route('/me', methods=['GET'])
+    @host.login_required
+    def me():
+        """返回登录用户（我）的资料卡数据。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False, 'message': '未配置 x.com 登录 Cookie'}), 400
+        rest_id = _my_rest_id(cookie)
+        if not rest_id:
+            return jsonify({'success': False,
+                            'message': '无法从 Cookie 识别登录用户，请重新登录 X 或刷新凭证'}), 400
+        try:
+            _, _, profile = xrun.user_tweets(cookie, rest_id)
+        except Exception as e:
+            return jsonify({'success': False, 'message': '获取个人资料失败: ' + str(e)}), 502
+        if profile:
+            try:
+                umeta = {k: profile.get(k) for k in (
+                    'rest_id', 'screen_name', 'name', 'avatar', 'bio', 'verified',
+                    'statuses_count', 'following_count', 'followers_count')}
+                host.state.put('users:' + str(rest_id), umeta, strategy='lww')
+            except Exception:
+                pass
+        return jsonify({'success': True, 'user': profile})
+
+    @bp.route('/following', methods=['GET'])
+    @host.login_required
+    def following():
+        """登录用户【关注的人】列表。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False, 'message': '未配置 x.com 登录 Cookie'}), 400
+        rest_id = _my_rest_id(cookie)
+        if not rest_id:
+            return jsonify({'success': False, 'message': '无法从 Cookie 识别登录用户'}), 400
+        try:
+            count = min(int(request.args.get('count', 40)), 100)
+            cursor = request.args.get('cursor') or None
+            _h = xrun.build_headers(cookie, with_bearer=False)
+            def _txid(method, path):
+                return get_transaction_id(_h, method, path, ua=xrun.UA)
+            items, next_cursor = xrun.list_following(
+                cookie, rest_id, count, cursor, txid_func=_txid)
+        except Exception as e:
+            return jsonify({'success': False, 'message': '拉取关注列表失败: ' + str(e)}), 502
+        return jsonify({'success': True, 'items': items, 'next_cursor': next_cursor})
+
+    @bp.route('/followers', methods=['GET'])
+    @host.login_required
+    def followers():
+        """登录用户【粉丝】列表。"""
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False, 'message': '未配置 x.com 登录 Cookie'}), 400
+        rest_id = _my_rest_id(cookie)
+        if not rest_id:
+            return jsonify({'success': False, 'message': '无法从 Cookie 识别登录用户'}), 400
+        try:
+            count = min(int(request.args.get('count', 40)), 100)
+            cursor = request.args.get('cursor') or None
+            _h = xrun.build_headers(cookie, with_bearer=False)
+            def _txid(method, path):
+                return get_transaction_id(_h, method, path, ua=xrun.UA)
+            items, next_cursor = xrun.list_followers(
+                cookie, rest_id, count, cursor, txid_func=_txid)
+        except Exception as e:
+            return jsonify({'success': False, 'message': '拉取粉丝列表失败: ' + str(e)}), 502
+        return jsonify({'success': True, 'items': items, 'next_cursor': next_cursor})
+
+
     @bp.route('/media', methods=['GET'])
     def media():  # 不要求 login_required：浏览器 <img>/<video> 原生加载不能带 Authorization 头
         """代理下载 X 媒体（twimg 图片 / mp4 视频），并写入本地 LRU 缓存。

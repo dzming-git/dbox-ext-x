@@ -1087,6 +1087,12 @@ _GQL_USER_TWEETS_OPN = 'UserTweets'
 _GQL_USER_BY_SCREEN_NAME_QID = None
 _GQL_USER_BY_SCREEN_NAME_OPN = 'UserByScreenName'
 
+# ---- 关注列表 / 粉丝列表（Following / Followers）----
+_GQL_FOLLOWING_LIST_QID = None
+_GQL_FOLLOWING_LIST_OPN = 'Following'
+_GQL_FOLLOWERS_LIST_QID = None
+_GQL_FOLLOWERS_LIST_OPN = 'Followers'
+
 
 def _discover_op_qid(opener, cookie_header, op_name):
     """通用：从 X 首页 bundle 自动发现任意 operationName 对应的 query id。
@@ -1162,6 +1168,40 @@ def _user_profile_from_result(ur):
     }
 
 
+def _extract_users(data):
+    """从 Following / Followers 时间线响应提取用户资料列表与 Bottom 游标。
+
+    响应结构：data.user.result.timeline_v2.timeline.instructions（部分版本为
+    data.user.result.timeline 直接含 instructions）。用户条目 entryType 为
+    TimelineUser，资料在 content.itemContent.userResults.result（新版）或
+    content.userResults.result（旧版）；游标在 TimelineTimelineCursor(Bottom)。
+    """
+    user = ((data.get('data', {}) or {}).get('user') or {}).get('result') or {}
+    tl = (user.get('timeline_v2') or {}).get('timeline') or user.get('timeline') or {}
+    inner = tl.get('timeline') if isinstance(tl, dict) and tl.get('timeline') else tl
+    users = []
+    next_cursor = None
+    instructions = (inner.get('instructions') or []) if isinstance(inner, dict) else []
+    for inst in instructions:
+        for entry in (inst.get('entries') or []):
+            c = entry.get('content') or {}
+            if not isinstance(c, dict):
+                continue
+            ur = None
+            if c.get('entryType') == 'TimelineUser':
+                ic = c.get('itemContent') or {}
+                ur = (ic.get('userResults') or {}).get('result')
+            else:
+                ur = (c.get('userResults') or {}).get('result')
+            if ur:
+                prof = _user_profile_from_result(ur)
+                if prof and prof.get('rest_id'):
+                    users.append(prof)
+            if c.get('entryType') == 'TimelineTimelineCursor' and c.get('cursorType') == 'Bottom':
+                next_cursor = c.get('value')
+    return users, next_cursor
+
+
 def user_by_screen_name(cookie_header, screen_name, extra_headers=None, txid_func=None):
     """@句柄 → 用户资料（含内部 rest_id、昵称、简介、关注/粉丝/推文数）。
 
@@ -1216,6 +1256,71 @@ def user_by_screen_name(cookie_header, screen_name, extra_headers=None, txid_fun
     if not ur:
         raise RuntimeError('未找到该用户（可能不存在、被封禁或已注销）')
     return _user_profile_from_result(ur)
+
+
+def _list_user_relation(cookie_header, opn, qid_global, rest_id, count=20, cursor=None,
+                        extra_headers=None, txid_func=None):
+    """Following / Followers 通用拉取：按 rest_id 取该用户的关注 / 粉丝列表。"""
+    opener = make_opener(None)
+    g = globals()
+    qid = g.get(qid_global)
+    if not qid:
+        qid = _discover_op_qid(opener, cookie_header, opn)
+        g[qid_global] = qid
+    if not qid:
+        raise RuntimeError('未能发现 %s query id' % opn)
+    variables = {"userId": str(rest_id), "count": count,
+                 "includePromotedContent": False, "withHighlightedLabel": True}
+    if cursor:
+        variables["cursor"] = cursor
+    url = (f'https://x.com/i/api/graphql/{qid}/{opn}'
+           f'?variables={urllib.parse.quote(json.dumps(variables, ensure_ascii=False))}'
+           f'&features={urllib.parse.quote(json.dumps(_GQL_USER_FEATURES, ensure_ascii=False))}')
+    headers = build_headers(cookie_header, with_bearer=True)
+    if extra_headers or txid_func:
+        headers = dict(headers)
+        if extra_headers:
+            headers.update(extra_headers)
+        if txid_func:
+            try:
+                tid = txid_func('GET', urllib.parse.urlparse(url).path)
+                if tid:
+                    headers['x-client-transaction-id'] = tid
+            except Exception:
+                pass
+    try:
+        data = _gql_fetch_json(url, opener, headers, opn)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            g[qid_global] = None
+            new_qid = _discover_op_qid(opener, cookie_header, opn)
+            if new_qid and new_qid != qid:
+                g[qid_global] = new_qid
+                data = _gql_fetch_json(url, opener, headers, opn)
+            else:
+                raise
+        else:
+            raise
+    if isinstance(data, dict) and data.get('errors'):
+        raise RuntimeError('X 返回错误: ' + '; '.join(
+            str(x.get('message', x)) for x in data['errors'] if isinstance(x, dict)))
+    return _extract_users(data)
+
+
+def list_following(cookie_header, rest_id, count=20, cursor=None,
+                   extra_headers=None, txid_func=None):
+    """拉取 rest_id 用户【关注的人】列表（Following）。返回 (users, next_cursor)。"""
+    return _list_user_relation(cookie_header, _GQL_FOLLOWING_LIST_OPN,
+                               '_GQL_FOLLOWING_LIST_QID', rest_id, count, cursor,
+                               extra_headers=extra_headers, txid_func=txid_func)
+
+
+def list_followers(cookie_header, rest_id, count=20, cursor=None,
+                   extra_headers=None, txid_func=None):
+    """拉取 rest_id 用户【粉丝】列表（Followers）。返回 (users, next_cursor)。"""
+    return _list_user_relation(cookie_header, _GQL_FOLLOWERS_LIST_OPN,
+                               '_GQL_FOLLOWERS_LIST_QID', rest_id, count, cursor,
+                               extra_headers=extra_headers, txid_func=txid_func)
 
 
 def user_tweets(cookie_header, user, count=20, cursor=None, extra_headers=None, txid_func=None):

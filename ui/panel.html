@@ -193,7 +193,7 @@
   .dt-actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 9px; font-size: 13px; cursor: pointer; color: #536471; transition: background .15s; }
   .dt-actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .dt-actions .dl:hover { background: #1a8cd8; }
-  .dt-actions .fav.on { background: #e0245e; color: #fff; border-color: #e0245e; }
+
   .dt-actions .openx { color: #1d9bf0; }
   .dt-reply-title { font-weight: 600; font-size: 14px; color: #0f1419; margin: 6px 0 10px; }
   .dt-reply { display: flex; gap: 8px; background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 12px; margin-bottom: 10px; }
@@ -492,8 +492,7 @@
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
   .bm-card .actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .bm-card .actions .dl:hover { background: #1a8cd8; }
-  .bm-card .actions .fav { color: #e0245e; }
-  .bm-card .actions .fav.on { background: #e0245e; color: #fff; border-color: #e0245e; }
+
   .bm-card .actions button:disabled { opacity: .6; cursor: not-allowed; }
   .bm-card .loading, .bm-card .err { font-size: 13px; color: #8899a6; padding: 8px 0; }
   .bm-card .err { color: #e0245e; }
@@ -507,6 +506,21 @@
   /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感（带轻微缩放，更明显） */
   @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .bm-card.card-enter { animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both; }
+  /* 我的 X（个人页） */
+  .me-profile { margin-bottom: 10px; }
+  .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
+  .me-tab { flex: 1 1 auto; min-width: 84px; padding: 8px 10px; border: 1px solid var(--border, #2f3336); border-radius: 18px; background: transparent; color: inherit; cursor: pointer; font-size: 13px; }
+  .me-tab.active { background: var(--accent, #1d9bf0); border-color: var(--accent, #1d9bf0); color: #fff; }
+  .user-card { border: 1px solid var(--border, #2f3336); border-radius: 12px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
+  .user-card .head { display: flex; gap: 10px; align-items: center; }
+  .user-card .avatar { width: 44px; height: 44px; border-radius: 50%; }
+  .user-card .name { font-weight: 600; }
+  .user-card .handle { color: var(--muted, #888); font-size: 13px; }
+  .user-card .bio { margin-top: 8px; font-size: 13px; color: var(--text, #e7e9ea); }
+  .user-card .ustats { margin-top: 8px; display: flex; gap: 14px; font-size: 13px; color: var(--muted, #888); }
+  .user-card .ustats b { color: var(--text, #e7e9ea); }
+  .star { border: 1px solid var(--border, #2f3336); border-radius: 16px; background: transparent; color: inherit; padding: 4px 10px; cursor: pointer; }
+  .star.on { color: #ffd400; border-color: #ffd400; }
 </style>
 </head>
 <body>
@@ -522,7 +536,7 @@
     <button class="tab active" data-view="browse">🏠 首页</button>
     <button class="tab" data-view="download">🔗 链接</button>
     <button class="tab" data-view="search">🔍 搜索</button>
-    <button class="tab" data-view="bookmarks">⭐ 收藏</button>
+    <button class="tab" data-view="bookmarks">👤 我的 X</button>
     <button class="tab" data-view="history">🕘 历史</button>
     <button class="tab" data-view="cache">📦 缓存</button>
   </div>
@@ -543,19 +557,19 @@
   </div>
   </div><!-- /view-download -->
 
-  <!-- X 收藏视图 -->
+  <!-- 我的 X（个人页）：资料卡 + X收藏 / dbox收藏 / 关注 / 粉丝 -->
   <div class="view" id="view-bookmarks" style="display:none">
-    <div class="bm-toolbar">
-      <button id="bm-sync" class="primary">🔄 从 X 同步收藏</button>
-      <button id="bm-show-folder" class="secondary">📁 我已收藏 (dbox)</button>
+    <div id="me-profile" class="me-profile"><div class="bm-empty">资料加载中…</div></div>
+    <div class="me-tabs" id="me-tabs">
+      <button class="me-tab active" data-me="xbook">⭐ X 收藏</button>
+      <button class="me-tab" data-me="stars">🔖 dbox 收藏</button>
+      <button class="me-tab" data-me="follow">👥 关注</button>
+      <button class="me-tab" data-me="followers">👤 粉丝</button>
     </div>
-    <div id="bm-folder-bar" class="bm-folderbar" style="display:none">
-      <select id="bm-collection"><option value="">全部收藏</option></select>
-      <input id="bm-collection-input" type="text" placeholder="新集合名" />
-      <button id="bm-collection-add" class="secondary">＋ 新建集合</button>
-    </div>
-    <div id="bm-x-list" class="bm-list"><div class="bm-empty">点击「从 X 同步收藏」加载你在 X 上收藏的推文。</div></div>
-    <div id="bm-folder-list" class="bm-list" style="display:none"><div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div></div>
+    <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「X 收藏」加载你在 X 上收藏的推文。</div></div>
+    <div class="bm-list" id="me-stars" style="display:none"><div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div></div>
+    <div class="bm-list" id="me-follow" style="display:none"><div class="bm-empty">加载你关注的人…</div></div>
+    <div class="bm-list" id="me-followers" style="display:none"><div class="bm-empty">加载你的粉丝…</div></div>
   </div>
 
   <!-- 历史视图（P1-7 本地浏览历史） -->
@@ -1735,23 +1749,7 @@
   const viewCache = $('view-cache');
   const viewBookmarks = $('view-bookmarks');
   const viewSearch = $('view-search');
-  // 进入浏览 tab 时同步 dbox folder 到 favSet（仅一次）
-  let brFavSynced = false;
-  async function syncFavFromServer() {
-    if (brFavSynced) return;
-    brFavSynced = true;
-    try {
-      const r = await req(`${API}/bookmarks/folder`);
-      const d = await r.json();
-      if (d.success && d.items) {
-        let added = 0;
-        for (const it of d.items) {
-          if (it.tweet_id && !favSet.has(it.tweet_id)) { favSet.add(it.tweet_id); added++; }
-        }
-        if (added) saveFavSet();
-      }
-    } catch (_) {}
-  }
+
 
   /* ---- 面板路由：每个页面都是一个 URL（可复制 / 刷新 / 前进后退）----
      · #/home                          首页（关注流）
@@ -1974,7 +1972,7 @@
                { silent: true });
     }
     if (v === 'browse') {
-      syncFavFromServer();
+      loadStarSet();
       openBrowse();   // 渲染缓存+恢复位置+后台静默刷新（不打断查看位置）
       checkXSession(); // 每次进入首页都自检一次 X 登录态
     } else if (v === 'history') {
@@ -1987,8 +1985,9 @@
       // 不发请求（点「搜索」按钮才刷新缓存）。
       restoreSearch(opts.params || {});
     } else if (v === 'bookmarks') {
-      // 打开即拉取共享缓存并渲染（多设备同步：先 pull 再显示）
-      restoreBookmarks();
+      // 个人页：先拉资料卡，再按当前子页加载（X收藏 / dbox收藏 / 关注 / 粉丝）
+      loadMeProfile();
+      switchMeSub(meSub);
     }
   }
 
@@ -2008,7 +2007,7 @@
       else if (activeView === 'search') {
         await (srchActiveKey ? refreshKeyword(srchActiveKey) : doSearch());
       }
-      else if (activeView === 'bookmarks') { loadXBookmarks(); }
+      else if (activeView === 'bookmarks') { meLoaded = { xbook: false, stars: false, follow: false, followers: false }; switchMeSub(meSub); }
     } catch (e) { /* 忽略刷新异常 */ } finally {
       tbRefresh.classList.remove('spinning');
     }
@@ -2021,7 +2020,7 @@
 
   // 初始路由：宿主深链（/ext/x#/search?q=.. ）优先，其次面板自身 hash，
   // 再次本地记忆的视图，最后默认首页。
-  // 延迟到脚本末尾再执行，避免 switchView 内引用的 bmXList/bmShowingFolder 等 const 尚未初始化的 TDZ 问题。
+  // 视图加载统一在脚本末尾的启动路由里触发，此时所有 const（含 meXBook 等）已初始化，避免 TDZ。
   // 略微延后（60ms）等宿主把顶层 hash 推过来，避免先渲染首页再跳到深链目标的闪烁。
   // 面板与宿主同源（srcdoc + allow-same-origin），可直读顶层 URL。深链（如
   // /ext/x#/tweet/123）因此不必等 postMessage 往返，避免「先落到本地记忆的视图、
@@ -2123,10 +2122,16 @@
     openUser(m.dataset.screen);
   }, true);
 
-  /* ---- X 收藏 ---- */
-  const bmXList = $('bm-x-list');
-  const bmFolderList = $('bm-folder-list');
-  let bmShowingFolder = false;
+  /* ---- 我的 X（个人页）---- */
+  const meProfile = $('me-profile');
+  const meXBook = $('me-xbook');
+  const meStars = $('me-stars');
+  const meFollow = $('me-follow');
+  const meFollowers = $('me-followers');
+  const meTabs = $('me-tabs');
+  let meSub = 'xbook';
+  let meLoaded = { xbook: false, stars: false, follow: false, followers: false };
+  const starSet = new Set();
 
   function esc2(s) {
     return String(s == null ? '' : s)
@@ -2193,13 +2198,13 @@
       <div class="text">${linkifyMentions(item.text)}</div>
       ${mediaHtml}
       <div class="actions">
+        <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starSet.has(String(tid)) ? '★ 已收藏' : '☆ 收藏'}</button>
         ${inFolder
           ? `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
              <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
              <button class="del" data-tid="${esc2(tid)}">移出收藏夹</button>`
           : `<button class="open" data-url="${esc2(item.url || '')}">打开原推文</button>
-             <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
-             <button class="add" data-tid="${esc2(tid)}">加入收藏夹</button>`}
+             <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>`}
       </div>`;
     // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
     // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
@@ -2230,36 +2235,16 @@
     card.querySelectorAll('.open').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
     }));
-    if (inFolder) {
-      card.querySelectorAll('.del').forEach((b) => b.addEventListener('click', async () => {
-        const tid = b.dataset.tid;
-        b.disabled = true; b.textContent = '移除中…';
-        try {
-          const r = await req(`${API}/bookmarks/folder/${encodeURIComponent(tid)}`, { method: 'DELETE' });
-          const d = await r.json();
-          if (d.success) renderFolder(d.items);
-        } catch (e) { b.disabled = false; b.textContent = '移出收藏夹'; alert('移除失败: ' + e.message); }
-      }));
-    } else {
-      card.querySelectorAll('.add').forEach((b) => b.addEventListener('click', async () => {
-        const tid = b.dataset.tid;
-        b.disabled = true; b.textContent = '已加入 ✓';
-        try {
-          // 带入当前选中集合（若有）
-          const selEl = document.getElementById('bm-collection');
-          const coll = selEl && selEl.value ? selEl.value : null;
-          const payload = { ...item };
-          if (coll) payload.collection = coll;
-          const r = await req(`${API}/bookmarks/folder`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          const d = await r.json();
-          if (!d.success) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入失败: ' + (d.message || '')); }
-        } catch (e) { b.disabled = false; b.textContent = '加入收藏夹'; alert('加入异常: ' + e.message); }
-        }));
-        }
+    card.querySelectorAll('.star').forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const t = b.dataset.tid;
+      await toggleStar(t, item);
+      const on = starSet.has(String(t));
+      b.classList.toggle('on', on);
+      b.textContent = on ? '★ 已收藏' : '☆ 收藏';
+    }));
+    // dbox 收藏（跨设备星标）统一走 toggleStar / starSet，见各卡片 .star 按钮。
+    // （旧「收藏夹」本地功能已移除，renderBmCard 不再使用 inFolder 分支。）
         // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
         card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2271,7 +2256,9 @@
         }
 
   async function loadXBookmarks() {
-    bmXList.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
+    // 先渲染本地缓存（瞬时），再拉 X 实时收藏覆盖
+    try { await restoreBookmarks(); } catch (_) {}
+    meXBook.innerHTML = '<div class="bm-empty">正在从 X 同步收藏…</div>';
     const all = [];
     let cursor = null;
     let page = 0;
@@ -2283,7 +2270,7 @@
         const r = await req(url);
         const d = await r.json();
         if (!d.success) {
-          if (!all.length) { bmXList.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
+          if (!all.length) { meXBook.innerHTML = `<div class="bm-empty err">同步失败: ${esc2(d.message || '未知错误')}</div>`; return; }
           break; // 中途某页失败，保留已拉到的
         }
         const pageItems = d.items || [];
@@ -2292,112 +2279,205 @@
         // 本页无新增推文或没有下一页了，停止翻页
         if (!cursor || !pageItems.length) break;
       }
-      if (!all.length) { bmXList.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
+      if (!all.length) { meXBook.innerHTML = '<div class="bm-empty">你在 X 上还没有收藏任何推文。</div>'; return; }
       // 过总库：与首页/搜索/历史里的同一条推文共用一份记录，不另存一份
       const merged = mergeTweets(all);
       tweetCachePut(merged);   // 内容进全局单缓存（一处内容，所有视图共享）
-      bmXList.innerHTML = '';
-      merged.forEach((it) => bmXList.appendChild(renderBmCard(it, false)));
+      meXBook.innerHTML = '';
+      merged.forEach((it) => meXBook.appendChild(renderBmCard(it, false)));
       // 只存成员 id（不重复存内容）；完整内容在 XTWEETS
       if (XSTATE) try { XSTATE.set('bm:list', toMembership(merged).slice(0, 600), { strategy: 'lww' }); } catch (_) {}
     } catch (e) {
-      if (!all.length) bmXList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+      if (!all.length) meXBook.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
   }
 
   // 收藏列表本地缓存 + 多设备同步：打开即拉取共享缓存并渲染（多设备同步关键：先 pull 再显示）
   async function restoreBookmarks() {
-    if (!XSTATE || bmShowingFolder) return;
+    if (!XSTATE) return;
     try { await XSTATE.pull(); } catch (_) {}
     let cached;
     try { cached = XSTATE.get('bm:list'); } catch (_) { return; }
     if (!cached || !cached.length) return;
-    bmXList.innerHTML = '';
+    meXBook.innerHTML = '';
     tweetCachePut(cached);   // 兼容旧版全量缓存；新缓存只有 id，无害
     // cached 是成员 id 列表；内容回查全局单缓存 XTWEETS
     cached.forEach((entry) => {
       const id = entry && (entry.tweet_id || entry.id);
       const t = tweetCacheGet(id);
-      if (t) bmXList.appendChild(renderBmCard(t, false));
+      if (t) meXBook.appendChild(renderBmCard(t, false));
     });
   }
 
-  async function loadCollections() {
+  /* ---- 我的 X（个人页）子页切换 ---- */
+  function switchMeSub(sub) {
+    if (!sub) sub = 'xbook';
+    meSub = sub;
+    meTabs.querySelectorAll('.me-tab').forEach((t) => {
+      t.classList.toggle('active', t.dataset.me === sub);
+    });
+    meXBook.style.display = sub === 'xbook' ? '' : 'none';
+    meStars.style.display = sub === 'stars' ? '' : 'none';
+    meFollow.style.display = sub === 'follow' ? '' : 'none';
+    meFollowers.style.display = sub === 'followers' ? '' : 'none';
+    if (!meLoaded[sub]) {
+      if (sub === 'xbook') loadXBookmarks();
+      else if (sub === 'stars') loadStars();
+      else if (sub === 'follow') loadFollowing();
+      else if (sub === 'followers') loadFollowers();
+    }
+  }
+  meTabs.querySelectorAll('.me-tab').forEach((t) => {
+    t.addEventListener('click', () => switchMeSub(t.dataset.me));
+  });
+
+  async function loadMeProfile() {
+    if (!meProfile) return;
+    meProfile.innerHTML = '<div class="bm-empty">资料加载中…</div>';
     try {
-      const r = await req(`${API}/bookmarks/collections`);
+      const r = await req(`${API}/me`);
       const d = await r.json();
-      const sel = $('bm-collection');
-      if (!sel) return;
-      const cur = sel.value;
-      sel.innerHTML = '<option value="">全部收藏</option>';
-      (d.items || []).forEach((c) => {
-        const o = document.createElement('option');
-        o.value = c; o.textContent = c;
-        sel.appendChild(o);
-      });
-      sel.value = cur || '';
+      if (!d.success || !d.user) {
+        meProfile.innerHTML = `<div class="bm-empty err">${esc2((d && d.message) || '获取个人资料失败')}</div>`;
+        return;
+      }
+      renderMeProfile(d.user);
+    } catch (e) {
+      meProfile.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  function renderMeProfile(p) {
+    if (!p) { meProfile.innerHTML = ''; return; }
+    const handle = p.screen_name ? '@' + p.screen_name : '';
+    const stats = [];
+    if (p.statuses_count != null) stats.push(`<span><b>${fmtN(p.statuses_count)}</b> 推文</span>`);
+    if (p.following_count != null) stats.push(`<span><b>${fmtN(p.following_count)}</b> 正在关注</span>`);
+    if (p.followers_count != null) stats.push(`<span><b>${fmtN(p.followers_count)}</b> 关注者</span>`);
+    meProfile.innerHTML = `
+      <div class="uprof">
+        <div class="uprof-head">
+          ${p.avatar ? `<img class="uprof-avatar" src="${esc2(p.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : '<div class="uprof-avatar"></div>'}
+          <div class="uprof-id">
+            <div class="uprof-name">${esc2(p.name || '')}${p.verified ? ' ✔' : ''}</div>
+            <div class="uprof-handle">${esc2(handle)}</div>
+          </div>
+        </div>
+        ${p.bio ? `<div class="uprof-bio">${esc2(p.bio)}</div>` : ''}
+        <div class="uprof-stats">${stats.join('')}</div>
+      </div>`;
+  }
+
+  async function loadStars() {
+    meStars.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await req(`${API}/stars`);
+      const d = await r.json();
+      if (!d.success) { meStars.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      const items = d.items || [];
+      starSet.clear();
+      items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+      meLoaded.stars = true;
+      if (!items.length) {
+        meStars.innerHTML = '<div class="bm-empty">你还没有在 dbox 内收藏任何推文。在任意推文上点「☆ 收藏」即可加入。</div>';
+        return;
+      }
+      tweetCachePut(items);
+      meStars.innerHTML = '';
+      items.forEach((it) => meStars.appendChild(renderBmCard(it, false)));
+    } catch (e) {
+      meStars.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  async function loadFollowing() {
+    meFollow.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await req(`${API}/following?count=40`);
+      const d = await r.json();
+      if (!d.success) { meFollow.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      const users = d.items || [];
+      meLoaded.follow = true;
+      if (!users.length) { meFollow.innerHTML = '<div class="bm-empty">你还没有关注任何人。</div>'; return; }
+      meFollow.innerHTML = '';
+      users.forEach((u) => meFollow.appendChild(renderUserCard(u, 'following')));
+    } catch (e) {
+      meFollow.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  async function loadFollowers() {
+    meFollowers.innerHTML = '<div class="bm-empty">加载中…</div>';
+    try {
+      const r = await req(`${API}/followers?count=40`);
+      const d = await r.json();
+      if (!d.success) { meFollowers.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
+      const users = d.items || [];
+      meLoaded.followers = true;
+      if (!users.length) { meFollowers.innerHTML = '<div class="bm-empty">你还没有粉丝。</div>'; return; }
+      meFollowers.innerHTML = '';
+      users.forEach((u) => meFollowers.appendChild(renderUserCard(u, 'followers')));
+    } catch (e) {
+      meFollowers.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
+    }
+  }
+
+  function renderUserCard(u) {
+    const card = document.createElement('div');
+    card.className = 'user-card';
+    const handle = u.screen_name ? '@' + u.screen_name : '';
+    const stats = [];
+    if (u.following_count != null) stats.push(`<span><b>${fmtN(u.following_count)}</b> 关注</span>`);
+    if (u.followers_count != null) stats.push(`<span><b>${fmtN(u.followers_count)}</b> 粉丝</span>`);
+    if (u.statuses_count != null) stats.push(`<span><b>${fmtN(u.statuses_count)}</b> 推文</span>`);
+    card.innerHTML = `
+      <div class="head">
+        ${u.avatar ? `<img class="avatar" src="${esc2(u.avatar)}" alt="" onerror="this.style.visibility='hidden'" />` : ''}
+        <div class="uinfo">
+          <div class="name">${esc2(u.name || '')}${u.verified ? ' ✔' : ''}</div>
+          <div class="handle">${esc2(handle)}</div>
+        </div>
+      </div>
+      ${u.bio ? `<div class="bio">${esc2(u.bio)}</div>` : ''}
+      ${stats.length ? `<div class="ustats">${stats.join('')}</div>` : ''}`;
+    card.addEventListener('click', () => { if (u.screen_name) openUser(u.screen_name); });
+    return card;
+  }
+
+  async function toggleStar(tid, item) {
+    if (!tid) return;
+    const on = starSet.has(String(tid));
+    try {
+      if (on) {
+        const r = await req(`${API}/stars/${encodeURIComponent(tid)}`, { method: 'DELETE' });
+        const d = await r.json();
+        if (d.success) { starSet.delete(String(tid)); meLoaded.stars = false; }
+      } else {
+        const payload = item || {};
+        payload.tweet_id = tid;
+        const r = await req(`${API}/stars`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (d.success) { starSet.add(String(tid)); meLoaded.stars = false; }
+      }
+    } catch (e) {
+      alert('收藏操作失败: ' + e.message);
+    }
+  }
+
+  async function loadStarSet() {
+    try {
+      const r = await req(`${API}/stars`);
+      const d = await r.json();
+      if (d.success && Array.isArray(d.items)) {
+        starSet.clear();
+        d.items.forEach((it) => { if (it.tweet_id) starSet.add(String(it.tweet_id)); });
+      }
     } catch (_) {}
   }
-
-  async function loadFolder() {
-    bmFolderList.innerHTML = '<div class="bm-empty">加载中…</div>';
-    try {
-      const coll = $('bm-collection').value || '';
-      const r = await req(`${API}/bookmarks/folder${coll ? `?collection=${encodeURIComponent(coll)}` : ''}`);
-      const d = await r.json();
-      if (!d.success) { bmFolderList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
-      renderFolder(d.items || []);
-    } catch (e) {
-      bmFolderList.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
-    }
-  }
-
-  function renderFolder(items) {
-    if (!items.length) {
-      bmFolderList.innerHTML = '<div class="bm-empty">你还没有把任何收藏保存到 dbox。在「从 X 同步收藏」中点击「加入收藏夹」即可。</div>';
-      return;
-    }
-    tweetCachePut(items);   // 内容进全局单缓存
-    bmFolderList.innerHTML = '';
-    items.forEach((it) => bmFolderList.appendChild(renderBmCard(it, true)));
-  }
-
-  $('bm-sync').addEventListener('click', () => {
-    bmShowingFolder = false;
-    bmXList.style.display = '';
-    bmFolderList.style.display = 'none';
-    loadXBookmarks();
-  });
-
-  $('bm-show-folder').addEventListener('click', () => {
-    bmShowingFolder = true;
-    bmXList.style.display = 'none';
-    bmFolderList.style.display = '';
-    $('bm-folder-bar').style.display = 'flex';
-    loadCollections();
-    loadFolder();
-  });
-
-  // 集合下拉切换时按集合过滤
-  $('bm-collection').addEventListener('change', () => loadFolder());
-  // 新建集合：把输入框内容加入下拉并选中，之后"加入收藏夹"会用当前集合
-  $('bm-collection-add').addEventListener('click', () => {
-    const inp = $('bm-collection-input');
-    const name = (inp.value || '').trim();
-    if (!name) return;
-    const sel = $('bm-collection');
-    // 添加到下拉（若已存在则不重复）
-    let exists = false;
-    Array.from(sel.options).forEach((o) => { if (o.value === name) exists = true; });
-    if (!exists) {
-      const o = document.createElement('option');
-      o.value = name; o.textContent = name;
-      sel.appendChild(o);
-    }
-    sel.value = name;
-    inp.value = '';
-    loadFolder();
-  });
 
   /* ---- 浏览（关注流） ---- */
   const brList = $('br-list');
@@ -2407,12 +2487,8 @@
   let brLoading = false;
   const brSeenIds = new Set();   // 浏览去重：同一 tweet_id 只渲染一次
   const downloadedTweetIds = new Set();  // 避免重复下载
-  const favSet = new Set();              // 已收藏 tweet_id（用于浏览卡按钮态）
   // 浏览内容缓存已交由框架 DBoxState.feed() 统一管理（服务端权威，见 XFEED），
   // 不再自存 localStorage 缓存，避免与服务端真相分叉。
-  const BROWSE_FAV_KEY = 'xd_browse_favs';      // localStorage：已收藏 tweet_id 列表
-  // 从 localStorage 恢复已收藏集合（小屏全屏共享）
-  try { (JSON.parse(localStorage.getItem(BROWSE_FAV_KEY) || '[]') || []).forEach((t) => favSet.add(t)); } catch (_) {}
 
   // 图片加载失败：显示重试按钮（替代原来静默 visibility:hidden）
   function _onImgErr(img) {
@@ -2724,7 +2800,7 @@
       ${mediaHtml}
       ${item.quoted ? quotedHtml(item.quoted) : ''}
       <div class="actions">
-        <button class="fav ${favSet.has(tid) ? 'on' : ''}" data-tid="${esc2(tid)}">${favSet.has(tid) ? '★ 已收藏' : '☆ 收藏'}</button>
+        <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starSet.has(String(tid)) ? '★ 已收藏' : '☆ 收藏'}</button>
         <button class="refetch" data-tid="${esc2(tid)}">↻ 重新获取</button>
         <button class="dl" data-tid="${esc2(tid)}">⬇ 下载</button>
       </div>`;
@@ -2760,46 +2836,14 @@
         if (qt) openTweetDetail(qt, item.quoted, false, (item.quoted.author || {}).screen_name);
       });
     }
-    // 收藏 / 移出收藏
-    card.querySelectorAll('.fav').forEach((b) => b.addEventListener('click', () => {
+    // dbox 收藏（星标推文，存 user_state，跨设备可回看）
+    card.querySelectorAll('.star').forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
       const t = b.dataset.tid;
-      if (favSet.has(t)) {
-        // 已收藏 → 移出
-        b.disabled = true;
-        req(`${API}/bookmarks/folder/${encodeURIComponent(t)}`, { method: 'DELETE' })
-          .then((r) => r.json())
-          .then((d) => {
-            if (d.success) {
-              favSet.delete(t); saveFavSet();
-              b.classList.remove('on');
-              b.textContent = '☆ 收藏';
-            } else {
-              b.textContent = '失败: ' + (d.message || '');
-            }
-            b.disabled = false;
-          })
-          .catch(() => { b.textContent = '失败'; b.disabled = false; });
-      } else {
-        // 加入收藏
-        b.disabled = true; b.textContent = '收藏中…';
-        req(`${API}/bookmarks/folder`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(item),
-        })
-          .then((r) => r.json())
-          .then((d) => {
-            if (d.success) {
-              favSet.add(t); saveFavSet();
-              b.classList.add('on');
-              b.textContent = '★ 已收藏';
-            } else {
-              b.textContent = '失败: ' + (d.message || '');
-            }
-            b.disabled = false;
-          })
-          .catch(() => { b.textContent = '失败'; b.disabled = false; });
-      }
+      await toggleStar(t, item);
+      const on = starSet.has(String(t));
+      b.classList.toggle('on', on);
+      b.textContent = on ? '★ 已收藏' : '☆ 收藏';
     }));
     // 下载
     card.querySelectorAll('.dl').forEach((b) => b.addEventListener('click', () => {
@@ -3069,9 +3113,6 @@
       brLoadmore.style.display = 'none';
       return true;
     } catch (_) { return false; }
-  }
-  function saveFavSet() {
-    try { localStorage.setItem(BROWSE_FAV_KEY, JSON.stringify(Array.from(favSet))); } catch (_) {}
   }
 
   // ---- 浏览位置记忆：交给框架 feed()，记住上次看到的推文，重进时定位回去 ----
@@ -5093,7 +5134,7 @@
       return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />` : '';
     }).join('');
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
-    const isFav = favSet.has(t.tweet_id);
+    const isFav = starSet.has(String(t.tweet_id));
     const card = document.createElement('div');
     card.className = 'dt-card';
     card.innerHTML = `
@@ -5118,7 +5159,7 @@
         ${t.view_count != null ? `<span>👁 <b>${t.view_count}</b></span>` : ''}
       </div>
       <div class="dt-actions">
-        <button class="fav ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${isFav ? '★ 已收藏' : '☆ 收藏'}</button>
+        <button class="star ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${isFav ? '★ 已收藏' : '☆ 收藏'}</button>
         <button class="refetch" data-tid="${esc2(t.tweet_id)}">↻ 重新获取</button>
         <button class="dl" data-url="${esc2(t.url || '')}">⬇ 下载</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
@@ -5162,26 +5203,14 @@
         if (m) openUser(m[1]); else window.open(u, '_blank', 'noopener');
       });
     });
-    // 收藏/移出
-    card.querySelectorAll('.fav').forEach((b) => b.addEventListener('click', () => {
+    // dbox 收藏（星标推文，存 user_state，跨设备可回看）
+    card.querySelectorAll('.star').forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
       const tid = b.dataset.tid;
-      if (favSet.has(tid)) {
-        b.disabled = true;
-        req(`${API}/bookmarks/folder/${encodeURIComponent(tid)}`, { method: 'DELETE' })
-          .then((r) => r.json()).then((d) => {
-            if (d.success) { favSet.delete(tid); saveFavSet(); b.classList.remove('on'); b.textContent = '☆ 收藏'; }
-            else b.textContent = '失败';
-            b.disabled = false;
-          });
-      } else {
-        b.disabled = true; b.textContent = '收藏中…';
-        req(`${API}/bookmarks/folder`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(t) })
-          .then((r) => r.json()).then((d) => {
-            if (d.success) { favSet.add(tid); saveFavSet(); b.classList.add('on'); b.textContent = '★ 已收藏'; }
-            else b.textContent = '失败';
-            b.disabled = false;
-          });
-      }
+      await toggleStar(tid, t);
+      const on = starSet.has(String(tid));
+      b.classList.toggle('on', on);
+      b.textContent = on ? '★ 已收藏' : '☆ 收藏';
     }));
     // 下载
     card.querySelectorAll('.dl').forEach((b) => b.addEventListener('click', () => {
