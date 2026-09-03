@@ -5,7 +5,7 @@
   "timeout": 600,
   "enabled": true,
   "backend": {
-    "url_prefix": "/api/ext/x"
+    "module": "backend.server"
   },
   "required_cookies": ["x.com"],
   "ui": {
