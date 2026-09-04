@@ -3147,7 +3147,7 @@
       uniq.push(tweetCacheGet(id) || it);
     });
     const byDay = new Map();
-    uniq.forEach((it) => { const k = dayKeyOf(it.created_at); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); });
+    uniq.forEach((it) => { const k = dayKeyOf(timelineAt(it)); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); });
     const days = Array.from(byDay.keys()).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
     const rows = [];
     days.forEach((k) => {
@@ -3593,7 +3593,7 @@
     const card = document.createElement('div');
     card.className = 'bm-card';
     card.dataset.tid = tid;
-    card.dataset.day = dayKeyOf(item.created_at);   // B/C/D：按天分组与折叠用
+    card.dataset.day = dayKeyOf(timelineAt(item));   // B/C/D：按天分组与折叠用（转推用转发时间）
     card.innerHTML = `
       ${item.retweeted_by ? rtNoteHtml(item.retweeted_by) : ''}
       <div class="head">
@@ -3759,8 +3759,8 @@
   // 按发布时间倒序（最新在前）
   function sortItemsByTime(items) {
     return items.slice().sort((a, b) => {
-      const ta = a.created_at ? Date.parse(a.created_at) : 0;
-      const tb = b.created_at ? Date.parse(b.created_at) : 0;
+      const ta = timelineAt(a) ? Date.parse(timelineAt(a)) : 0;
+      const tb = timelineAt(b) ? Date.parse(timelineAt(b)) : 0;
       return tb - ta;
     });
   }
@@ -3785,8 +3785,8 @@
     itemSelector: '.bm-card',
     idAttr: 'data-tid',
     idKeys: ['tweet_id', 'id'],
-    orderKey: 'created_at',
-    // 成员列表上限与内容库 XTWEETS(1500) 对齐：union_by_id 按 created_at 倒序封顶，
+    orderKey: 'timeline_at',
+    // 成员列表上限与内容库 XTWEETS(1500) 对齐：union_by_id 按 timeline_at 倒序封顶，
     // 只保留最新 N 条。此前 cap=400，滚到底「加载更旧」累计超 400 后，最旧的（刚加载的）
     // 会被服务端淘汰，刷新即消失。提到 1500 覆盖正常深度滚动会话。
     cap: 1500,
@@ -3810,7 +3810,7 @@
   // 现在全推文内容只登记在 XTWEETS 这一处（框架 feed()，union_by_id、服务端权威、跨设备），
   // 各视图只保留「成员 tweet_id + 位置锚点」，渲染时回查这份单缓存；详情页也只读写这一份。
   const XTWEETS = XSTATE ? XSTATE.feed('tweets', {
-    idAttr: 'data-tid', idKeys: ['tweet_id', 'id'], orderKey: 'created_at',
+    idAttr: 'data-tid', idKeys: ['tweet_id', 'id'], orderKey: 'timeline_at',
     cap: 1500, throttle: 200, autoBind: false,
   }) : null;
 
@@ -4032,7 +4032,7 @@
     if (!tid) return false;
     // C：若锚点所在天被折叠（手动折叠），恢复前先展开，否则 scrollCardToTop 找不到卡片
     const _anc = tweetCacheGet(tid);
-    const _ak = _anc ? dayKeyOf(_anc.created_at) : null;
+    const _ak = _anc ? dayKeyOf(timelineAt(_anc)) : null;
     if (_ak && isCollapsed(_ak)) { dayOverride.set(_ak, false); refreshDayModel(); }
     ensureMounted(tid);            // 二期 A：确保目标卡已在 DOM，框架 restore 才能定位
     _lastAnchorAt = Date.now();
@@ -4144,6 +4144,11 @@
     const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
     return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
+  // 时间轴排序/分组用「条目时间」：转推优先用 timeline_at（转发那一刻），否则回落原推 created_at
+  function timelineAt(it) {
+    if (!it) return null;
+    return it.timeline_at || it.created_at || null;
+  }
   function dayLabelOf(key) {
     if (!key) return '';
     const p = String(key).split('-');
@@ -4173,7 +4178,7 @@
   // 整表渲染后：刷新锚点派生基线 + 重建天模型
   function afterBrowseRender() {
     const a = getBrowseAnchor();
-    anchorCollapseDay = a ? dayKeyOf((tweetCacheGet(a) || {}).created_at) : null;
+    anchorCollapseDay = a ? dayKeyOf(timelineAt(tweetCacheGet(a))) : null;
     _rows = buildRows(_browseItems);
     renderRowsDOM();
     _rebuildDayRail(false);   // 整表渲染：滚轮同步到当前浏览天
@@ -4425,7 +4430,7 @@
   }
   function newestTimeOf(items) {
     let t = 0;
-    (items || []).forEach((it) => { const v = it.created_at ? Date.parse(it.created_at) : 0; if (v > t) t = v; });
+    (items || []).forEach((it) => { const v = timelineAt(it) ? Date.parse(timelineAt(it)) : 0; if (v > t) t = v; });
     return t ? fmtCdTime(new Date(t).toISOString()) : '';
   }
 
