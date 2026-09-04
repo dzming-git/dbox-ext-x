@@ -1236,12 +1236,17 @@
   // 浏览位置应用到客户端（跟随主控），否则本机停在陈旧位置、且其本地锚点会在下次接管时
   // 被误当成"当前位置"回写服务端、覆盖真实进度。用户正在看则不动（别拽用户）。
   function followServerAnchorWhenNotMaster() {
+    console.log('[FOLLOW] triggered, mine:', !!(XLEDGER && XLEDGER.mine()), 'brAwaitingRestore:', brAwaitingRestore, 'brUserScrolled:', brUserScrolled, 'view:', activeView);
     if (!XLEDGER || !XFEED) return;
     if (XLEDGER.mine()) return;       // 本机仍主控：以本地为准，不跟随
+    if (brAwaitingRestore) { console.log('[FOLLOW] skipped: brAwaitingRestore'); return; }
     if (brUserScrolled) return;       // 用户正在滚动：别打断
     if (activeView !== 'browse') return;
-    // 服务端已是最新（onStale 即在 pull 后触发），直接按本地缓存里的服务端锚点重定位
-    restoreBrowseScroll();
+    // 服务端已是最新（onStale 即在 pull 后触发），但优先用本机最新续读位置（localStorage 兜底），
+    // 避免被服务端陈旧锚点（如被其它设备/会话卡住的那条）覆盖本机当前阅读进度
+    const _pa = pickAnchor();
+    if (_pa && _pa.id) anchorTo(_pa.id, _pa.offset);
+    else restoreBrowseScroll();
   }
   if (XSTATE && XLEDGER) {
     XSTATE.onStale((key) => {
@@ -1290,11 +1295,15 @@
     updateMasterLight();   // 乐观置位后先给一次即时反馈，不等网络
     return p.then((mine) => {
       updateMasterLight();
-      if (!brUserScrolled) {
+      console.log('[MASTER] acquireMaster resolved, brUserScrolled:', brUserScrolled, 'brAwaitingRestore:', brAwaitingRestore, 'opts.resync:', !!opts.resync);
+      if (!brUserScrolled && !brAwaitingRestore) {
         // 对账后本地缓存已是服务端快照，但 DOM 仍是本设备旧的卡片集合。若服务端锚点
         // 指向的推文不在这批 DOM 里，restore() 只能失败并退回本机旧位置——而本设备此时
         // 已是新主控，随后一滚动就会把陈旧位置推回服务端、覆盖真正的进度。
         // 故接管（resync）必须按服务端快照重建列表再定位，与启动对账同一范式。
+        // 注意：初始加载（brAwaitingRestore）时跳过此处，由 loadBrowse 网络返回后统一做
+        // pickAnchor + anchorTo，避免中间多一次 restoreBrowseScroll 导致「先跳服务端锚点、
+        // 再跳回本机位置」的两段式闪烁（见 loadBrowse 内 acquireMaster 不 await 的注释）。
         if (opts.resync && activeView === 'browse' && XFEED && XFEED.items().length) {
           renderCachedBrowse();
         }
@@ -3233,8 +3242,12 @@
   }
   // 由全量数据构造有序行：每个天先放 sep 头，再放其卡片（时间倒序=日期倒序）
   function buildRows(items) {
+    const la = loadLocalAnchor();
+    const laSid = la && la.id ? String(la.id) : null;
+    // 续读锚点即使内容残缺（@unknown 壳条目）也保留进行集合，否则 _rows 无它、
+    // restore 查不到 DOM、预览定位失败、刷新先闪到顶部。网络返回后有效内容覆盖之。
     const seen = new Set(); const uniq = [];
-    sortItemsByTime((items || []).filter(_browseValid)).forEach((it) => {
+    sortItemsByTime((items || []).filter((it) => _browseValid(it) || (laSid && String(it.tweet_id || it.id) === laSid))).forEach((it) => {
       const id = String(it.tweet_id || it.id);
       if (seen.has(id)) return; seen.add(id);
       uniq.push(tweetCacheGet(id) || it);
@@ -3264,12 +3277,27 @@
   // 无锚点（首次）则只展开最新一天，其余靠滑动逐天展开。绝不让 _revealDays 为空→buildRows 回退全展开。
   function initRevealDays() {
     _allDays = computeAllDays();
-    const a = getBrowseAnchor();
-    const ak = a ? dayKeyOf(timelineAt(tweetCacheGet(a))) : null;
+    // 恢复定位必须展开到「本机锚点与服务端锚点中更深（更旧）的那一天」：
+    // 否则仅按服务端锚点（如被其它设备/会话卡在最新的 RIGHTSNEED）展开，本机续读位置
+    // 所在的天不会被渲染进 _rows，目标卡查不到 DOM，restore 失败、页面停在顶部（最新）。
+    // 优先本机续读位置（localStorage），但服务端锚点更深时也要覆盖（多设备从别处续读）。
+    // 锚点天优先从内容缓存取时间戳；取不到（@unknown 壳条目被清洗、预览阶段内容未就绪）
+    // 则回退到 feed 成员记录（带 timeline_at、不过滤作者），保证预览阶段也能展开正确天数。
+    const la = loadLocalAnchor();
+    const sa = XFEED && XFEED.anchor && XFEED.anchor();
+    const laItem = la && la.id ? (tweetCacheGet(la.id) || feedItemById(la.id)) : null;
+    const saItem = sa && sa.id ? (tweetCacheGet(sa.id) || feedItemById(sa.id)) : null;
+    const laDay = laItem ? dayKeyOf(timelineAt(laItem)) : null;
+    const saDay = saItem ? dayKeyOf(timelineAt(saItem)) : null;
+    let stopDay = laDay;
+    if (saDay) {
+      const iLa = _allDays.indexOf(laDay), iSa = _allDays.indexOf(saDay);
+      if (iSa >= 0 && (iLa < 0 || iSa > iLa)) stopDay = saDay;   // _allDays 倒序，索引越大越深（更旧）
+    }
     _revealDays = [];
     for (const d of _allDays) {
       _revealDays.push(d);
-      if (!ak || d === ak) break;   // 无锚点→仅最新一天；有锚点→展开到锚点天
+      if (!stopDay || d === stopDay) break;   // 无锚点→仅最新一天；有锚点→展开到（更深）锚点天
     }
   }
   // 滑到底继续滑：把下一天（更早）自动并进来。底部追加、上方滚动位置不变，自然分块（无需手动点击展开）。
@@ -4054,6 +4082,14 @@
     if (!a.screen_name) return null;
     return mergeTweet(it);
   }
+  // 从 feed 成员列表（XFEED.items()）按 id 取原始记录：带 timeline_at 但不过滤作者，
+  // 用于预览阶段算「锚点所在天」——内容缓存（XTWEETS）可能因 @unknown 壳条目被清洗而取不到，
+  // 但成员记录仍在，可据此展开到正确天数让卡片被渲染、restore 能定位（避免刷新先闪到顶部）。
+  function feedItemById(id) {
+    if (!XFEED || id == null) return null;
+    const sid = String(id);
+    return (XFEED.items() || []).find((x) => String(x.tweet_id || x.id) === sid) || null;
+  }
   // 详情页补全后回写：直接覆盖该推文的内容（正文/媒体）+ 评论分页 + 游标，确保
   // 「详情拉到的全文」压过列表里的截断版——union_by_id 按 created_at 同序时不会覆盖，
   // 故这里整数组 lww 落盘，只替换/追加这一条，其余条目原样保留。
@@ -4094,6 +4130,18 @@
       const ids = XFEED ? XFEED.items() : [];
       if (!ids.length) return false;
       const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id)).filter(Boolean);
+      // 续读锚点可能本地内容残缺（@unknown 壳条目被清洗、预览阶段未就绪）导致被上面的
+      // tweetCacheGet 过滤、不在 list 里，于是预览无法渲染该卡、定位失败、刷新先闪到顶部。
+      // 这里把锚点的「成员记录」强制补回（带 timeline_at、不过滤作者），让预览也能展开到
+      // 正确天数并渲染该卡以定位；网络返回后会用有效内容覆盖它，不会留下 @unknown。
+      const la = loadLocalAnchor();
+      if (la && la.id) {
+        const sid = String(la.id);
+        if (!list.some((x) => String(x.tweet_id || x.id) === sid)) {
+          const mem = feedItemById(la.id);
+          if (mem) list.push(mem);
+        }
+      }
       if (!list.length) return false;
       rebuildBrowseList(list);
       brCursor = (XFEED && XFEED.cursor()) || null;
@@ -4112,8 +4160,14 @@
   // 完整列表的正确处理是整表按时间重建，再由调用方定位到锚点。
   function rebuildBrowseList(items) {
     const list = mergeTweets(items || []);
-    tweetCachePut(list);            // 内容并回全局单缓存，保证其它视图同源
-    const valid = list.filter(_browseValid);
+    const la = loadLocalAnchor();
+    const laSid = la && la.id ? String(la.id) : null;
+    // 只把「有效内容」并回全局单缓存：避免把残缺锚点（@unknown 壳条目）写回 XTWEETS 再次污染；
+    // 残缺锚点仅用于本次渲染定位，会随网络返回的有效内容被覆盖。
+    tweetCachePut(list.filter(_browseValid));
+    // 续读锚点即使内容残缺（缺 author.screen_name）也保留渲染：预览阶段需渲染该卡才能定位，
+    // 否则 _rows 没有它、restore 查不到 DOM、刷新先闪到顶部。网络返回后有效内容覆盖之。
+    const valid = list.filter((it) => _browseValid(it) || (laSid && String(it.tweet_id || it.id) === laSid));
     brSeenIds.clear();
     valid.forEach((it) => brSeenIds.add(String(it.tweet_id || it.id)));
     _browseItems = valid.map((it) => tweetCacheGet(String(it.tweet_id || it.id)) || it);
@@ -4142,6 +4196,7 @@
     const cont = viewBrowse;
     if (!cont || getComputedStyle(cont).display === 'none') return;
     XFEED.saveAnchor();
+    saveLocalAnchor();   // 本机续读兜底：即使非主控、框架未写锚点，本地也记下当前位置
   }
   function scheduleSavePos() {
     if (posSaveTimer) return;
@@ -4166,6 +4221,54 @@
   function getBrowseAnchor() {
     const a = XFEED && XFEED.anchor();
     return a && a.id ? String(a.id) : null;
+  }
+  // 本机本地续读锚点：框架 feed() 的 saveAnchor() 在 lease 非主控时会「完全不写」锚点
+  // （state.js 注释说「只留本地」但实现是连本地都不 set），于是本机滚动位置推不上去；
+  // 刷新时 acquireMaster() 的强制 pull 又用服务端陈旧锚点覆盖了本地 → 表现为「锚点被卡在
+  // 某条旧推文上、浏览位置怎么滚都不更新」。这里把本机滚动位置额外存进 localStorage，
+  // 刷新恢复时优先取「本机最新」的位置（at 较大者），从而绕过服务端陈旧锚点。
+  // 仅本机续读用，不做跨设备；多设备时若某设备锚点 at 更新，pickAnchor 仍会让位给它。
+  const BR_ANCHOR_KEY = 'x_br_anchor_v1';
+  function localCapture() {
+    const c = viewBrowse;
+    if (!c) return null;
+    const cr = c.getBoundingClientRect();
+    const nodes = c.querySelectorAll('.bm-card');
+    for (let i = 0; i < nodes.length; i++) {
+      const r = nodes[i].getBoundingClientRect();
+      if (r.bottom > cr.top + 4) {
+        const id = nodes[i].getAttribute('data-tid');
+        if (!id) continue;
+        return { id: String(id), offset: Math.max(0, r.top - cr.top) };
+      }
+    }
+    return null;
+  }
+  function saveLocalAnchor() {
+    const a = localCapture();
+    if (!a) return;
+    try { localStorage.setItem(BR_ANCHOR_KEY, JSON.stringify({ id: a.id, offset: a.offset, at: Date.now() })); } catch (_) {}
+  }
+  function loadLocalAnchor() {
+    try {
+      const raw = localStorage.getItem(BR_ANCHOR_KEY);
+      if (!raw) return null;
+      const a = JSON.parse(raw);
+      if (a && a.id) return { id: String(a.id), offset: typeof a.offset === 'number' ? a.offset : 0, at: a.at || 0 };
+    } catch (_) {}
+    return null;
+  }
+  // 取「本机最新」锚点：服务端快照与本机 localStorage 取 at 较大者。
+  function pickAnchor() {
+    // 本机续读位置为唯一权威：只要 localStorage 存了有效锚点就优先用，
+    // 彻底避免服务端锚点（被其它设备/会话卡住的 RIGHTSNEED 等）在 at 较新时抢占本机位置、
+    // 造成「刷新先跳旧锚点、再跳回」的两段式闪烁。本机为空才回落服务端（跨设备续读）。
+    const la = loadLocalAnchor();
+    console.log('[PICK] localAnchor:', JSON.stringify(la));
+    if (la && la.id) { console.log('[PICK] USING LOCAL:', la.id); return { id: la.id, offset: la.offset }; }
+    const sv = XFEED && XFEED.anchor && XFEED.anchor();
+    console.log('[PICK] serverAnchor:', JSON.stringify(sv), '-> falling back to server');
+    return (sv && sv.id) ? { id: String(sv.id), offset: typeof sv.offset === 'number' ? sv.offset : 0 } : null;
   }
   // 恢复到上次浏览位置：交给框架 feed()（按 id 定位 + 卡内偏移，并带补偿重定位）。
   // 锚点卡片若尚未渲染（位置较深 / 跨设备刚同步、列表还在加载更旧推文）则短暂重试，
@@ -4208,21 +4311,27 @@
   let _lastAnchorAt = 0;
   function anchorTo(tid, offset) {
     if (!tid) return false;
+    console.log('[ANCHOR] anchorTo called for:', tid, 'offset:', offset, 'XFEED?', !!XFEED);
     // C：若锚点所在天被折叠（手动折叠），恢复前先展开，否则 scrollCardToTop 找不到卡片
     const _anc = tweetCacheGet(tid);
     const _ak = _anc ? dayKeyOf(timelineAt(_anc)) : null;
     if (_ak && isCollapsed(_ak)) { dayOverride.set(_ak, false); refreshDayModel(); }
     ensureMounted(tid);            // 二期 A：确保目标卡已在 DOM，框架 restore 才能定位
+    const _card = brList ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`) : null;
+    console.log('[ANCHOR] card in DOM?', !!_card, 'scrollTop now:', viewBrowse ? viewBrowse.scrollTop : 'no-view', 'feedItems:', XFEED ? XFEED.items().length : 'no-xfeed');
+    if (offset === undefined || offset === null) offset = 0;
     _lastAnchorAt = Date.now();
     holdBrRestoring(1300);
     if (XFEED) {
       // restore() 的第一次定位是同步执行的，随后会排 60/200/500/1000ms 四次补偿定位。
       // 这四次之间若图片加载改变了布局，落点各不相同 —— 正是残留的「小幅度抖动」。
       // 取消固定补偿，改由 watchStableThenAnchor() 在布局真正稳定后校正一次。
-      XFEED.restore({ id: String(tid), offset: offset || 0 });
+      const _r = XFEED.restore({ id: String(tid), offset: offset || 0 });
+      console.log('[ANCHOR] XFEED.restore returned:', _r, 'scrollTop after:', viewBrowse ? viewBrowse.scrollTop : 'no-view');
       try { XFEED.cancelRestore(); } catch (e) {}
     } else scrollCardToTop(tid, offset);
     watchStableThenAnchor(tid, offset);
+    console.log('[ANCHOR] end anchorTo, scrollTop:', viewBrowse ? viewBrowse.scrollTop : 'no-view');
     return true;
   }
   // 布局稳定后做唯一一次校正：替代框架固定延时的四次补偿定位。
@@ -4292,18 +4401,26 @@
   }
   function restoreBrowseScroll() {
     if (!XFEED || brUserScrolled) return;
+    console.log('[RESTORE] called, brAwaitingRestore:', brAwaitingRestore, 'timeSinceLastAnchor:', Date.now() - _lastAnchorAt);
     // 刚刚已被 anchorTo 定位过（缓存预定位 / 插入新推文后的 reanchor）—— 再定位一次
     // 就是紧接着的第二次 scrollTop 改写，且两处锚点/offset 并不相同 → 用户看到的抖动。
-    if (Date.now() - _lastAnchorAt < 1500) return;
+    if (Date.now() - _lastAnchorAt < 1500) { console.log('[RESTORE] skipped: too soon after last anchor'); return; }
     if (_restoreIv) return;        // 已有重试在跑，别再叠一个 interval 反复定位
     holdBrRestoring(200);
     _lastAnchorAt = Date.now();
-    if (XFEED.restore()) { endAwaitRestore(); return; }   // 定位成功即结束等待阶段
+    const _pa = pickAnchor();
+    console.log('[RESTORE] pickAnchor result:', JSON.stringify(_pa));
+    if (_pa && _pa.id) {
+      if (XFEED.restore({ id: _pa.id, offset: _pa.offset || 0 })) { endAwaitRestore(); return; }
+    } else if (XFEED.restore()) { endAwaitRestore(); return; }   // 定位成功即结束等待阶段
     let tries = 0;
     _restoreIv = setInterval(() => {
       if (brUserScrolled) { cancelAutoRestore(); return; }
       _lastAnchorAt = Date.now();
-      if ((XFEED && XFEED.restore()) || ++tries > 16) { finishAutoRestore(); return; }
+      const _pa2 = pickAnchor();
+      if (_pa2 && _pa2.id) {
+        if (XFEED.restore({ id: _pa2.id, offset: _pa2.offset || 0 }) || ++tries > 16) { finishAutoRestore(); return; }
+      } else if ((XFEED && XFEED.restore()) || ++tries > 16) { finishAutoRestore(); return; }
       holdBrRestoring(360);        // 下一轮重试前继续保持抑制
     }, 320);
   }
@@ -4695,7 +4812,7 @@
     }
     if (on) {
       el.style.display = '';
-      el.innerHTML = '<button disabled style="width:100%;padding:9px;border:none;border-radius:9px;font-size:13px;background:#eef5fd;color:#1d9bf0;cursor:default">' + icon('xi-refresh') + '正在后台加载最新推文…</button>';
+      el.innerHTML = '<button disabled style="width:100%;padding:9px;border:none;border-radius:9px;font-size:13px;background:#eef5fd;color:#1d9bf0;cursor:default">' + icon('xi-refresh') + '正在后台加载最新推文… [v4-fix]</button>';
     } else {
       el.style.display = 'none';
       el.innerHTML = '';
@@ -4747,9 +4864,11 @@
       // 缓存渲染后立刻用本地锚点预定位：否则要等 await 网络请求返回才定位，
       // 用户会先看到列表顶部（最新）、再被拽到上次位置 —— 即「两段式跳变」。
       // 本机锚点可能略旧，随后 await syncP 落地 + prependNewTweets 会用服务端锚点校正。
+      // 这里用 pickAnchor：优先取本机最新滚动位置（localStorage 兜底），绕过服务端陈旧锚点。
       if (preview) {
-        const localTid = getBrowseAnchor();
-        if (localTid) anchorTo(localTid, 0);
+        const _pa = pickAnchor();
+        console.log('[LOAD] preview anchor:', JSON.stringify(_pa), 'scrollTop before:', viewBrowse ? viewBrowse.scrollTop : 'no-view');
+        if (_pa && _pa.id) anchorTo(_pa.id, _pa.offset);
       }
       if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
@@ -4771,8 +4890,12 @@
         const items = mergeTweets(d.items || []);
         // 定位前先等对账落地：锚点必须取服务端真相。否则本机旧锚点会被当成"当前位置"，
         // 而本设备刚抢占为主控，随后一滚动就把陈旧位置推回服务端、覆盖真正进度。
+        // 但本机续读位置（localStorage）可能比服务端陈旧锚点更新——优先取本机最新，
+        // 多设备时若某设备锚点 at 更新，pickAnchor 仍会让位给它（见 pickAnchor）。
         if (syncP) { try { await syncP; } catch (_) {} }
-        const anchorTid = getBrowseAnchor();
+        const _pa = pickAnchor();
+        const anchorTid = _pa ? _pa.id : null;
+        console.log('[LOAD] final anchor after network:', JSON.stringify(_pa), 'scrollTop:', viewBrowse ? viewBrowse.scrollTop : 'no-view');
         if (d.canonical) {
           // 后端无 cursor 时返回的是「服务端合并后的完整列表」（canonical），横跨新与旧。
           // 绝不能交给 prependNewTweets：它按「这一批全是新推文」的语义往顶部插入，
@@ -4781,7 +4904,7 @@
           // 强制刷到最新」的根因。完整列表的正确处理是整表按时间重建再定位锚点。
           rebuildBrowseList(items);
           saveBrowseCache(items, true);
-          if (anchorTid) anchorTo(anchorTid, 0);
+          if (anchorTid) anchorTo(anchorTid, _pa ? _pa.offset : 0);
           else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
         } else if (openMode || preview) {
           // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
@@ -6244,6 +6367,7 @@
       // 真实输入另有 wheel / touch / keydown 通道直接接管，不受此处屏蔽影响。
       if (brAwaitingRestore) return;
       markUserScrolled();
+      saveLocalAnchor();   // 本机续读位置即时落盘（不依赖 200ms 防抖），避免「滑一下就刷新」漏存当前位置
       scheduleSavePos();
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
