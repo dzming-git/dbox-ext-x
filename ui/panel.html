@@ -1001,7 +1001,7 @@
       <div class="kw-chips" id="srch-chips"></div>
       <div class="kw-bar-foot">
         <span class="kw-hint">点关键词切换查看；关键词上的按钮可单独重搜 / 移除（缓存保留）</span>
-        <button id="srch-refresh-all" title="放弃所有关键词的缓存，依次重新爬取"><svg class="ico-svg"><use href="#xi-refresh"/></svg>全部重搜</button>
+        <button id="srch-refresh-all" title="重新抓取全部关键词（后台进行，可关闭页面）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>全部重搜</button>
       </div>
     </div>
     <div class="bm-toolbar">
@@ -5595,9 +5595,9 @@
         const d = await r.json();
         if (!d.success) { stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; return; }
         // 改成 innerHTML 后必须转义动态值：percent 来自服务端，直接拼接等于开一个注入口子
-        if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '爬取 ' + (parseInt(d.percent, 10) || 0) + '%';
+        if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 ' + (parseInt(d.percent, 10) || 0) + '%';
         if (d.done) {
-          stopSearchPoll(); saveSrchTask(null); srchTaskKey = null;
+          stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
           // 后端已把结果写进 UserState 缓存（search:kw:<key> + tweets feed），拉取最新后重渲染
           try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
@@ -5610,12 +5610,13 @@
     }, 1000);
   }
 
-  // 全部重搜：改为后台异步批量爬取（连接无关，可关浏览器后回来续看）。
-  // 旧实现串行同步逐个爬，跑在浏览器里——关掉浏览器剩余关键词不爬、进度也丢。
+  // 全部重搜：后台批量爬取（连接无关，可关页面后回来续看）。对普通用户只呈现「重搜 NN%」
+  // 的进度，不暴露「异步 / 任务 / 提交」等概念；爬完自动拉最新结果重渲染。
+  // 整个爬取过程按钮保持禁用，避免重复提交；只有失败或完成才复位。
   async function refreshAllKeywords() {
     if (srchRefreshingAll || !srchKwList.length) return;
     srchRefreshingAll = true;
-    if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = true; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '提交中…'; }
+    if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = true; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 0%'; }
     const list = srchKwList.slice();
     try {
       const r = await req(`${API}/search/run`, {
@@ -5628,11 +5629,9 @@
       saveSrchTask(srchTaskKey);
       startSearchPoll();
     } catch (e) {
-      if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜';
-      if (pstStat) pstStat.textContent = '启动批量爬取失败: ' + (e && e.message ? e.message : e);
-    } finally {
       srchRefreshingAll = false;
-      if (srchRefreshAllBtn) srchRefreshAllBtn.disabled = false;
+      if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
+      if (pstStat) pstStat.textContent = '启动批量爬取失败: ' + (e && e.message ? e.message : e);
     }
   }
 
@@ -5889,6 +5888,8 @@
         ? `已应用「${d.name}」（${srchKwList.length} 词，未自动搜索）`
         : `已应用「${d.name}」`;
     }
+    // 应用即「打开这个收藏的搜索」：关闭浮层，让用户直接看到结果和顶部的「全部重搜」
+    closePresets();
   }
   function saveCurrentAsPreset() {
     const name = String((pstNameEl && pstNameEl.value) || '').trim();
@@ -5960,13 +5961,14 @@
         b.addEventListener('click', fn);
         return b;
       };
-      ops.appendChild(mk('应用', '切换到该方案的关键词与过滤（不自动搜索）', '', () => applyPreset(p.id)));
-      ops.appendChild(mk('运行', '后台批量爬取该方案的全部关键词（可关浏览器后回来续看）', 'run', () => {
-        applyPreset(p.id);
-        refreshAllKeywords();   // 改为后台异步任务，连接无关
-      }));
-      ops.appendChild(mk('更新', '用当前关键词与过滤覆盖该方案', '', () => updatePreset(p.id)));
-      ops.appendChild(mk('删除', '删除该方案（不影响当前关键词）', 'del', () => deletePreset(p.id)));
+      // 行首整块点一下即「应用」——这是最常用的动作，降低理解成本；
+      // 行内只留两个低频管理动作：覆盖（把当前改动存回方案）、删除。
+      main.style.cursor = 'pointer';
+      main.title = '应用此方案：载入它的关键词与过滤，立即显示已缓存的结果';
+      main.addEventListener('click', () => applyPreset(p.id));
+      ops.appendChild(mk('应用', '载入此方案的关键词与过滤，立即显示已缓存结果（不自动爬取）', 'primary', () => applyPreset(p.id)));
+      ops.appendChild(mk('覆盖', '把当前的关键词与过滤覆盖保存到这个方案', '', () => updatePreset(p.id)));
+      ops.appendChild(mk('删除', '删除这个方案（不影响当前已添加的关键词）', 'del', () => deletePreset(p.id)));
       row.appendChild(main); row.appendChild(ops);
       pstListEl.appendChild(row);
     });
