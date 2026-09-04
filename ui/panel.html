@@ -4731,6 +4731,7 @@
   let srchRefreshingAll = false; // 「全部重搜」进行中
   let srchMerged = [];           // 融合结果 [{tweet_id, created_at, kw}]（内存态，按需重算）
   let srchMergedLoading = false; // 融合视图翻页中
+  let _srchFetching = new Set();  // 本轮渲染正在懒拉补全的 tweet_id，避免重复发请求
 
   // 关键词 → 稳定 key：小写归一（X 搜索不区分大小写）+ 连续空白折叠 + djb2 短哈希。
   // 不用原文做键：空格 / # / @ / 中文 进键位与 URL 都易出岔子，哈希短且稳定。
@@ -5033,6 +5034,7 @@
     const arr = curArr();
     srchAllItems = arr.slice();
     srchSeenIds = new Set();   // 去重集合在渲染过程中逐个加入，不要预先塞满（否则全部被跳过）
+    _srchFetching.clear();     // 每轮渲染重新尝试补全（XTWEETS 可能已补齐该推文）
     srchCursor = curCursorGet();
     srchList.innerHTML = '';
     if (!arr.length) {
@@ -5073,6 +5075,13 @@
       card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
       srchList.appendChild(card);
       i++;
+      // 内容缓存缺失 author（被 XTWEETS 1500 上限淘汰 / 跨设备未同步）：先渲染占位，
+      // 再按 id 懒拉单条补全，避免整列 @unknown。补全后 persistTweetToFeed 写回 XTWEETS，
+      // 后续渲染即可命中、不再重复请求。
+      if ((!full.author || !full.author.screen_name) && !_srchFetching.has(String(id))) {
+        _srchFetching.add(String(id));
+        fetchTweetAndUpdateCard(String(id), card);
+      }
     });
     srchLoadmore.style.display = 'none';
     updateFilterBadge();
@@ -5229,6 +5238,10 @@
           card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
           srchList.appendChild(card);
           appended++; appendedTotal++;
+          if ((!full.author || !full.author.screen_name) && !_srchFetching.has(String(id))) {
+            _srchFetching.add(String(id));
+            fetchTweetAndUpdateCard(String(id), card);
+          }
         });
         srchCursor = d.next_cursor || null;
         // 按本次批次开始时固定的 product 写回：不能读 srchProduct——用户可能已切到
@@ -5831,11 +5844,10 @@
     srchKwList = next;
     srchActiveKey = srchKwList.length ? ALL_KEY : null;
     saveKwList();
-    // 把各词缓存补进内存，否则 chip 显示 0 条，看着像应用失败
-    srchKwList.forEach((e) => {
-      const c = loadKwCache(e.key);
-      if (c) tweetCachePut((c.top || []).concat(c.latest || []));
-    });
+    // 各词缓存经 loadKwCache 已补进 srchCache 内存（chip 读 srchCache，不读 XTWEETS），
+    // 切勿把轻量成员(tweet_id+created_at、无 author)回灌 XTWEETS——会污染全局单缓存，
+    // 被 scrubTweetsCache 判定为脏数据后以 @unknown 渲染搜索结果。
+    srchKwList.forEach((e) => { loadKwCache(e.key); });
     renderKwChips();
     if (activeView === 'search') {
       if (srchKwList.length) {
