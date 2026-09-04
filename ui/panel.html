@@ -3563,42 +3563,51 @@
       // 兜底 3/4（贴合 X 主流竖图）：仅在比例确实拿不到时用，且随后会被预取结果一次性覆盖
       return 3 / 4;
     };
-    items.forEach((el) => { el._ar = arOf(el); });
+    // 重置每格：关键——把 CSS 兜底 aspect-ratio:3/4 关掉，让网格行高真正决定格子高度；
+    // 否则 aspect-ratio 会让 .bm-media 自身盒子按「宽×4/3」撑高、溢出自己的网格格 → 盖到相邻格（重叠）。
+    // 同时显式设像素高度 + overflow:hidden，杜绝任何内容溢出到邻居。
+    items.forEach((el) => {
+      el._ar = arOf(el);
+      el.style.aspectRatio = 'auto';
+      el.style.gridRow = '';
+      el.style.height = '';
+      el.style.width = '';
+      el.style.overflow = 'hidden';
+    });
     const N = items.length;
 
     // 按 N 决定网格结构（X 风格）：
     //   N=2 → 1 行 2 列横排；
     //   N=3 → 2 列 2 行，首格跨两行（左大右二，比例 2:1）；
     //   N=4 → 2×2 网格。
-    // 先清掉旧样式（resize 时复用同一节点）
     container.style.gridTemplateColumns = '1fr 1fr';
     container.style.gridTemplateRows = '';
-    items.forEach((el) => { el.style.gridRow = ''; el.style.height = ''; el.style.width = ''; });
 
-    // 行高 H：所有格子在等宽 gridW 下按 gridW/ar 算出所需高度，取最大值
-    //  —— 这样高度统一 = 最高那一张所需，最高那张 contain 居中，
-    //     其余各图按自身比例填满格子，零裁切；img max-width/max-height:100% 保证不溢出。
     const gridW = (cw - gap) / 2;
-    let H = 0;
-    items.forEach((el) => { const h = gridW / el._ar; if (h > H) H = h; });
     // 最小行高：防止宽图(16:9等)在手机半宽下算出极矮行高→图片缩成白框里的小图
-    const minRowH = Math.max(160, Math.round(ch * 0.28));
-    H = Math.max(H, minRowH);
-    H = Math.min(H, maxRowH);
+    const minRowH = Math.max(150, Math.round(ch * 0.26));
 
     if (N === 2) {
+      let H = 0;
+      items.forEach((el) => { const h = gridW / el._ar; if (h > H) H = h; });
+      H = Math.max(minRowH, Math.min(H, maxRowH));
       container.style.gridTemplateRows = `${H}px`;
+      items.forEach((el) => { el.style.height = H + 'px'; });
     } else if (N === 3) {
-      // 2 行各 H/2，首格跨两行 → 左格高 H，右两格各 H/2（2:1 比例，正是 X 的左大右二）
-      const halfH = Math.round(H / 2);
-      container.style.gridTemplateRows = `${halfH}px ${halfH}px`;
-      items[0].style.gridRow = '1 / span 2';
-      // 右侧两格各自设明确高度 + overflow:hidden，防止内容（尤其宽图）溢出到相邻格
-      items[1].style.height = halfH + 'px';
-      items[2].style.height = halfH + 'px';
-    } else if (N === 4) {
-      const rowH = Math.round(H / 2);   // 4 图分 2 行，每行高度减半（总高与 2/3 图一致）
+      // 以左图自然高度定整组行高（左格=2×行高，右侧两格各=行高），贴合 X 左大右二
+      let rowH = gridW / items[0]._ar;
+      rowH = Math.max(minRowH / 2, Math.min(rowH, Math.round(maxRowH / 2)));
       container.style.gridTemplateRows = `${rowH}px ${rowH}px`;
+      items[0].style.gridRow = '1 / span 2';
+      items[0].style.height = (rowH * 2) + 'px';
+      items[1].style.gridRow = '1'; items[1].style.height = rowH + 'px';
+      items[2].style.gridRow = '2'; items[2].style.height = rowH + 'px';
+    } else { // N >= 4（cardMediaInner 已截断到 4）
+      let H = 0;
+      items.forEach((el) => { const h = gridW / el._ar; if (h > H) H = h; });
+      H = Math.max(minRowH, Math.min(H, maxRowH));
+      container.style.gridTemplateRows = `${H}px ${H}px`;
+      items.forEach((el) => { el.style.height = H + 'px'; });
     }
     container.dataset.jlDone = '1';
   }
