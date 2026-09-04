@@ -577,18 +577,18 @@
     border: 1px dashed var(--border, #e3e6eb); border-radius: 10px; cursor: pointer;
     text-align: center; }
   .day-collapsed:hover { color: #1d9bf0; }
-  /* D：右侧圆弧时间轴（滚轮/拖动选日期，中心为选中天，越近中心越清晰；手机端可呼出） */
-  .br-arc { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-    width: 66px; height: 320px; z-index: 7; touch-action: none;
+  /* D：右侧 3D 圆柱滚轮时间轴（drum picker 范式：选中天在最近内容侧、绕圆柱后仰+缩小+淡出；滚轮/拖动切换；手机端可呼出） */
+  .br-arc { position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+    width: 96px; height: 470px; z-index: 7; touch-action: none; perspective: 720px;
     user-select: none; -webkit-user-select: none; overflow: visible; cursor: ns-resize; }
-  .br-arc .arc-item { position: absolute; right: 8px; top: 50%;
-    transform-origin: 100% 50%; padding: 3px 9px; border-radius: 14px;
-    font-size: 12px; line-height: 1.2; white-space: nowrap; color: #e7e9ea;
-    background: rgba(15,22,30,.82); border: 1px solid rgba(255,255,255,.14);
-    box-shadow: 0 2px 8px rgba(0,0,0,.3); cursor: pointer; pointer-events: auto;
-    transition: opacity .12s ease, transform .12s ease; }
+  .br-arc .arc-item { position: absolute; right: 6px; top: 50%;
+    transform-origin: 50% 50%; padding: 4px 13px; border-radius: 16px;
+    font-size: 13px; line-height: 1.15; white-space: nowrap; color: #cfd9e0;
+    background: rgba(21,32,43,.8); border: 1px solid rgba(255,255,255,.12);
+    box-shadow: 0 2px 9px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto;
+    backface-visibility: hidden; transition: opacity .14s ease, transform .14s ease, color .14s ease; }
   .br-arc .arc-item.sel { color: #fff; background: #1d9bf0; border-color: #1d9bf0;
-    font-weight: 700; font-size: 13px; box-shadow: 0 0 14px rgba(29,155,240,.7); }
+    font-weight: 700; font-size: 15px; box-shadow: 0 0 18px rgba(29,155,240,.7); }
   /* 手机端呼出按钮（桌面端隐藏，由媒体查询控制） */
   .br-arc-fab { position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
     width: 44px; height: 44px; border-radius: 50%; z-index: 7; display: none;
@@ -4206,7 +4206,7 @@
   // D 圆弧时间轴：时间倒序的天列表 + 当前索引；滚轮/拖动切换、中心为选中天、主列表滚动时同步
   let _knobDays = [];   // 时间倒序（最新→最旧），与 _rows 一致
   let _knobIdx = 0;
-  const _ARC_RANGE = 4, _ARC_STEP = 34, _ARC_R = 200;   // 窗口半径 / 行距 / 圆弧半径
+  const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
   function buildDayKnob(dayCount) {
     _knobDays = Array.from(dayCount.keys());
     const arc = $('br-arc'); if (!arc) return;
@@ -4253,7 +4253,7 @@
     renderArc();
     if (jump) jumpToDay(_knobDays[_knobIdx]);
   }
-  // 渲染圆弧：只画选中天 ±_ARC_RANGE 的窗口，中心为选中天、越近越清晰
+  // 渲染 3D 圆柱滚轮：只画选中天 ±_ARC_RANGE 窗口；选中天最近内容侧、邻项向边缘弯曲并绕圆柱后仰+缩小+淡出
   function renderArc() {
     const arc = $('br-arc'); if (!arc) return;
     const n = _knobDays.length;
@@ -4262,17 +4262,17 @@
       const i = _knobIdx + j;
       if (i < 0 || i >= n) continue;
       const k = _knobDays[i];
-      const y = j * _ARC_STEP;                         // 选中天在上、旧天在下
-      const yy = Math.min(Math.abs(y), _ARC_R * 0.96);
-      const x = _ARC_R - Math.sqrt(_ARC_R * _ARC_R - yy * yy);  // 圆弧凸起：中心最靠左
+      const y = j * _ARC_STEP;                              // 选中天在上、旧天在下
       const t = Math.abs(j) / _ARC_RANGE;
-      const op = (1 - t * 0.7).toFixed(3);
-      const sc = (1 - t * 0.42).toFixed(3);
+      const tx = -( _ARC_BOW * (1 - t * t) ).toFixed(1);    // 选中天最靠内容侧，越偏越向边缘收敛
+      const rx = (-j / _ARC_RANGE * _ARC_TILT).toFixed(1);  // 上仰/下列：绕水平轴后仰
+      const op = (1 - t * 0.78).toFixed(3);
+      const sc = (1 - t * 0.4).toFixed(3);
       const sel = j === 0 ? ' sel' : '';
       const pp = String(k).split('-');
       const label = j === 0 ? dayLabelOf(k) : ((+pp[1]) + '/' + (+pp[2]));
       html += '<div class="arc-item' + sel + '" data-i="' + i + '" style="transform:translate(' +
-        (-x).toFixed(1) + 'px,calc(-50% + ' + y + 'px)) scale(' + sc + ');opacity:' + op + '">' +
+        tx + 'px,calc(-50% + ' + y + 'px)) rotateX(' + rx + 'deg) scale(' + sc + ');opacity:' + op + '">' +
         label + '</div>';
     }
     arc.innerHTML = html;
