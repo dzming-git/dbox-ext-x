@@ -3367,6 +3367,31 @@
     } catch (_) {}
   }
 
+  // 搜索结果专用懒拉补全：在 fetchTweetAndUpdateCard 基础上，补全后必须重跑一次过滤。
+  // 否则被关键词/广告规则命中的推文会绕过过滤、以「懒拉回来的完整推文」重新插回列表——
+  // 表现为「应用方案→广告贴又出现」「重新应用过滤→广告贴回来」。命中过滤直接移除占位卡，
+  // 不回插；未命中才替换为完整卡（融合视图补回关键词来源标签）。
+  async function fetchSearchCard(tid, card, kw) {
+    if (!tid || !card) return;
+    try {
+      const r = await req(`${API}/tweet/${encodeURIComponent(tid)}`);
+      const d = await r.json();
+      if (!d.success || !d.tweet) return;
+      const item = mergeTweet(d.tweet);
+      persistTweetToFeed(d.tweet);   // 写回唯一持久化缓存：刷新/换设备不再回到旧内容
+      // 懒拉补全后重跑过滤：占位卡在渲染时正文为空、过滤必过，补全到正文后才能判是否该隐藏
+      if (filterActive() && !srchFilterOk(item, new Set())) {
+        if (card.parentNode) card.remove();
+        return;
+      }
+      if (card.parentNode) {
+        const nc = renderBrowseCard(item);
+        if (kw) addKwSourceTag(nc, kw);
+        card.replaceWith(nc);
+      }
+    } catch (_) {}
+  }
+
   // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
   // 每个格子带 data-w/data-h（原始宽高）：justified 行式布局按比例分配宽度时要用。
   // 缺失时由 layoutJustified 在 img 加载后用 naturalWidth/Height 兜底。
@@ -5080,7 +5105,7 @@
       // 后续渲染即可命中、不再重复请求。
       if ((!full.author || !full.author.screen_name) && !_srchFetching.has(String(id))) {
         _srchFetching.add(String(id));
-        fetchTweetAndUpdateCard(String(id), card);
+        fetchSearchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null);
       }
     });
     srchLoadmore.style.display = 'none';
@@ -5240,7 +5265,7 @@
           appended++; appendedTotal++;
           if ((!full.author || !full.author.screen_name) && !_srchFetching.has(String(id))) {
             _srchFetching.add(String(id));
-            fetchTweetAndUpdateCard(String(id), card);
+            fetchSearchCard(String(id), card, null);
           }
         });
         srchCursor = d.next_cursor || null;
