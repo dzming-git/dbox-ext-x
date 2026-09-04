@@ -3124,6 +3124,7 @@
   // 浏览器缓存后，等卡片真正挂载(视口±_phBuf)时图片已在缓存里、瞬间显示，避免滚动到才现白框。
   let _preloadAhead = 2200;         // 预加载领先视口的距离(px)，须大于挂载缓冲 _phBuf
   const _preloadedKeys = new Set(); // rowKey -> 已触发预取（去重，避免重复请求）
+  const _prefetchImgs = new Set();  // 在途预取 Image 引用：必须保留，否则请求飞一半被 GC 回收→中断（此前「完全没效果」根因）
   function _mediaUrlsOf(item) {
     const out = [];
     const meds = (item && item.media) || [];
@@ -3152,7 +3153,14 @@
       _preloadedKeys.add(key);
       const item = row.item || tweetCacheGet(row.tid);
       const urls = _mediaUrlsOf(item);
-      for (const u of urls) { const im = new Image(); im.src = u; }  // 仅触发缓存，不入 DOM
+      for (const u of urls) {
+        const im = new Image();
+        im.decoding = 'async';
+        // 加载完成/失败后再释放引用，允许 GC 回收；在途期间保留 → 请求不被中断
+        im.onload = im.onerror = () => _prefetchImgs.delete(im);
+        _prefetchImgs.add(im);
+        im.src = u;  // 仅触发缓存，不入 DOM；浏览器同源图片缓存，卡片真正挂载时瞬时命中
+      }
     }
   }
   const _hEst = { card: 340, sep: 40, coll: 34 };
@@ -3666,10 +3674,11 @@
     // justified 行式布局：blockEl 可能是 .media 本身，也可能是 .quoted（内部含 .media）
     const jlEl = blockEl.classList.contains('justified') ? blockEl : blockEl.querySelector('.media.justified');
     if (jlEl) {
-      // 先用兜底比例出初始布局（避免空白/塌陷），随即并发探测真实尺寸，
-      // 全部到手后由 probeMediaSizes 一次性重排到精确布局 —— 全程只调整一次。
+      // 只算一次、固定行高：卡片高度在挂载瞬间即确定，图片稍后加载只改变它在格子内
+      // 的 contain 显示、不改动任何布局 → 零跳动、浏览位置恒定。
+      // （X API 基本不返回图片尺寸，探测真实比例后重排行高会把已定位的浏览位置顶开，
+      //   故放弃 probeMediaSizes 重排；尺寸缺失时的留白代价远小于跳动。）
       layoutJustified(jlEl);
-      probeMediaSizes(jlEl);
     }
   }
 
