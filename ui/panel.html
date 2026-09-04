@@ -557,6 +557,15 @@
   /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感（带轻微缩放，更明显） */
   @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .bm-card.card-enter { animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both; }
+  /* 搜索结果懒拉补全前的占位：用中性骨架，绝不能渲染成「@unknown 推文」——否则被过滤的广告
+     会先以 @unknown 推文脸闪一下再消失，用户误以为 bug。补全命中过滤则直接移除骨架。 */
+  .srch-skel { padding: 14px 16px; background: #fff; border-bottom: 1px solid #f0f3f5; box-sizing: border-box; }
+  .srch-skel .bars { display: flex; flex-direction: column; gap: 9px; }
+  .srch-skel .bars span { height: 12px; border-radius: 6px; background: linear-gradient(90deg, #eef1f3 25%, #e3e8ec 37%, #eef1f3 63%); background-size: 400% 100%; animation: skel 1.2s ease-in-out infinite; }
+  .srch-skel .bars span:nth-child(1) { width: 38%; }
+  .srch-skel .bars span:nth-child(2) { width: 92%; }
+  .srch-skel .bars span:nth-child(3) { width: 66%; }
+  @keyframes skel { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
   /* ===== 首页浏览增强：A 虚拟滚动 / B 按天分组 / C 已读折叠 / D 右侧日期轴 ===== */
   /* A（二期：真·虚拟滚动）：改为占位式窗口化——离屏行用等高占位 div 顶替真实卡片，
      只挂载视口±缓冲区的行（见 renderWindow），省去离屏布局/绘制/媒体加载。
@@ -3393,6 +3402,15 @@
     } catch (_) {}
   }
 
+  // 懒拉补全前的占位：中性骨架（不是 @unknown 推文脸）。补全后 fetchSearchCard 会按过滤结果
+  // replaceWith 真卡或 remove 掉——避免被过滤的广告先以 @unknown 闪现再消失。
+  function makeSrchSkeleton() {
+    const d = document.createElement('div');
+    d.className = 'card srch-skel card-enter';
+    d.innerHTML = '<div class="bars"><span></span><span></span><span></span></div>';
+    return d;
+  }
+
   // 用统一的缩略图 HTML 渲染一组媒体（图片/视频），最多 4 个
   // 每个格子带 data-w/data-h（原始宽高）：justified 行式布局按比例分配宽度时要用。
   // 缺失时由 layoutJustified 在 img 加载后用 naturalWidth/Height 兜底。
@@ -5094,17 +5112,17 @@
       const full = tweetCacheGet(id) || it;
       // 过滤广告/机器人：命中规则即跳过，不渲染该卡片
       if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
-      const card = renderBrowseCard(full);
+      // 内容缓存缺失 author（被 XTWEETS 1500 上限淘汰 / 跨设备未同步）：先渲染中性骨架占位，
+      // 再按 id 懒拉单条补全；补全后 fetchSearchCard 会按过滤结果换成真卡或移除（不回插 @unknown 推文脸）。
+      const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
+      const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
       // 融合视图：标出这条来自哪个关键词，否则混排后用户看不出它为什么出现在这里
-      if (srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
+      if (!needFetch && srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
       card.classList.add('card-enter');
       card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
       srchList.appendChild(card);
       i++;
-      // 内容缓存缺失 author（被 XTWEETS 1500 上限淘汰 / 跨设备未同步）：先渲染占位，
-      // 再按 id 懒拉单条补全，避免整列 @unknown。补全后 persistTweetToFeed 写回 XTWEETS，
-      // 后续渲染即可命中、不再重复请求。
-      if ((!full.author || !full.author.screen_name) && !_srchFetching.has(String(id))) {
+      if (needFetch) {
         _srchFetching.add(String(id));
         fetchSearchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null);
       }
@@ -5259,12 +5277,14 @@
           // 过滤广告/机器人：命中即跳过，且不写入结果数组（避免把垃圾缓存下来）
           if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
           targetArr.push({ tweet_id: id, created_at: it.created_at });
-          const card = renderBrowseCard(full);
+          // 未缓存作者：渲染中性骨架，懒拉补全后由 fetchSearchCard 换真卡或移除（不闪 @unknown）
+          const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
+          const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
           card.classList.add('card-enter');
           card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
           srchList.appendChild(card);
           appended++; appendedTotal++;
-          if ((!full.author || !full.author.screen_name) && !_srchFetching.has(String(id))) {
+          if (needFetch) {
             _srchFetching.add(String(id));
             fetchSearchCard(String(id), card, null);
           }
