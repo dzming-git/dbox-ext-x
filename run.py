@@ -2094,11 +2094,16 @@ def _extract_bookmark_tweets(data):
                     'tweet_id': _irt_id,
                     'screen_name': legacy.get('in_reply_to_screen_name') or '',
                 }
-            out.append({
-                'tweet_id': tid,
-                'text': _strip_media_tco(legacy.get('full_text', ''), legacy),
-                'created_at': legacy.get('created_at'),
-                'favorite_count': legacy.get('favorite_count'),
+                # 时间轴位置用「时间线条目自身」的时间（原推被转发的那一刻），
+                # 而非被嵌进来的原推时间——否则转推会错排到原推发布日。
+                # 纯转推时 result 已是原推，legacy.created_at 是原推时间，故单独取外层条目时间。
+                entry_created_at = (outer.get('legacy') or {}).get('created_at')
+                out.append({
+                    'tweet_id': tid,
+                    'text': _strip_media_tco(legacy.get('full_text', ''), legacy),
+                    'created_at': legacy.get('created_at'),
+                    'timeline_at': entry_created_at or legacy.get('created_at'),
+                    'favorite_count': legacy.get('favorite_count'),
                 'retweet_count': legacy.get('retweet_count'),
                 'author': author,
                 'media': media,
