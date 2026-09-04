@@ -558,9 +558,11 @@
   @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .bm-card.card-enter { animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both; }
   /* ===== 首页浏览增强：A 虚拟滚动 / B 按天分组 / C 已读折叠 / D 右侧日期轴 ===== */
-  /* A：离屏卡片交给浏览器跳过布局/绘制（content-visibility），长列表只保留真实滚动高度，
-     彻底消除上千张卡同屏的卡顿；折叠天用 display:none 等效析构渲染。离屏内联视频另行自动暂停。 */
-  .bm-card { content-visibility: auto; contain-intrinsic-size: auto 340px; }
+  /* A（二期：真·虚拟滚动）：改为占位式窗口化——离屏行用等高占位 div 顶替真实卡片，
+     只挂载视口±缓冲区的行（见 renderWindow），省去离屏布局/绘制/媒体加载。
+     离屏卡已不在 DOM，content-visibility 不再需要；占位 div 占满真实高度，锚点定位数学不变。 */
+  .bm-card { /* 窗口化由 renderWindow 管理，离屏卡直接移出 DOM */ }
+  .br-ph { width: 100%; will-change: height; }
   /* 浏览视图包裹层：让右轴/浮动日期头脱离滚动容器、吸在视口上 */
   #view-browse-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   /* B：按天分组 + 吸附日期头 */
@@ -3070,6 +3072,164 @@
   let brLoading = false;
   const brSeenIds = new Set();   // 浏览去重：同一 tweet_id 只渲染一次
   const downloadedTweetIds = new Set();  // 避免重复下载
+
+  // ===== 二期 A：占位式窗口化（真·虚拟滚动）=====
+  // 只把「视口±缓冲」内的行挂载为真实 DOM，离屏行用等高占位 div 顶替，省去离屏布局/绘制/媒体加载。
+  // 关键：占位 div 占满真实高度、普通文档流不变 → 既有锚点定位数学（scrollCardToTop 走
+  // offsetTop、XFEED.restore 找 .bm-card 元素）完全不受影响；只是「目标卡可能暂不在 DOM」，
+  // 定位前用 ensureMounted 把它挂上即可。B/C/D 的分组头/折叠/右轴全部建立在 rows 模型上。
+  let _phBuf = 800;                 // 视口上下额外缓冲(px)
+  const _cardCache = new Map();     // rowKey -> 真实元素（离屏缓存复用，避免重建+重绑事件）
+  const _hReal = new Map();         // rowKey -> 实测高度(px)
+  const _hEst = { card: 340, sep: 40, coll: 34 };
+  let _rows = [];                   // 有序行模型（时间倒序）：{kind:'card'|'sep'|'coll', tid?, day?, count?, item?}
+  let _browseItems = [];            // 全量浏览推文（buildRows 数据源，时间倒序）
+  let _winBusy = false;
+  let _rowOff = null;               // 行起始偏移前缀和（高度累加），长度 _rows.length+1；高度/行变化置 null 重建
+  function rowKeyOfEl(el) {
+    if (el.classList.contains('bm-card')) return 'card:' + (el.dataset.tid || '');
+    if (el.classList.contains('day-sep')) return 'sep:' + (el.dataset.day || '');
+    if (el.classList.contains('day-collapsed')) return 'coll:' + (el.dataset.day || '');
+    return el.dataset.phKey || null;
+  }
+  function _rowKey(row) {
+    if (row.kind === 'card') return 'card:' + row.tid;
+    if (row.kind === 'sep') return 'sep:' + row.day;
+    return 'coll:' + row.day;
+  }
+  function _rowEst(row) { return _hEst[row.kind] || 340; }
+  function _rowHeight(row) { return _hReal.get(_rowKey(row)) || _rowEst(row); }
+  // 行起始偏移前缀和（高度累加表）；高度或行变化后置 null 重建。供 ensureMounted/窗口判定用
+  function rowOffsets() {
+    if (_rowOff && _rowOff.length === _rows.length + 1) return _rowOff;
+    _rowOff = new Array(_rows.length + 1);
+    _rowOff[0] = 0;
+    for (let i = 0; i < _rows.length; i++) _rowOff[i + 1] = _rowOff[i] + _rowHeight(_rows[i]);
+    return _rowOff;
+  }
+  function _browseValid(it) {
+    const id = it && (it.tweet_id || it.id); if (!id) return false;
+    const a = (it.author) || {}; return !!a.screen_name;
+  }
+  // 由全量数据构造有序行：每个天先放 sep/coll 头，未折叠天再放其卡片（时间倒序=日期倒序）
+  function buildRows(items) {
+    const seen = new Set(); const uniq = [];
+    sortItemsByTime((items || []).filter(_browseValid)).forEach((it) => {
+      const id = String(it.tweet_id || it.id);
+      if (seen.has(id)) return; seen.add(id);
+      uniq.push(tweetCacheGet(id) || it);
+    });
+    const byDay = new Map();
+    uniq.forEach((it) => { const k = dayKeyOf(it.created_at); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); });
+    const days = Array.from(byDay.keys()).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    const rows = [];
+    days.forEach((k) => {
+      const collapsed = isCollapsed(k);
+      rows.push({ kind: collapsed ? 'coll' : 'sep', day: k, count: byDay.get(k).length });
+      if (!collapsed) byDay.get(k).forEach((it) => rows.push({ kind: 'card', tid: String(it.tweet_id || it.id), day: k, item: it }));
+    });
+    return rows;
+  }
+  function _createRowEl(row) {
+    const k = _rowKey(row);
+    let el = _cardCache.get(k);
+    if (el) return el;
+    if (row.kind === 'card') {
+      const it = row.item || tweetCacheGet(row.tid);
+      el = renderBrowseCard(it || { tweet_id: row.tid });
+    } else if (row.kind === 'sep') {
+      el = document.createElement('div');
+      el.className = 'day-sep'; el.dataset.day = row.day;
+      el.innerHTML = `<span>${dayLabelOf(row.day)}</span><span class="cnt">${row.count} 条</span>`;
+      el.addEventListener('click', () => toggleDayCollapse(row.day));
+    } else {
+      el = document.createElement('div');
+      el.className = 'day-collapsed'; el.dataset.day = row.day;
+      el.textContent = `${dayLabelOf(row.day)} · ${row.count} 条 · 展开`;
+      el.addEventListener('click', () => toggleDayCollapse(row.day));
+    }
+    _cardCache.set(k, el);
+    return el;
+  }
+  function _mountRow(i, ph) {
+    const row = _rows[i]; if (!row) return;
+    ph.replaceWith(_createRowEl(row));
+  }
+  function _unmountRow(i, el) {
+    const row = _rows[i]; if (!row) return;
+    const h = el.offsetHeight || _rowHeight(row);
+    _hReal.set(_rowKey(row), h);
+    _rowOff = null;                 // 高度变化，偏移表失效
+    const ph = document.createElement('div');
+    ph.className = 'br-ph'; ph.dataset.phKey = _rowKey(row); ph.style.height = h + 'px';
+    el.replaceWith(ph);
+  }
+  // 滚动/数据变更后：视口±缓冲外的真实行→占位，进入缓冲的占位→真实行
+  function renderWindow() {
+    const cont = viewBrowse; if (!cont || !brList || _winBusy) return;
+    _winBusy = true;
+    try {
+      const off = rowOffsets();
+      const top = cont.scrollTop, vh = cont.clientHeight;
+      const lo = top - _phBuf, hi = top + vh + _phBuf;
+      const kids = Array.from(brList.children);
+      for (let i = 0; i < kids.length; i++) {
+        const el = kids[i]; const row = _rows[i];
+        if (!row) continue;
+        const isPh = el.classList.contains('br-ph');
+        const yTop = off[i], yBot = off[i + 1];
+        const inWin = (yBot > lo) && (yTop < hi);
+        if (isPh) { if (inWin) _mountRow(i, el); }
+        else { _hReal.set(_rowKey(row), el.offsetHeight || (yBot - yTop)); if (!inWin) _unmountRow(i, el); }
+      }
+    } finally { _winBusy = false; }
+  }
+  // 同步所有占位高度到最新实测值（某卡图片加载撑高后，下方占位需跟上，避免漂移）
+  let _syncRAF = null;
+  function syncPlaceholderHeights() {
+    if (_syncRAF) return;
+    _syncRAF = requestAnimationFrame(() => {
+      _syncRAF = null;
+      if (!brList) return;
+      const kids = brList.children;
+      for (let i = 0; i < kids.length; i++) {
+        const el = kids[i]; const row = _rows[i]; if (!row) continue;
+        if (el.classList.contains('br-ph')) {
+          const want = _rowHeight(row);
+          if (Math.abs(parseFloat(el.style.height) - want) > 0.5) el.style.height = want + 'px';
+        }
+      }
+    });
+  }
+  // 定位前确保目标卡已挂载（否则 XFEED.restore 找不到 .bm-card）
+  function ensureMounted(tid) {
+    if (!brList || !tid) return false;
+    if (brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`)) return true;
+    const cont = viewBrowse; if (!cont) return false;
+    const off = rowOffsets();
+    let idx = -1;
+    for (let i = 0; i < _rows.length; i++) {
+      if (_rows[i].kind === 'card' && _rows[i].tid === String(tid)) { idx = i; break; }
+    }
+    if (idx < 0) return false;
+    cont.scrollTop = Math.max(0, off[idx] - 80);
+    renderWindow();
+    return !!brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`);
+  }
+  // 用占位重建整个列表 DOM（离屏占满高度，真实卡由 renderWindow 挂窗口），避免一次创建上千张卡
+  function renderRowsDOM() {
+    if (!brList) return;
+    _rowOff = null;               // 行集合已变，偏移表失效
+    brList.innerHTML = '';
+    _rows.forEach((row) => {
+      const ph = document.createElement('div');
+      ph.className = 'br-ph'; ph.dataset.phKey = _rowKey(row);
+      ph.style.height = _rowHeight(row) + 'px';
+      brList.appendChild(ph);
+    });
+    renderWindow();
+  }
+
   // 浏览内容缓存已交由框架 DBoxState.feed() 统一管理（服务端权威，见 XFEED），
   // 不再自存 localStorage 缓存，避免与服务端真相分叉。
 
@@ -3714,19 +3874,13 @@
   function rebuildBrowseList(items) {
     const list = mergeTweets(items || []);
     tweetCachePut(list);            // 内容并回全局单缓存，保证其它视图同源
-    brList.innerHTML = '';
+    const valid = list.filter(_browseValid);
     brSeenIds.clear();
-    sortItemsByTime(list).forEach((it) => {
-      const id = it.tweet_id || it.id;
-      if (!id || brSeenIds.has(String(id))) return;
-      const full = tweetCacheGet(String(id)) || it;   // 内容回查全局单缓存
-      // 内容残缺（连作者都没有）坚决不渲染，与 prependNewTweets 保持一致，
-      // 否则会渲染出 @unknown 空卡片
-      const _fa = (full && full.author) || {};
-      if (!_fa.screen_name) return;
-      brSeenIds.add(String(id));
-      brList.appendChild(renderBrowseCard(full));
-    });
+    valid.forEach((it) => brSeenIds.add(String(it.tweet_id || it.id)));
+    _browseItems = valid.map((it) => tweetCacheGet(String(it.tweet_id || it.id)) || it);
+    _cardCache.clear();            // 全量重建：丢弃旧卡 DOM，按最新内容重建缓存
+    _rows = buildRows(_browseItems);
+    renderRowsDOM();                // 占位重建 + 窗口挂载，避免一次创建上千张卡
     afterBrowseRender();
   }
 
@@ -3754,6 +3908,7 @@
   function scrollCardToTop(tid, offset) {
     const cont = viewBrowse;
     if (!cont || !tid) return false;
+    ensureMounted(tid);            // 二期 A：目标卡可能暂为占位，定位前先挂上
     const card = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`);
     if (!card) return false;
     // 用布局 offsetTop（CSS transform 不影响它）求卡片在滚动内容中的位置。
@@ -3815,6 +3970,7 @@
     const _anc = tweetCacheGet(tid);
     const _ak = _anc ? dayKeyOf(_anc.created_at) : null;
     if (_ak && isCollapsed(_ak)) { dayOverride.set(_ak, false); refreshDayModel(); }
+    ensureMounted(tid);            // 二期 A：确保目标卡已在 DOM，框架 restore 才能定位
     _lastAnchorAt = Date.now();
     holdBrRestoring(1300);
     if (XFEED) {
@@ -3954,44 +4110,23 @@
   function afterBrowseRender() {
     const a = getBrowseAnchor();
     anchorCollapseDay = a ? dayKeyOf((tweetCacheGet(a) || {}).created_at) : null;
-    refreshDayModel();
+    _rows = buildRows(_browseItems);
+    renderRowsDOM();
+    _rebuildDayRail();
     updateDayFloat();
   }
-  // 从当前 DOM 重建分组头/折叠条/右轴（不改卡片内容，可重复调用）
+  // 由 rows 模型派生右轴（天数/密度），替代原 refreshDayModel 的 DOM 读取
+  function _rebuildDayRail() {
+    const dayCount = new Map();
+    _rows.forEach((r) => { if (r.kind === 'sep' || r.kind === 'coll') dayCount.set(r.day, r.count); });
+    buildDayRail(dayCount, dayCount);
+  }
+  // 从 rows 模型重建分组头/折叠条/右轴（不改卡片内容，可重复调用）
   function refreshDayModel() {
     if (!brList) return;
-    const cards = Array.from(brList.querySelectorAll('.bm-card'));
-    if (!cards.length) { buildDayRail(new Map(), new Map()); return; }
-    brList.querySelectorAll('.day-sep,.day-collapsed').forEach((e) => e.remove());
-    cards.forEach((c) => { c.style.display = ''; });   // 先全部还原，再按折叠隐藏
-    const dayFirst = new Map(), dayCount = new Map();
-    cards.forEach((c) => {
-      const k = c.dataset.day || ''; if (!k) return;
-      if (!dayFirst.has(k)) dayFirst.set(k, c);
-      dayCount.set(k, (dayCount.get(k) || 0) + 1);
-    });
-    const days = Array.from(dayFirst.keys()); // DOM 顺序即时间倒序（最新在前）
-    days.forEach((k) => {
-      const first = dayFirst.get(k);
-      if (isCollapsed(k)) {
-        const bar = document.createElement('div');
-        bar.className = 'day-collapsed'; bar.dataset.day = k;
-        bar.textContent = `${dayLabelOf(k)} · ${dayCount.get(k)} 条 · 展开`;
-        bar.addEventListener('click', () => toggleDayCollapse(k));
-        first.before(bar);
-      } else {
-        const sep = document.createElement('div');
-        sep.className = 'day-sep'; sep.dataset.day = k;
-        sep.innerHTML = `<span>${dayLabelOf(k)}</span><span class="cnt">${dayCount.get(k)} 条</span>`;
-        sep.addEventListener('click', () => toggleDayCollapse(k));
-        first.before(sep);
-      }
-    });
-    // 折叠天：隐藏其全部卡片（display:none 彻底卸载渲染，配合 content-visibility 等效析构）
-    days.forEach((k) => {
-      if (isCollapsed(k)) cards.forEach((c) => { if (c.dataset.day === k) c.style.display = 'none'; });
-    });
-    buildDayRail(dayFirst, dayCount);
+    _rows = buildRows(_browseItems);
+    renderRowsDOM();
+    _rebuildDayRail();
     updateDayFloat();
   }
   function toggleDayCollapse(k) {
@@ -4006,8 +4141,10 @@
     if (!k) return;
     if (isCollapsed(k)) dayOverride.set(k, false);
     refreshDayModel();
-    const card = brList.querySelector(`.bm-card[data-day="${CSS.escape(k)}"]`);
-    if (card) scrollCardToTop(card.dataset.tid, 0);
+    for (let i = 0; i < _rows.length; i++) {
+      const r = _rows[i];
+      if (r.kind === 'card' && r.day === k) { ensureMounted(r.tid); scrollCardToTop(r.tid, 0); break; }
+    }
     updateDayFloat();
   }
   function buildDayRail(dayFirst, dayCount) {
@@ -4026,16 +4163,17 @@
       rail.appendChild(cell);
     });
   }
+  // 当前所在天：按偏移表找「底部已越过视口顶」的最后一个分组头（与挂载状态无关，兼容占位窗口化）
   function currentDayKey() {
-    if (!brList || !viewBrowse) return null;
-    const cr = viewBrowse.getBoundingClientRect();
-    for (const el of brList.children) {
-      if (el.dataset && el.dataset.day) {
-        const r = el.getBoundingClientRect();
-        if (r.bottom > cr.top + 2) return el.dataset.day;
-      }
+    const cont = viewBrowse; if (!cont || !_rows.length) return null;
+    const top = cont.scrollTop + 1;
+    const off = rowOffsets();
+    let cur = null;
+    for (let i = 0; i < _rows.length; i++) {
+      const r = _rows[i];
+      if (r.kind === 'sep' || r.kind === 'coll') { if (off[i + 1] <= top) cur = r.day; else break; }
     }
-    return null;
+    return cur;
   }
   function updateDayFloat() {
     const fl = $('br-dayfloat'); if (!fl) return;
@@ -4068,107 +4206,43 @@
   function prependNewTweets(items, opts) {
     opts = opts || {};
     const cont = viewBrowse;
-    if (!cont) return;
-    // 同步记录插入前「视口顶部卡片」的卡内偏移（卡片顶部相对视口顶部的距离，可为负——
-    //  表示卡片顶部已滚出视口上方，即用户正在看该卡片的中下部）。reanchor 必须保留
-    //  此偏移：之前用 offset:0 → 恢复时 scrollTop = abs - 0 = 卡片顶部对齐视口顶部，
-    //  视觉上跳到了该卡片（即「上一篇」）的开头，即用户反馈的「抖动后定位到上一篇推文」。
-    let beforeTopOffset = 0;
-    const beforeTopTid = (() => {
+    if (!cont) return 0;
+    // 插入前「视口顶部卡片」的卡内偏移（可为负：用户正看该卡中下部）。reanchor 必须保留，
+    // 否则恢复时 scrollTop=卡片顶部，视觉跳到上一篇开头（曾反馈的抖动/漂移）。
+    let beforeTopOffset = 0, beforeTopTid = null;
+    if (!opts.toTop) {
       const cr = cont.getBoundingClientRect();
-      for (const c of brList.querySelectorAll('.bm-card')) {
-        const r = c.getBoundingClientRect();
-        if (r.bottom > cr.top + 4) {
-          beforeTopOffset = r.top - cr.top;
-          return c.dataset.tid || null;
+      for (const el of Array.from(brList.children)) {
+        if (el.classList.contains('bm-card')) {
+          const r = el.getBoundingClientRect();
+          if (r.bottom > cr.top + 4) { beforeTopOffset = r.top - cr.top; beforeTopTid = el.dataset.tid || null; break; }
         }
       }
-      return null;
-    })();
-    const em = brList.querySelector('.bm-empty');
-    if (em) em.remove();
-    tweetCachePut(items);
-    // 只插「比当前列表顶部更新」的推文。
-    // 后端在无 cursor 时返回的是服务端完整列表（canonical，横跨新与旧，最多 1500 条）。
-    // 若照单全收，其中更旧的那部分会被插到最新推文上面 → 时间顺序错乱，并平白改动
-    // 用户当前的浏览位置（自动轮询尤其不能动位置）。故以列表顶部卡片的时间为闸门，
-    // 更旧的条目一律不参与本次顶部插入。列表为空时不做过滤（首次加载要全量渲染）。
-    let topTime = null;
-    const topCard = brList.querySelector('.bm-card');
-    if (topCard && topCard.dataset && topCard.dataset.tid) {
-      const _tc = tweetCacheGet(topCard.dataset.tid);
-      const _t = _tc && _tc.created_at ? Date.parse(_tc.created_at) : NaN;
-      if (!isNaN(_t)) topTime = _t;
     }
-    const frag = document.createDocumentFragment();
-    let inserted = 0;
-    sortItemsByTime(mergeTweets(items)).forEach((it) => {
-      const id = it.tweet_id || it.id;
-      if (!id) return;
-      // 比列表顶部更旧的条目不属于「新推文」：插到顶部会破坏时间顺序
-      if (topTime !== null) {
-        const _tt = it.created_at ? Date.parse(it.created_at) : NaN;
-        if (!isNaN(_tt) && _tt < topTime) return;
-      }
-      const full = tweetCacheGet(id) || it;   // 内容回查全局单缓存
-      // 内容残缺（连作者都没有）坚决不渲染：此前 tweetCacheGet 返回 null 时会回退到
-      // it（可能只是个带 id 的空壳/脏条目），直接渲染出 @unknown 空卡片。跳过它们，
-      // 后续刷新即可重新拉到完整内容，而不是把残壳一直摆在列表里。
-      const _fa = (full && full.author) || {};
-      if (!_fa.screen_name) return;
-      if (brSeenIds.has(String(id))) {
-        // 已渲染过的卡片：若本次拉到的正文/媒体更完整（如详情页补全、或修复后
-        // 后端返回全文），原地更新该卡，避免「缓存不归一、列表还是旧的」。
-        const old = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(id))}"]`);
-        if (old) {
-          const oldText = (old.querySelector('.text') || {}).textContent || '';
-          const newText = full.text || '';
-          const oldMedia = old.querySelectorAll('.media img, .media video').length;
-          const newMedia = (full.media || []).length;
-          if (newText.length > oldText.length || newMedia > oldMedia) {
-            old.replaceWith(renderBrowseCard(full));
-          }
-        }
-        return;
-      }
-      brSeenIds.add(String(id));
-      frag.appendChild(renderBrowseCard(full));
-      inserted++;
+    tweetCachePut(items);
+    // 只收「比当前列表更新」的推文（去重 + 过滤残缺），合并进全量数据；
+    // 时间顺序由 buildRows 统一按 created_at 重排，无需手动 topTime 闸门（位置由 anchorTo 保）。
+    const newOnes = (items || []).filter(_browseValid).filter((it) => {
+      const id = String(it.tweet_id || it.id);
+      if (brSeenIds.has(id)) { _cardCache.delete('card:' + id); return false; }  // 已存在：内容可能更完整，弃旧卡缓存
+      brSeenIds.add(id); return true;
     });
-    if (!inserted) return 0;
-    brList.insertBefore(frag, brList.firstChild);
-    refreshDayModel();   // B/C/D：新推文可能带来新的一天，重建分组头/右轴
+    if (!newOnes.length) return 0;
+    _browseItems = newOnes.concat(_browseItems);   // 合并进全量数据（时间排序由 buildRows 处理）
+    refreshDayModel();   // 重建行模型 + 窗口渲染（占位保留真实滚动高度，位置不跳）
     let _reanchorThrottle = null;
     const reanchor = () => {
-      // 用户已自己滚动就彻底停止程序化定位——本函数会被立即调用 + rAF + ResizeObserver
-      // (4s 内) + 每张图片 load 反复触发，若不检查就会在用户滚动后一次次把人拽回锚点。
       if (brUserScrolled) return;
-      // 抑制本次程序化定位引发的 scroll 事件（不当用户操作/不保存），窗口闭合后再放开。
-      // 用 holdBrRestoring 统一设置：散落的 setTimeout 会互相提前解除或把窗口越拉越长。
-      if (opts.toTop) {
-        holdBrRestoring(200);
-        cont.scrollTop = 0;
-        return;
-      }
-      // anchorTid（如恢复的上次位置）优先；否则用插入前视口顶部的卡片稳住当前位置
+      if (opts.toTop) { holdBrRestoring(200); cont.scrollTop = 0; return; }
       const anchor = opts.anchorTid || beforeTopTid;
-      if (!anchor) return;         // 无锚点就别平白开一个抑制窗口
-      // 节流：防重复触发（同步立即调 + rAF 可能紧邻触发）合到一帧
+      if (!anchor) return;
       if (_reanchorThrottle) return;
       _reanchorThrottle = setTimeout(() => { _reanchorThrottle = null; }, 150);
-      // 走统一入口：按 id 定位并保留卡内偏移（可负，长卡片中部也精准保持）
-      anchorTo(anchor, beforeTopOffset);
+      anchorTo(anchor, beforeTopOffset);   // 统一入口：按 id 定位并保留卡内偏移
     };
     reanchor();
     requestAnimationFrame(reanchor);
-    // 【修复抖动 + 漂移到上一篇】移除 ResizeObserver 与图片 load 的 reanchor 触发：
-    // 之前这俩来源会让 reanchor 被反复调用，每次 XFEED.restore() 又再排 60/200/500/1000ms
-    // 四次补偿定位 —— 叠加为几十次，落点各不相同（用户截图：图片从占位框变实图瞬间
-    // 卡片高度变化触发 RO，reanchor 跳一次；图片逐张加载完成又各跳一次；且 offset:0
-    // 丢失卡内偏移，每次跳到卡片顶部 → 反复刷新后位置漂移到「上一篇」开头）。
-    // reanchor 只为「插入新推文」而生：此处只调一次 + rAF 各一次，足够把位置稳住。
-    // 图片加载导致的卡片高度变化是布局自然结果，scrollTop 不变即可，无需也不应被纠正。
-    return inserted;
+    return newOnes.length;
   }
   function fmtCdTime(iso) {
     try { return new Date(iso).toLocaleString(); } catch (_) { return ''; }
@@ -4428,10 +4502,6 @@
         const id = it.tweet_id || it.id;
         if (!id || brSeenIds.has(String(id))) return;
         brSeenIds.add(String(id));
-        const card = renderBrowseCard(tweetCacheGet(id) || it);
-        card.classList.add('card-enter');
-        card.style.animationDelay = Math.min(appendedTotal * 18, 600) + 'ms';
-        brList.appendChild(card);
         appended++; appendedTotal++;
       });
       brCursor = d.next_cursor || null;
@@ -4442,8 +4512,14 @@
       }
       if (appendedTotal >= BATCH_TARGET) break;
     }
-    refreshDayModel();   // B/C/D：更旧批次可能带来新的一天，重建分组头/右轴
-    if (appendedTotal && allItems.length) saveBrowseCache(allItems, true);
+    // 更旧批次合并进全量数据并重建行模型（占位窗口化：底部追加不影响上方滚动位置）
+    if (appendedTotal) {
+      const existIds = new Set(_browseItems.map((it) => String(it.tweet_id || it.id)));
+      const neu = allItems.filter(_browseValid).filter((it) => !existIds.has(String(it.tweet_id || it.id)));
+      _browseItems = _browseItems.concat(neu.map((it) => tweetCacheGet(String(it.tweet_id || it.id)) || it));
+      refreshDayModel();
+      saveBrowseCache(allItems, true);
+    }
   }
 
   // 无脑上滑：若关注流尚未填满可视区（scrollHeight<=clientHeight 无法滚动触发
@@ -5741,6 +5817,21 @@
 
   $('br-more').addEventListener('click', () => loadBrowse(false));
 
+  // 二期 A：监听列表高度变化（挂载卡图片加载撑开），刷新实测高度并同步占位，避免下方行漂移
+  if (typeof ResizeObserver !== 'undefined' && brList) {
+    const _brRO = new ResizeObserver(() => {
+      if (!brList) return;
+      const kids = brList.children;
+      for (let i = 0; i < kids.length; i++) {
+        const el = kids[i], row = _rows[i]; if (!row || el.classList.contains('br-ph')) continue;
+        _hReal.set(_rowKey(row), el.offsetHeight || _rowHeight(row));
+      }
+      _rowOff = null;             // 实测高度变化，偏移表失效
+      syncPlaceholderHeights();
+    });
+    _brRO.observe(brList);
+  }
+
   // 自动加载（无限滚动）：滚动到 #view-browse 底部附近时自动拉下一页，不再依赖手动点「加载更多」
   const brScroll = $('view-browse');
   if (brScroll) {
@@ -5757,6 +5848,7 @@
       brScrollTimer = setTimeout(() => {
         brScrollTimer = null;
         onBrowseScrollUI();
+        renderWindow();   // 二期 A：回收离屏行 / 挂载进入缓冲的行
         if (brLoading || !brCursor) return;
         const nearBottom = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 400;
         if (nearBottom) loadBrowse(false);
