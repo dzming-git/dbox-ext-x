@@ -621,21 +621,7 @@
     .br-arc.open { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
     .br-arc-fab { display: flex; }
   }
-  .br-dayfloat { position: absolute; top: 8px; left: 12px; z-index: 6; display: none;
-    padding: 5px 11px 6px; font-size: 12px; font-weight: 600; color: #fff;
-    background: rgba(29,155,240,.94); border-radius: 12px; pointer-events: none;
-    box-shadow: 0 2px 8px rgba(0,0,0,.12); min-width: 138px; }
-  .br-dayfloat b { font-weight: 700; }
-  .br-dayfloat .bp { display: block; font-weight: 400; font-size: 11px; opacity: .92; margin-top: 1px; }
-  .br-dayfloat .bp-bar { display: block; height: 3px; border-radius: 2px; background: rgba(255,255,255,.32);
-    margin-top: 4px; overflow: hidden; }
-  .br-dayfloat .bp-bar u { display: block; height: 100%; background: #fff; }
-  /* 按天分块：列表底部的「加载更早一天」入口（滑动到底自动触发，也可点） */
-  .br-more { display: flex; padding: 12px 16px; background: #fff; border-bottom: 1px solid #f0f3f5; box-sizing: border-box; }
-  .br-more-btn { width: 100%; padding: 10px; border: 1px solid #e3e6eb; border-radius: 10px;
-    background: #f7f9fa; color: #1d9bf0; font-size: 13px; cursor: pointer; }
-  .br-more-btn:hover { background: #eef5fd; }
-  .br-more-btn b { color: #0f1419; }
+  .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由右侧圆弧时间轴(D)表达 */
   /* 我的 X（个人页） */
   .me-profile { margin-bottom: 10px; }
   .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
@@ -3132,7 +3118,7 @@
   let _phBuf = 800;                 // 视口上下额外缓冲(px)
   const _cardCache = new Map();     // rowKey -> 真实元素（离屏缓存复用，避免重建+重绑事件）
   const _hReal = new Map();         // rowKey -> 实测高度(px)
-  const _hEst = { card: 340, sep: 40, coll: 34, more: 56 };
+  const _hEst = { card: 340, sep: 40, coll: 34 };
   let _rows = [];                   // 有序行模型（时间倒序）：{kind:'card'|'sep'|'coll'|'more', tid?, day?, count?, item?, remain?}
   let _browseItems = [];            // 全量浏览推文（buildRows 数据源，时间倒序）
   // 按天分块加载：_revealDays = 当前已展开（已加载）的天键（最新→最旧）；_allDays = 全部天键。
@@ -3147,13 +3133,11 @@
     if (el.classList.contains('bm-card')) return 'card:' + (el.dataset.tid || '');
     if (el.classList.contains('day-sep')) return 'sep:' + (el.dataset.day || '');
     if (el.classList.contains('day-collapsed')) return 'coll:' + (el.dataset.day || '');
-    if (el.classList.contains('br-more')) return 'more:' + (el.dataset.day || '');
     return el.dataset.phKey || null;
   }
   function _rowKey(row) {
     if (row.kind === 'card') return 'card:' + row.tid;
     if (row.kind === 'sep') return 'sep:' + row.day;
-    if (row.kind === 'more') return 'more:' + row.day;
     return 'coll:' + row.day;
   }
   function _rowEst(row) { return _hEst[row.kind] || 340; }
@@ -3170,7 +3154,7 @@
     const id = it && (it.tweet_id || it.id); if (!id) return false;
     const a = (it.author) || {}; return !!a.screen_name;
   }
-  // 由全量数据构造有序行：每个天先放 sep/coll 头，未折叠天再放其卡片（时间倒序=日期倒序）
+  // 由全量数据构造有序行：每个天先放 sep 头，再放其卡片（时间倒序=日期倒序）
   function buildRows(items) {
     const seen = new Set(); const uniq = [];
     sortItemsByTime((items || []).filter(_browseValid)).forEach((it) => {
@@ -3181,22 +3165,16 @@
     const byDay = new Map();
     uniq.forEach((it) => { const k = dayKeyOf(timelineAt(it)); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); });
     const days = Array.from(byDay.keys()).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
-    _allDays = days;   // 记住全部天（进度 HUD / 续展下一天用）
+    _allDays = days;   // 记住全部天（滑动续展下一天用）
     const revealSet = (_revealDays && _revealDays.length) ? new Set(_revealDays) : null;  // null=展开全部（旧行为/兜底）
     const rows = [];
-    let moreDay = null;
     days.forEach((k) => {
-      // 分块未展开到这天：记下「最早一条未展开的天」作为底部「加载更早一天」入口，其余跳过
-      if (revealSet && !revealSet.has(k)) { if (!moreDay) moreDay = k; return; }
+      // 分块未展开到这天：不混入（绝不一次性把全部天倒进来），纯靠滑动到底自动续展下一天
+      if (revealSet && !revealSet.has(k)) return;
       const collapsed = isCollapsed(k);
       rows.push({ kind: collapsed ? 'coll' : 'sep', day: k, count: byDay.get(k).length });
       if (!collapsed) byDay.get(k).forEach((it) => rows.push({ kind: 'card', tid: String(it.tweet_id || it.id), day: k, item: it }));
     });
-    // 底部「加载更早一天」入口：moreDay 及更旧共 remain 天尚未展开
-    if (moreDay) {
-      const idx = days.indexOf(moreDay);
-      rows.push({ kind: 'more', day: moreDay, remain: days.length - idx });
-    }
     return rows;
   }
   // 全部天键（最新→最旧），供初始化展开窗口用
@@ -3217,14 +3195,13 @@
       if (!ak || d === ak) break;   // 无锚点→仅最新一天；有锚点→展开到锚点天
     }
   }
-  // 滑到底继续滑：把下一天（更早）并进来。底部追加、上方滚动位置不变，自然分块。
+  // 滑到底继续滑：把下一天（更早）自动并进来。底部追加、上方滚动位置不变，自然分块（无需手动点击展开）。
   function revealNextDay() {
     if (!_revealDays.length || !_allDays.length) return;
     const hidden = _allDays.filter((d) => !_revealDays.includes(d));
     if (!hidden.length) return;
     _revealDays.push(hidden[0]);
     refreshDayModel();
-    updateDayHud();
   }
   function _createRowEl(row) {
     const k = _rowKey(row);
@@ -3237,18 +3214,11 @@
       el = document.createElement('div');
       el.className = 'day-sep'; el.dataset.day = row.day;
       el.innerHTML = `<span>${dayLabelOf(row.day)}</span><span class="cnt">${row.count} 条</span>`;
-      el.addEventListener('click', () => toggleDayCollapse(row.day));
-    } else if (row.kind === 'more') {
-      el = document.createElement('div');
-      el.className = 'br-more'; el.dataset.day = row.day;
-      const remain = row.remain > 1 ? ` · 更早 ${row.remain - 1} 天` : '';
-      el.innerHTML = `<button class="br-more-btn" type="button">继续滑动加载 <b>${dayLabelOf(row.day)}</b>${remain} ▾</button>`;
-      el.querySelector('.br-more-btn').addEventListener('click', revealNextDay);
+      // 纯展示「当前是第几天」标签，不再可点击折叠/展开（避免手动展开交互）
     } else {
       el = document.createElement('div');
       el.className = 'day-collapsed'; el.dataset.day = row.day;
-      el.textContent = `${dayLabelOf(row.day)} · ${row.count} 条 · 展开`;
-      el.addEventListener('click', () => toggleDayCollapse(row.day));
+      el.textContent = `${dayLabelOf(row.day)} · ${row.count} 条`;
     }
     _cardCache.set(k, el);
     return el;
@@ -4271,10 +4241,9 @@
   // 锚点所在天及更新的天=展开，更旧的天=已看=折叠。派生基线在每次整表渲染时刷新。
   const dayOverride = new Map();
   let anchorCollapseDay = null;
-  function isCollapsed(k) {
-    if (dayOverride.has(k)) return dayOverride.get(k);
-    return !!(anchorCollapseDay && k && k < anchorCollapseDay);
-  }
+  // 按天分块后不再做「已读折叠」：每天内容直接展示，不混入折叠条、也不要求手动点击展开。
+  // （折叠交互与用户「别让我手动点击展开 / 其他天不要混进来」的诉求冲突，故关闭。）
+  function isCollapsed(k) { return false; }
   // 视口顶部可见卡片（用于折叠/展开后保位）
   function topVisibleCard() {
     const cont = viewBrowse; if (!cont || !brList) return null;
@@ -4310,9 +4279,8 @@
     }
     _rows = buildRows(_browseItems);
     renderRowsDOM();
-    _rebuildDayRail(true);    // 折叠展开/滚轮跳转：保留当前选中天，勿被 currentDayKey() 抢回
+    _rebuildDayRail(true);    // 滚轮跳转：保留当前选中天，勿被 currentDayKey() 抢回
     updateDayFloat();
-    updateDayHud();
   }
   function toggleDayCollapse(k) {
     if (!k) return;
@@ -4459,27 +4427,13 @@
     }
     return cur;
   }
+  // 不再用悬浮日期头（会遮挡内容、体验差）。当前天由右侧圆弧时间轴(D，固定边栏)表达；
+  // 这里仅保留 updateKnobToCurrent 以同步右轴高亮。
   function updateDayFloat() {
-    const fl = $('br-dayfloat'); if (!fl) return;
-    const k = currentDayKey();
-    if (k) {
-      fl.style.display = '';
-      const total = _allDays.length, revealed = _revealDays.length;
-      const pct = total ? Math.round(revealed / total * 100) : 0;
-      const left = Math.max(0, total - revealed);
-      fl.innerHTML = `<b>${dayLabelOf(k)}</b>`
-        + (total ? `<span class="bp">第 ${revealed} / ${total} 天 · 剩 ${left}</span>` : '')
-        + `<i class="bp-bar"><u style="width:${pct}%"></u></i>`;
-    } else fl.style.display = 'none';
+    const fl = $('br-dayfloat'); if (fl) fl.style.display = 'none';
     updateKnobToCurrent();
   }
-  // 进度 HUD（复用左上角浮动日期头）：明确「已读到第几天 / 共几天 / 还剩几天」，消除无限流焦虑
-  function updateDayHud() {
-    const fl = $('br-dayfloat'); if (!fl) return;
-    // updateDayFloat 已含进度文案，这里仅在无当前天时兜底隐藏进度（通常不触发）
-    if (!_allDays.length) fl.style.display = 'none';
-  }
-  // 滚动轻量 UI 更新（节流）：浮动日期头 + 右轴高亮 + 离屏视频自动暂停（A 配套）
+  // 滚动轻量 UI 更新（节流）：右轴高亮 + 离屏视频自动暂停（A 配套）
   function onBrowseScrollUI() {
     updateDayFloat();
     if (_inlineVid && _inlineVid.v && !_inlineVid.v.paused && _inlineVid.el) {
@@ -6199,8 +6153,8 @@
         brScrollTimer = null;
         onBrowseScrollUI();
         renderWindow();   // 二期 A：回收离屏行 / 挂载进入缓冲的行
-        // 按天分块：滑到底且还有「更早的一天」未展开 → 并进来（带来可感知进度，不像无限流焦虑）
-        if (_rows.some((r) => r.kind === 'more')) {
+        // 按天分块：滑到底且还有「更早的一天」未展开 → 自动并进来（纯滚动触发，无需手动点击展开）
+        if (_allDays.some((d) => !_revealDays.includes(d))) {
           const nearB = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 300;
           if (nearB) revealNextDay();
         }
