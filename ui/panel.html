@@ -394,6 +394,10 @@
     border-radius: 6px; padding: 4px 8px; font-size: 11.5px; cursor: pointer; }
   .pst-item .pst-ops button:hover { background: #f7f9fa; }
   .pst-item .pst-ops button.del:hover { border-color: #f4212e; color: #f4212e; }
+  /* 当前已应用（刷新/换设备后仍在）的方案：高亮，告知用户「记住了，无需重新应用」 */
+  .pst-item.active { border-color: #1d9bf0; background: #f3faff; }
+  .pst-item .pst-cur { margin-left: 6px; font-size: 10px; font-weight: 600; color: #fff;
+    background: #1d9bf0; border-radius: 4px; padding: 1px 5px; vertical-align: 1px; }
   .pst-empty { padding: 14px; text-align: center; font-size: 12px; color: #71767b;
     line-height: 1.6; }
   .flt-foot button { border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer;
@@ -4770,6 +4774,11 @@
   const ALL_KEY = '__all__';     // 融合视图的伪 key：所有关键词合成一条流（主视图）
   let srchKwList = [];           // [{ q, key, added_at }]
   let srchActiveKey = null;      // 当前查看的 key；ALL_KEY 表示融合视图
+  let srchActivePresetId = null; // 当前「应用中的方案」id（来自方案浮层）；手动改关键词即清空
+  // 本机镜像：XSTATE 是服务端同步源，但刷新太快时 saveKwList 的写可能还没 push、
+  // 首轮 pull 取回旧值把刚应用的方案覆盖掉。localStorage 同步可读、刷新必在，作为本机权威兜底。
+  const SRCH_KWL_LOCAL = 'xd_srch_kwlist';
+  const SRCH_FLT_LOCAL = 'xd_srch_filter';
   const srchCache = new Map();   // key -> {q,top,latest,cursorTop,cursorLatest,ts,err,loading}
   const srchFeeds = new Map();   // key -> feed（每个视图一份独立的浏览位置）
   let srchRefreshingAll = false; // 「全部重搜」进行中
@@ -4995,10 +5004,15 @@
   }
   function loadSearchFilter() {
     let raw = null;
-    try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(SRCH_FILTER_KEY) : null; } catch (_) {}
+    // 优先本机镜像：与 kwlist 同样避免 pull 覆盖刚改的过滤
+    try { const m = localStorage.getItem(SRCH_FLT_LOCAL); if (m) raw = JSON.parse(m); } catch (_) {}
+    if (!raw) { try { raw = (XSTATE && XSTATE.get) ? XSTATE.get(SRCH_FILTER_KEY) : null; } catch (_) {} }
     srchFilterCfg = normalizeFilter(raw);
   }
-  function saveSearchFilter() { xSet(SRCH_FILTER_KEY, srchFilterCfg, { strategy: 'lww' }); }
+  function saveSearchFilter() {
+    xSet(SRCH_FILTER_KEY, srchFilterCfg, { strategy: 'lww' });
+    try { localStorage.setItem(SRCH_FLT_LOCAL, JSON.stringify(srchFilterCfg)); } catch (_) {}
+  }
   // 「是否需要执行过滤」：含 dedupe（默认开），决定渲染时是否走过滤分支
   function filterActive() {
     const c = srchFilterCfg;
@@ -5386,12 +5400,19 @@
      清单 search:kwlist、每关键词缓存 search:kw:<key>，都是 lww（跨设备同步）。
      写缓存只写目标那一个键，因此「重搜 A」不会覆盖 B，「删除 C」也不影响 A/B。 */
   function saveKwList() {
-    xSet(KW_LIST_KEY, { items: srchKwList, active: srchActiveKey }, { strategy: 'lww' });
+    xSet(KW_LIST_KEY, { items: srchKwList, active: srchActiveKey, preset: srchActivePresetId || null }, { strategy: 'lww' });
+    // 本机镜像：与 XSTATE 同源写入，刷新时优先读它（见 loadKwList），避免 pull 覆盖刚应用的方案
+    try { localStorage.setItem(SRCH_KWL_LOCAL, JSON.stringify({ items: srchKwList, active: srchActiveKey, preset: srchActivePresetId || null })); } catch (_) {}
   }
   function loadKwList() {
-    let raw = null;
-    try { raw = XSTATE ? XSTATE.get(KW_LIST_KEY) : null; } catch (_) {}
-    const o = (raw && typeof raw === 'object') ? raw : {};
+    // 优先本机镜像：本地刚 saveKwList 写入、同步可读，刷新必在；不被首轮 XSTATE.pull 的旧值覆盖。
+    let o = null;
+    try { const m = localStorage.getItem(SRCH_KWL_LOCAL); if (m) o = JSON.parse(m); } catch (_) {}
+    if (!o || !Array.isArray(o.items)) {
+      let raw = null;
+      try { raw = XSTATE ? XSTATE.get(KW_LIST_KEY) : null; } catch (_) {}
+      o = (raw && typeof raw === 'object') ? raw : {};
+    }
     srchKwList = (Array.isArray(o.items) ? o.items : [])
       .filter((x) => x && typeof x.q === 'string' && x.q.trim())
       .map((x) => ({ q: x.q.trim(), key: x.key || kwKey(x.q), added_at: x.added_at || 0 }));
@@ -5399,6 +5420,8 @@
     const wantActive = (typeof o.active === 'string') ? o.active : null;
     srchActiveKey = (wantActive === ALL_KEY || (wantActive && kwEntry(wantActive)))
       ? wantActive : ALL_KEY;
+    // 记下「应用中的方案」id：渲染方案列表时高亮当前，刷新后无需重新应用也知道处于哪个方案
+    srchActivePresetId = (typeof o.preset === 'string') ? o.preset : null;
   }
   function saveKwCache(kk) {
     const c = srchCache.get(kk);
@@ -5561,6 +5584,7 @@
     const exists = !!kwEntry(kk);
     if (!exists) {
       srchKwList.push({ q, key: kk, added_at: Date.now() });
+      srchActivePresetId = null;   // 手动增词不再对应任一方案，清除「当前方案」标记
       saveKwList();
     }
     if (srchInput) srchInput.value = '';
@@ -5580,6 +5604,7 @@
     const i = srchKwList.findIndex((x) => x.key === kk);
     if (i < 0) return;
     srchKwList.splice(i, 1);
+    srchActivePresetId = null;     // 手动删词不再对应任一方案，清除「当前方案」标记
     if (srchActiveKey === kk) {
       srchActiveKey = srchKwList.length
         ? srchKwList[Math.min(i, srchKwList.length - 1)].key : null;
@@ -5898,6 +5923,7 @@
     });
     srchKwList = next;
     srchActiveKey = srchKwList.length ? ALL_KEY : null;
+    srchActivePresetId = id;       // 记住「应用中的方案」，刷新后无需重新应用（见 loadKwList 镜像）
     saveKwList();
     // 各词缓存经 loadKwCache 已补进 srchCache 内存（chip 读 srchCache，不读 XTWEETS），
     // 切勿把轻量成员(tweet_id+created_at、无 author)回灌 XTWEETS——会污染全局单缓存，
@@ -5955,6 +5981,7 @@
     const i = srchPresets.findIndex((x) => x.id === id);
     if (i < 0) return;
     const [it] = srchPresets.splice(i, 1);
+    if (id === srchActivePresetId) { srchActivePresetId = null; saveKwList(); }
     savePresetList();
     // lww 没有真删除，写空值即可；不清也无害，但留着会持续占同步流量
     xSet(pstKey(id), null, { strategy: 'lww' });
@@ -5972,11 +5999,16 @@
     pstListEl.innerHTML = '';
     srchPresets.slice().sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0)).forEach((p) => {
       const row = document.createElement('div');
-      row.className = 'pst-item';
+      row.className = 'pst-item' + (p.id === srchActivePresetId ? ' active' : '');
       const main = document.createElement('div');
       main.className = 'pst-main';
       const nm = document.createElement('div');
       nm.className = 'pst-name'; nm.textContent = p.name;
+      if (p.id === srchActivePresetId) {
+        const tag = document.createElement('span');
+        tag.className = 'pst-cur'; tag.textContent = '当前';
+        nm.appendChild(tag);
+      }
       const meta = document.createElement('div');
       meta.className = 'pst-meta';
       const d = loadPresetDetail(p.id);
