@@ -578,8 +578,8 @@
   .br-ph { width: 100%; will-change: height; }
   /* 浏览视图包裹层：让右轴/浮动日期头脱离滚动容器、吸在视口上 */
   #view-browse-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-  /* B：按天分组 + 吸附日期头 */
-  .day-sep { position: sticky; top: 0; z-index: 4; margin: 10px 0 6px; padding: 4px 10px;
+  /* B：按天分组 + 日期头（正常文档流，不悬浮遮挡内容） */
+  .day-sep { margin: 10px 0 6px; padding: 4px 10px;
     font-size: 12px; font-weight: 600; color: var(--muted, #8899a6); background: var(--bg, #fff);
     border: 1px solid var(--border, #e3e6eb); border-radius: 14px; display: flex; align-items: center;
     justify-content: space-between; cursor: pointer; }
