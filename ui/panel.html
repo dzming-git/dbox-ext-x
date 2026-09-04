@@ -907,6 +907,24 @@
     <div class="ac-box">
       <div class="ac-head">
         <label class="ac-switch">
+          <input type="checkbox" id="st-cl-preload" /><span><svg class="ico-svg"><use href="#xi-home"/></svg>客户端预加载</span>
+        </label>
+      </div>
+      <div class="ac-desc">浏览时把屏幕外尚未出现的推文图片提前从服务端取到本地缓存，滚动到位时瞬时显示、不再白框。与「首页后台预取」（服务端定时抓取）是两套独立机制。</div>
+      <div class="ac-grid">
+        <label>当前位置前后各提前
+          <input type="number" id="st-cl-ahead" min="0" max="30" step="1" value="5" style="width:64px" /> 条
+        </label>
+      </div>
+      <div class="ac-foot">
+        <span></span>
+        <button id="st-cl-confirm" class="ac-confirm" disabled>确认</button>
+      </div>
+    </div>
+
+    <div class="ac-box">
+      <div class="ac-head">
+        <label class="ac-switch">
           <input type="checkbox" id="st-bm-en" /><span><svg class="ico-svg"><use href="#xi-bookmark"/></svg>书签后台同步</span>
         </label>
         <button id="st-bm-run" class="ac-btn">立即运行</button>
@@ -3120,9 +3138,9 @@
   let _phBuf = 800;                 // 视口上下额外缓冲(px)
   const _cardCache = new Map();     // rowKey -> 真实元素（离屏缓存复用，避免重建+重绑事件）
   const _hReal = new Map();         // rowKey -> 实测高度(px)
-  // 媒体预加载（与 DOM 挂载解耦）：对「视口前后更宽范围」的卡片提前 new Image() 预取其图片，
-  // 浏览器缓存后，等卡片真正挂载(视口±_phBuf)时图片已在缓存里、瞬间显示，避免滚动到才现白框。
-  let _preloadAhead = 2200;         // 预加载领先视口的距离(px)，须大于挂载缓冲 _phBuf
+  // 媒体预加载（与 DOM 挂载解耦）：按「当前可见卡片前后各 N 条」(N=设置 client_prefetch_ahead) 提前 new Image() 预取，
+  // 浏览器缓存后，等卡片真正挂载时图片已在缓存里、瞬时显示，避免滚动到才现白框。
+  // 按条数而非像素：与屏幕/卡片高度解耦，量直观可控（早期是像素窗口 _preloadAhead=2200，已弃用）。
   const _preloadedKeys = new Set(); // rowKey -> 已触发预取（去重，避免重复请求）
   const _prefetchImgs = new Set();  // 在途预取 Image 引用：必须保留，否则请求飞一半被 GC 回收→中断（此前「完全没效果」根因）
   function _mediaUrlsOf(item) {
@@ -3137,23 +3155,33 @@
     }
     return out;
   }
-  // 视口内容坐标系：top..top+vh；预取窗口 = [top-_preloadAhead, top+vh+_preloadAhead]
+  // 按「当前可见卡片」前后各 ahead 条预取（与屏幕/卡片高度无关，量直观可控）。
   function preloadMediaNear() {
     const cont = viewBrowse; if (!cont || !_rows.length) return;
+    // 受客户端预加载开关控制（默认开；stCfg 尚未加载时按开处理，保证首屏也能预取）
+    const enabled = stCfg ? !!stCfg.client_prefetch_enabled : true;
+    if (!enabled) return;
     const off = rowOffsets(); if (!off || off.length !== _rows.length + 1) return;
     const top = cont.scrollTop, vh = cont.clientHeight;
-    const lo = top - _preloadAhead, hi = top + vh + _preloadAhead;
+    // 找可见卡片下标范围（与视口相交）
+    let firstVis = -1, lastVis = -1;
     for (let i = 0; i < _rows.length; i++) {
+      if (_rows[i].kind !== 'card') continue;
+      const yTop = off[i], h = _rowHeight(_rows[i]);
+      if ((yTop + h) > top && yTop < top + vh) { if (firstVis < 0) firstVis = i; lastVis = i; }
+    }
+    if (firstVis < 0) return;                       // 视口内无卡片（极端情况）
+    const ahead = Math.max(0, parseInt((stCfg && stCfg.client_prefetch_ahead) || 5, 10) || 5);
+    if (ahead <= 0) return;
+    const lo = Math.max(0, firstVis - ahead), hi = Math.min(_rows.length - 1, lastVis + ahead);
+    for (let i = lo; i <= hi; i++) {
       const row = _rows[i];
       if (row.kind !== 'card') continue;
-      const yTop = off[i], h = _rowHeight(row);
-      if ((yTop + h) <= lo || yTop >= hi) continue;           // 不在预加载窗内
       const key = 'card:' + row.tid;
       if (_preloadedKeys.has(key)) continue;
       _preloadedKeys.add(key);
       const item = row.item || tweetCacheGet(row.tid);
-      const urls = _mediaUrlsOf(item);
-      for (const u of urls) {
+      for (const u of _mediaUrlsOf(item)) {
         const im = new Image();
         im.decoding = 'async';
         // 加载完成/失败后再释放引用，允许 GC 回收；在途期间保留 → 请求不被中断
@@ -6885,6 +6913,7 @@
     cacheMb: $('st-cache-mb'), cacheUse: $('st-cache-use'), cacheConfirm: $('st-cache-confirm'),
     homeEn: $('st-home-en'), homeIv: $('st-home-iv'), homePages: $('st-home-pages'),
     homeMedia: $('st-home-media'), homeConfirm: $('st-home-confirm'),
+    clPreload: $('st-cl-preload'), clAhead: $('st-cl-ahead'), clConfirm: $('st-cl-confirm'),
     homeRun: $('st-home-run'), homeStatus: $('st-home-status'),
     bmEn: $('st-bm-en'), bbIv: $('st-bm-iv'), bmPages: $('st-bm-pages'),
     bmRun: $('st-bm-run'), bmConfirm: $('st-bm-confirm'), bmStatus: $('st-bm-status'),
@@ -6949,6 +6978,8 @@
                fmtMinutes(stCfg.home_interval_min || 120));
       stSetSel(E.homePages, stCfg.home_pages || 3, `${stCfg.home_pages || 3} 页`);
       if (E.homeMedia) E.homeMedia.checked = !!stCfg.home_prefetch_media;
+      if (E.clPreload) E.clPreload.checked = !!stCfg.client_prefetch_enabled;
+      if (E.clAhead) E.clAhead.value = String(stCfg.client_prefetch_ahead != null ? stCfg.client_prefetch_ahead : 5);
       if (E.bmEn) E.bmEn.checked = !!stCfg.bookmarks_enabled;
       stSetSel(E.bbIv, stCfg.bookmarks_interval_min || 720,
                fmtMinutes(stCfg.bookmarks_interval_min || 720));
@@ -7014,6 +7045,12 @@
       home_prefetch_media: stE.homeMedia.checked,
     };
   }
+  function stPatchCl() {
+    return {
+      client_prefetch_enabled: stE.clPreload.checked,
+      client_prefetch_ahead: Math.max(0, parseInt(stE.clAhead.value, 10) || 0),
+    };
+  }
   function stPatchBm() {
     return {
       bookmarks_enabled: stE.bmEn.checked,
@@ -7050,6 +7087,7 @@
   }
   stBindBox([stE.cacheMb], stE.cacheConfirm, stPatchCache);
   stBindBox([stE.homeEn, stE.homeIv, stE.homePages, stE.homeMedia], stE.homeConfirm, stPatchHome);
+  stBindBox([stE.clPreload, stE.clAhead], stE.clConfirm, stPatchCl);
   stBindBox([stE.bmEn, stE.bbIv, stE.bmPages], stE.bmConfirm, stPatchBm);
   stBindBox([stE.lkEn, stE.lkIv, stE.lkPages], stE.lkConfirm, stPatchLk);
 
