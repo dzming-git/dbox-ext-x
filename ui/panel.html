@@ -586,19 +586,26 @@
     font-size: 13px; line-height: 1.15; white-space: nowrap; color: #cfd9e0;
     background: rgba(21,32,43,.8); border: 1px solid rgba(255,255,255,.12);
     box-shadow: 0 2px 9px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto;
-    backface-visibility: hidden; transition: opacity .14s ease, transform .14s ease, color .14s ease; }
+    backface-visibility: hidden; will-change: transform, opacity;
+    transition: transform .26s cubic-bezier(.22,.61,.36,1), opacity .26s ease,
+      color .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease; }
   .br-arc .arc-item.sel { color: #fff; background: #1d9bf0; border-color: #1d9bf0;
     font-weight: 700; font-size: 15px; box-shadow: 0 0 18px rgba(29,155,240,.7); }
-  /* 手机端呼出按钮（桌面端隐藏，由媒体查询控制） */
-  .br-arc-fab { position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-    width: 44px; height: 44px; border-radius: 50%; z-index: 7; display: none;
-    align-items: center; justify-content: center; cursor: pointer; border: none; padding: 0;
-    background: #1d9bf0; color: #fff; box-shadow: 0 4px 14px rgba(29,155,240,.55);
-    -webkit-tap-highlight-color: transparent; }
-  .br-arc-fab svg { width: 22px; height: 22px; display: block; }
+  /* 手机端呼出按钮：小巧半透明，hover/active 才加重，不抢空间 */
+  .br-arc-fab { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    width: 34px; height: 34px; border-radius: 50%; z-index: 7; display: none;
+    align-items: center; justify-content: center; cursor: pointer; border: 1px solid rgba(29,155,240,.4);
+    padding: 0; background: rgba(29,155,240,.16); color: #1d9bf0; opacity: .7;
+    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+    -webkit-tap-highlight-color: transparent;
+    transition: background .15s ease, transform .15s ease, opacity .2s ease; }
+  .br-arc-fab:hover, .br-arc-fab:active { background: rgba(29,155,240,.3); opacity: 1; }
+  .br-arc-fab:active { transform: translateY(-50%) scale(.9); }
+  .br-arc-fab svg { width: 18px; height: 18px; display: block; }
   @media (max-width: 760px) {
-    .br-arc { display: none; }
-    .br-arc.open { display: block; }
+    .br-arc { opacity: 0; transform: translateY(-50%) translateX(24px);
+      pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
+    .br-arc.open { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
     .br-arc-fab { display: flex; }
   }
   .br-dayfloat { position: absolute; top: 8px; left: 12px; z-index: 6; display: none;
@@ -4253,29 +4260,55 @@
     renderArc();
     if (jump) jumpToDay(_knobDays[_knobIdx]);
   }
-  // 渲染 3D 圆柱滚轮：只画选中天 ±_ARC_RANGE 窗口；选中天最近内容侧、邻项向边缘弯曲并绕圆柱后仰+缩小+淡出
+  // 渲染 3D 圆柱滚轮：保持项元素池，按天索引定位并过渡（滚动时整体平滑滚动而非瞬移）
+  const _arcPool = new Map();   // dayIndex -> 元素（跨帧复用，触发 transform/opacity 过渡）
+  function arcTransform(j, t) {
+    const y = j * _ARC_STEP;
+    const tx = -( _ARC_BOW * (1 - t * t) ).toFixed(1);   // 选中天最靠内容侧，越偏越向边缘收敛
+    const rx = (-j / _ARC_RANGE * _ARC_TILT).toFixed(1); // 上仰/下列：绕水平轴后仰
+    const sc = (1 - t * 0.4).toFixed(3);
+    return 'translate(' + tx + 'px,calc(-50% + ' + y + 'px)) rotateX(' + rx + 'deg) scale(' + sc + ')';
+  }
+  function arcApply(el, j, k) {
+    const t = Math.abs(j) / _ARC_RANGE;
+    const pp = String(k).split('-');
+    el.textContent = j === 0 ? dayLabelOf(k) : ((+pp[1]) + '/' + (+pp[2]));
+    el.classList.toggle('sel', j === 0);
+    el.style.opacity = (1 - t * 0.78).toFixed(3);
+    el.style.transform = arcTransform(j, t);
+  }
   function renderArc() {
     const arc = $('br-arc'); if (!arc) return;
     const n = _knobDays.length;
-    let html = '';
-    for (let j = -_ARC_RANGE; j <= _ARC_RANGE; j++) {
-      const i = _knobIdx + j;
+    const lo = _knobIdx - _ARC_RANGE, hi = _knobIdx + _ARC_RANGE;
+    const want = new Set();
+    for (let i = lo; i <= hi; i++) {
       if (i < 0 || i >= n) continue;
-      const k = _knobDays[i];
-      const y = j * _ARC_STEP;                              // 选中天在上、旧天在下
-      const t = Math.abs(j) / _ARC_RANGE;
-      const tx = -( _ARC_BOW * (1 - t * t) ).toFixed(1);    // 选中天最靠内容侧，越偏越向边缘收敛
-      const rx = (-j / _ARC_RANGE * _ARC_TILT).toFixed(1);  // 上仰/下列：绕水平轴后仰
-      const op = (1 - t * 0.78).toFixed(3);
-      const sc = (1 - t * 0.4).toFixed(3);
-      const sel = j === 0 ? ' sel' : '';
-      const pp = String(k).split('-');
-      const label = j === 0 ? dayLabelOf(k) : ((+pp[1]) + '/' + (+pp[2]));
-      html += '<div class="arc-item' + sel + '" data-i="' + i + '" style="transform:translate(' +
-        tx + 'px,calc(-50% + ' + y + 'px)) rotateX(' + rx + 'deg) scale(' + sc + ');opacity:' + op + '">' +
-        label + '</div>';
+      want.add(i);
+      const j = i - _knobIdx, t = Math.abs(j) / _ARC_RANGE;
+      let el = _arcPool.get(i);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'arc-item'; el.dataset.i = i;
+        el.addEventListener('click', () => setKnobDay(+el.dataset.i, true));
+        arc.appendChild(el); _arcPool.set(i, el);
+        // 新进入的天：先落在外侧并透明，下一帧滑入（滚动时衔接平滑）
+        el.style.opacity = '0';
+        el.style.transform = arcTransform(j - Math.sign(j || 1), t);
+        requestAnimationFrame(() => { if (_arcPool.get(i) === el) arcApply(el, j, _knobDays[i]); });
+      } else {
+        arcApply(el, j, _knobDays[i]);
+      }
     }
-    arc.innerHTML = html;
+    // 滚出窗口的天：滑出并淡出后移除
+    _arcPool.forEach((el, i) => {
+      if (want.has(i)) return;
+      const j = i - _knobIdx, sign = j < 0 ? -1 : 1;
+      el.style.opacity = '0';
+      el.style.transform = arcTransform(sign * (_ARC_RANGE + 1), 1);
+      _arcPool.delete(i);
+      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 280);
+    });
   }
   // 主列表滚动时让圆弧跟随当前天（仅同步刻度，不主动跳转）
   function updateKnobToCurrent() {
