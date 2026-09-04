@@ -3086,6 +3086,7 @@
   let _browseItems = [];            // 全量浏览推文（buildRows 数据源，时间倒序）
   let _winBusy = false;
   let _rowOff = null;               // 行起始偏移前缀和（高度累加），长度 _rows.length+1；高度/行变化置 null 重建
+  let _rowByKey = new Map();        // rowKey -> row 对象；renderRowsDOM 时按当前 _rows 重建，热路径用元素自身 phKey 查它（与索引顺序解耦，防 _rows/子节点错位导致整窗不挂载）
   function rowKeyOfEl(el) {
     if (el.classList.contains('bm-card')) return 'card:' + (el.dataset.tid || '');
     if (el.classList.contains('day-sep')) return 'sep:' + (el.dataset.day || '');
@@ -3151,37 +3152,60 @@
     _cardCache.set(k, el);
     return el;
   }
-  function _mountRow(i, ph) {
-    const row = _rows[i]; if (!row) return;
-    ph.replaceWith(_createRowEl(row));
+  function _mountRowEl(el, key, row) {
+    if (!row) return;
+    el.replaceWith(_createRowEl(row));
   }
-  function _unmountRow(i, el) {
-    const row = _rows[i]; if (!row) return;
-    const h = el.offsetHeight || _rowHeight(row);
-    _hReal.set(_rowKey(row), h);
+  function _unmountRowEl(el, key, row) {
+    if (!row) return;
+    // 高度下限取估值：刚挂载、媒体未加载时 measured 偏小，绝不把占位压到比估值更矮，
+    // 否则 scrollHeight 持续坍缩→窗口判定找不到任何卡→白屏。
+    const h = Math.max(_rowEst(row), el.offsetHeight || _rowHeight(row));
+    _hReal.set(key, h);
     _rowOff = null;                 // 高度变化，偏移表失效
     const ph = document.createElement('div');
-    ph.className = 'br-ph'; ph.dataset.phKey = _rowKey(row); ph.style.height = h + 'px';
+    ph.className = 'br-ph'; ph.dataset.phKey = key; ph.style.height = h + 'px';
     el.replaceWith(ph);
   }
-  // 滚动/数据变更后：视口±缓冲外的真实行→占位，进入缓冲的占位→真实行
+  // 滚动/数据变更后：视口±缓冲外的真实行→占位，进入缓冲的占位→真实行。
+  // 关键：热路径完全基于【元素自身身份】（占位带 dataset.phKey，真实卡带 dataset.tid/day）+【真实 DOM 高度】
+  // 判定窗口，不再依赖 _rows[i] 与子节点的索引对齐——避免 _rows 被后续重建重赋而与 DOM 错位时
+  // 整窗不挂载（白屏）。行对象经 _rowByKey 由 phKey 取出。高度下限取估值，防坍缩。
+  // 关键：热路径完全基于【元素自身身份】（占位带 dataset.phKey，真实卡带 dataset.tid/day）+【真实 DOM 位置】
+  // （offsetTop/offsetHeight）判定窗口，不依赖手工累加的高度（#br-list 有行间距 gap，累加 style.height
+  // 会与真实布局脱节，导致误判「无行在窗内」→ 整窗不挂载→白屏）。两遍：先只读量位置（单次 reflow），
+  // 再按判定挂载/卸载，避免读写交错触发逐元素 reflow。
   function renderWindow() {
     const cont = viewBrowse; if (!cont || !brList || _winBusy) return;
     _winBusy = true;
     try {
-      const off = rowOffsets();
       const top = cont.scrollTop, vh = cont.clientHeight;
       const lo = top - _phBuf, hi = top + vh + _phBuf;
+      // 用元素在「滚动容器内容坐标系」中的真实位置判定窗口：
+      // yTop = 元素视口顶部 - 容器视口顶部 + scrollTop，该值与 scrollTop 同系、随滚动不变。
+      // 绝不能用 el.offsetTop：它相对「最近定位祖先」，遇 position:fixed/absolute 容器会随滚动漂移，
+      // 导致窗口判定锁死在 DOM 头部→视口内真实行永远不挂载→白屏。
+      const rCont = cont.getBoundingClientRect();
       const kids = Array.from(brList.children);
+      const dec = new Array(kids.length);
       for (let i = 0; i < kids.length; i++) {
-        const el = kids[i]; const row = _rows[i];
-        if (!row) continue;
-        const isPh = el.classList.contains('br-ph');
-        const yTop = off[i], yBot = off[i + 1];
-        const inWin = (yBot > lo) && (yTop < hi);
-        if (isPh) { if (inWin) _mountRow(i, el); }
-        else { _hReal.set(_rowKey(row), el.offsetHeight || (yBot - yTop)); if (!inWin) _unmountRow(i, el); }
+        const el = kids[i];
+        const key = el.dataset.phKey || rowKeyOfEl(el);
+        const row = key ? _rowByKey.get(key) : null;
+        const yTop = el.getBoundingClientRect().top - rCont.top + top;
+        const h = el.offsetHeight || (row ? _rowHeight(row) : 340);
+        const inWin = ((yTop + h) > lo) && (yTop < hi);
+        dec[i] = { el, key, row, isPh: el.classList.contains('br-ph'), inWin, h };
       }
+      let _dirty = false;
+      for (let i = 0; i < kids.length; i++) {
+        const d = dec[i];
+        if (!d.row && d.isPh) continue;
+        if (d.isPh) { if (d.inWin) { _mountRowEl(d.el, d.key, d.row); _dirty = true; } }
+        else { _hReal.set(d.key, Math.max(_rowEst(d.row), d.h)); if (!d.inWin) { _unmountRowEl(d.el, d.key, d.row); _dirty = true; } }
+      }
+      // 挂载/卸载改变了布局高度，下一帧再跑一次把新露出的窗区填满（收敛后 _dirty=false 自然停止）
+      if (_dirty) requestAnimationFrame(() => { if (!_winBusy) renderWindow(); });
     } finally { _winBusy = false; }
   }
   // 同步所有占位高度到最新实测值（某卡图片加载撑高后，下方占位需跟上，避免漂移）
@@ -3193,7 +3217,10 @@
       if (!brList) return;
       const kids = brList.children;
       for (let i = 0; i < kids.length; i++) {
-        const el = kids[i]; const row = _rows[i]; if (!row) continue;
+        const el = kids[i];
+        const key = el.dataset.phKey || rowKeyOfEl(el);
+        const row = key ? _rowByKey.get(key) : null;
+        if (!row) continue;
         if (el.classList.contains('br-ph')) {
           const want = _rowHeight(row);
           if (Math.abs(parseFloat(el.style.height) - want) > 0.5) el.style.height = want + 'px';
@@ -3204,22 +3231,33 @@
   // 定位前确保目标卡已挂载（否则 XFEED.restore 找不到 .bm-card）
   function ensureMounted(tid) {
     if (!brList || !tid) return false;
-    if (brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`)) return true;
+    tid = String(tid);
+    if (brList.querySelector(`.bm-card[data-tid="${CSS.escape(tid)}"]`)) return true;
     const cont = viewBrowse; if (!cont) return false;
+    // 先用偏移表粗定位，再按真实 DOM 位置精修（偏移表在高度校正后可能略偏）
     const off = rowOffsets();
     let idx = -1;
     for (let i = 0; i < _rows.length; i++) {
-      if (_rows[i].kind === 'card' && _rows[i].tid === String(tid)) { idx = i; break; }
+      if (_rows[i].kind === 'card' && _rows[i].tid === tid) { idx = i; break; }
     }
     if (idx < 0) return false;
-    cont.scrollTop = Math.max(0, off[idx] - 80);
+    cont.scrollTop = Math.max(0, (off[idx] || 0) - 80);
     renderWindow();
-    return !!brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tid))}"]`);
+    if (brList.querySelector(`.bm-card[data-tid="${CSS.escape(tid)}"]`)) return true;
+    const ph = brList.querySelector(`.br-ph[data-ph-key="card:${CSS.escape(tid)}"]`);
+    if (ph) {
+      const yTop = ph.getBoundingClientRect().top - cont.getBoundingClientRect().top + cont.scrollTop;
+      cont.scrollTop = Math.max(0, yTop - 80);
+      renderWindow();
+    }
+    return !!brList.querySelector(`.bm-card[data-tid="${CSS.escape(tid)}"]`);
   }
   // 用占位重建整个列表 DOM（离屏占满高度，真实卡由 renderWindow 挂窗口），避免一次创建上千张卡
   function renderRowsDOM() {
     if (!brList) return;
     _rowOff = null;               // 行集合已变，偏移表失效
+    _rowByKey = new Map();        // 按当前 _rows 重建身份映射（与即将生成的占位 phKey 一致）
+    _rows.forEach((r) => _rowByKey.set(_rowKey(r), r));
     brList.innerHTML = '';
     _rows.forEach((row) => {
       const ph = document.createElement('div');
@@ -5824,7 +5862,7 @@
       const kids = brList.children;
       for (let i = 0; i < kids.length; i++) {
         const el = kids[i], row = _rows[i]; if (!row || el.classList.contains('br-ph')) continue;
-        _hReal.set(_rowKey(row), el.offsetHeight || _rowHeight(row));
+        _hReal.set(_rowKey(row), Math.max(_rowEst(row), el.offsetHeight || _rowHeight(row)));
       }
       _rowOff = null;             // 实测高度变化，偏移表失效
       syncPlaceholderHeights();
