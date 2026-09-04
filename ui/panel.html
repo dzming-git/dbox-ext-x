@@ -462,7 +462,9 @@
     /* 未计算时的默认比例（3:4，贴合 X 主流竖图）；JS 设置 height 后由 height 接管。
        避免初次渲染按 16:9 出矮格子、图片加载后又变高 →「紧→松→紧」跳动。 */
     aspect-ratio: 3 / 4;
-    background: #f3f5f7; border-radius: 8px; overflow: hidden; position: relative;
+    background: #f3f5f7; border-radius: 8px; overflow: hidden !important; position: relative;
+    /* JS 算出行高后会设 style.height，必须覆盖 aspect-ratio，否则网格分配与内容尺寸不一致 → 重叠 */
+    min-height: 0;
   }
   /* img/video 用 max-width/max-height:100% + width/height:auto：浏览器按内在比例 + 容器
      约束自动算尺寸 → 任何比例都完整显示、居中、零裁切（不被 row 强行拉宽）。 */
@@ -3579,16 +3581,24 @@
     const gridW = (cw - gap) / 2;
     let H = 0;
     items.forEach((el) => { const h = gridW / el._ar; if (h > H) H = h; });
+    // 最小行高：防止宽图(16:9等)在手机半宽下算出极矮行高→图片缩成白框里的小图
+    const minRowH = Math.max(160, Math.round(ch * 0.28));
+    H = Math.max(H, minRowH);
     H = Math.min(H, maxRowH);
 
     if (N === 2) {
       container.style.gridTemplateRows = `${H}px`;
     } else if (N === 3) {
       // 2 行各 H/2，首格跨两行 → 左格高 H，右两格各 H/2（2:1 比例，正是 X 的左大右二）
-      container.style.gridTemplateRows = `${Math.round(H / 2)}px ${Math.round(H / 2)}px`;
+      const halfH = Math.round(H / 2);
+      container.style.gridTemplateRows = `${halfH}px ${halfH}px`;
       items[0].style.gridRow = '1 / span 2';
+      // 右侧两格各自设明确高度 + overflow:hidden，防止内容（尤其宽图）溢出到相邻格
+      items[1].style.height = halfH + 'px';
+      items[2].style.height = halfH + 'px';
     } else if (N === 4) {
-      container.style.gridTemplateRows = `${H}px ${H}px`;
+      const rowH = Math.round(H / 2);   // 4 图分 2 行，每行高度减半（总高与 2/3 图一致）
+      container.style.gridTemplateRows = `${rowH}px ${rowH}px`;
     }
     container.dataset.jlDone = '1';
   }
