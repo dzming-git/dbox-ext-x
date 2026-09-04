@@ -1315,6 +1315,10 @@
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
       TOKEN = e.data.token;
+      // 关键：跨设备状态 SDK（state.js）的 SDK.token() 读 window.parent.__dbox_token 与本面板 localStorage，
+      // 并不读 TOKEN 变量。若不落盘，UserState 请求（位置同步/主控租约）就发不出 Authorization → 核心 401 →
+      // push/pull 静默失败 → 表现为「各设备各存各的、双主控灯常亮」。这里写 localStorage 桥接。
+      try { localStorage.setItem('token', e.data.token); localStorage.setItem('dbox_token', e.data.token); } catch (_) {}
       // 资源库改为点击「下载」时再惰性加载（chooseLibrary），不再启动时预拉
       // token 到达后恢复可能存在的旧任务（iframe 重建场景）
       if (!jobId) { const saved = restoreJob(); if (saved) { jobId = saved; startPolling(); } }
