@@ -3118,6 +3118,41 @@
   let _phBuf = 800;                 // 视口上下额外缓冲(px)
   const _cardCache = new Map();     // rowKey -> 真实元素（离屏缓存复用，避免重建+重绑事件）
   const _hReal = new Map();         // rowKey -> 实测高度(px)
+  // 媒体预加载（与 DOM 挂载解耦）：对「视口前后更宽范围」的卡片提前 new Image() 预取其图片，
+  // 浏览器缓存后，等卡片真正挂载(视口±_phBuf)时图片已在缓存里、瞬间显示，避免滚动到才现白框。
+  let _preloadAhead = 2200;         // 预加载领先视口的距离(px)，须大于挂载缓冲 _phBuf
+  const _preloadedKeys = new Set(); // rowKey -> 已触发预取（去重，避免重复请求）
+  function _mediaUrlsOf(item) {
+    const out = [];
+    const meds = (item && item.media) || [];
+    for (const m of meds) {
+      if (m.type === 'video' || m.type === 'gif') {
+        if (m.cover || m.url) out.push(mediaUrl(m.cover || m.url, 'image'));  // 视频预取封面（与卡片渲染一致）
+      } else if (m.url) {
+        out.push(mediaUrl(m.url, 'image'));
+      }
+    }
+    return out;
+  }
+  // 视口内容坐标系：top..top+vh；预取窗口 = [top-_preloadAhead, top+vh+_preloadAhead]
+  function preloadMediaNear() {
+    const cont = viewBrowse; if (!cont || !_rows.length) return;
+    const off = rowOffsets(); if (!off || off.length !== _rows.length + 1) return;
+    const top = cont.scrollTop, vh = cont.clientHeight;
+    const lo = top - _preloadAhead, hi = top + vh + _preloadAhead;
+    for (let i = 0; i < _rows.length; i++) {
+      const row = _rows[i];
+      if (row.kind !== 'card') continue;
+      const yTop = off[i], h = _rowHeight(row);
+      if ((yTop + h) <= lo || yTop >= hi) continue;           // 不在预加载窗内
+      const key = 'card:' + row.tid;
+      if (_preloadedKeys.has(key)) continue;
+      _preloadedKeys.add(key);
+      const item = row.item || tweetCacheGet(row.tid);
+      const urls = _mediaUrlsOf(item);
+      for (const u of urls) { const im = new Image(); im.src = u; }  // 仅触发缓存，不入 DOM
+    }
+  }
   const _hEst = { card: 340, sep: 40, coll: 34 };
   let _rows = [];                   // 有序行模型（时间倒序）：{kind:'card'|'sep'|'coll'|'more', tid?, day?, count?, item?, remain?}
   let _browseItems = [];            // 全量浏览推文（buildRows 数据源，时间倒序）
@@ -3337,6 +3372,7 @@
       brList.appendChild(ph);
     });
     renderWindow();
+    preloadMediaNear(); // 初次渲染即预取视口附近媒体
   }
 
   // 浏览内容缓存已交由框架 DBoxState.feed() 统一管理（服务端权威，见 XFEED），
@@ -4024,6 +4060,7 @@
     _allDays = computeAllDays();
     initRevealDays();              // 按天分块：展开到锚点天（或仅最新一天），避免无限流焦虑
     _cardCache.clear();            // 全量重建：丢弃旧卡 DOM，按最新内容重建缓存
+    _preloadedKeys.clear();        // 预加载记录随内容重建失效，清掉避免无限增长
     _rows = buildRows(_browseItems);
     renderRowsDOM();                // 占位重建 + 窗口挂载，避免一次创建上千张卡
     afterBrowseRender();
@@ -6153,6 +6190,7 @@
         brScrollTimer = null;
         onBrowseScrollUI();
         renderWindow();   // 二期 A：回收离屏行 / 挂载进入缓冲的行
+        preloadMediaNear(); // 媒体预加载：提前拉取视口前后更宽范围的图片到缓存，减少白框
         // 按天分块：滑到底且还有「更早的一天」未展开 → 自动并进来（纯滚动触发，无需手动点击展开）
         if (_allDays.some((d) => !_revealDays.includes(d))) {
           const nearB = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 300;
