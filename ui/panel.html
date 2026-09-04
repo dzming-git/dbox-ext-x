@@ -1377,7 +1377,8 @@
     const savedSrch = restoreSrchTask();
     if (savedSrch && latestToken()) {
       srchTaskKey = savedSrch;
-      startSearchPoll();
+      if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 0%';
+      startSearchPoll();   // 内部会禁用按钮并立即开始轮询，故刷新后「全部重搜」按钮不可重复点击
     }
   });
   // token 到达时也尝试恢复（token 可能比 load 晚）
@@ -5588,14 +5589,24 @@
   function stopSearchPoll() { if (srchPoller) { clearInterval(srchPoller); srchPoller = null; } }
   function startSearchPoll() {
     if (srchPoller) clearInterval(srchPoller);
+    // 轮询期间按钮保持禁用并展示进度——刷新页面后恢复任务时也要一致（后台仍在跑，不能重复点）
+    if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = true; srchRefreshingAll = true; }
     srchPoller = setInterval(async () => {
       if (!srchTaskKey) return;
       try {
         const r = await req(`${API}/status?resource_key=${encodeURIComponent(srchTaskKey)}`);
         const d = await r.json();
-        if (!d.success) { stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; return; }
+        if (!d.success) {
+          // 任务已不存在（被清/过期）：复位按钮，避免永久禁用
+          stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
+          if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
+          return;
+        }
         // 改成 innerHTML 后必须转义动态值：percent 来自服务端，直接拼接等于开一个注入口子
-        if (srchRefreshAllBtn) srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 ' + (parseInt(d.percent, 10) || 0) + '%';
+        if (srchRefreshAllBtn) {
+          srchRefreshAllBtn.disabled = true;
+          srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 ' + (parseInt(d.percent, 10) || 0) + '%';
+        }
         if (d.done) {
           stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }

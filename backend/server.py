@@ -1932,6 +1932,14 @@ def create_blueprint(host):
         except Exception:
             task_id = None
 
+        # 立即落一条 running 进度，确保前端首轮轮询就能取到记录。否则 worker 仍在爬第一个词、
+        # 进度表尚无记录 → /status 返回 404 → 前端误判「任务不存在」停止轮询，按钮卡在 0%。
+        try:
+            _progress_store.upsert(resource_key, platform='x', resource_id=resource_key,
+                                   status='running', percent=0, message='准备中')
+        except Exception:
+            pass
+
         def _txid(method, path):
             return get_transaction_id(xrun.build_headers(cookie, with_bearer=False),
                                       method, path, ua=xrun.UA)
