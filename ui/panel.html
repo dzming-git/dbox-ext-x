@@ -4176,21 +4176,21 @@
     anchorCollapseDay = a ? dayKeyOf((tweetCacheGet(a) || {}).created_at) : null;
     _rows = buildRows(_browseItems);
     renderRowsDOM();
-    _rebuildDayRail();
+    _rebuildDayRail(false);   // 整表渲染：滚轮同步到当前浏览天
     updateDayFloat();
   }
   // 由 rows 模型派生右轴（天数/密度），替代原 refreshDayModel 的 DOM 读取
-  function _rebuildDayRail() {
+  function _rebuildDayRail(preserve) {
     const dayCount = new Map();
     _rows.forEach((r) => { if (r.kind === 'sep' || r.kind === 'coll') dayCount.set(r.day, r.count); });
-    buildDayKnob(dayCount);
+    buildDayKnob(dayCount, preserve);
   }
   // 从 rows 模型重建分组头/折叠条/右轴（不改卡片内容，可重复调用）
   function refreshDayModel() {
     if (!brList) return;
     _rows = buildRows(_browseItems);
     renderRowsDOM();
-    _rebuildDayRail();
+    _rebuildDayRail(true);    // 折叠展开/滚轮跳转：保留当前选中天，勿被 currentDayKey() 抢回
     updateDayFloat();
   }
   function toggleDayCollapse(k) {
@@ -4213,8 +4213,11 @@
   // D 圆弧时间轴：时间倒序的天列表 + 当前索引；滚轮/拖动切换、中心为选中天、主列表滚动时同步
   let _knobDays = [];   // 时间倒序（最新→最旧），与 _rows 一致
   let _knobIdx = 0;
+  let _knobLock = false, _knobLockT = null;   // 滚轮/拖动触发跳转期间抑制「列表滚动回写」抢走选中天
   const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
-  function buildDayKnob(dayCount) {
+  function buildDayKnob(dayCount, preserve) {
+    // 折叠展开/滚轮跳转会触发整表重建：preserve=true 时保留当前选中天，避免被 currentDayKey() 抢回旧位置
+    const prevDay = (preserve && _knobDays[_knobIdx]) ? _knobDays[_knobIdx] : currentDayKey();
     _knobDays = Array.from(dayCount.keys());
     const arc = $('br-arc'); if (!arc) return;
     // 绑定一次：滚轮切换、上下拖动选日期、点击直选
@@ -4239,7 +4242,7 @@
         const i = Math.max(0, Math.min(_knobDays.length - 1, drag.idx + steps));
         if (i !== _knobIdx) { _knobIdx = i; renderArc(); }
       });
-      const endDrag = () => { if (drag) { drag = null; jumpToDay(_knobDays[_knobIdx]); } };
+      const endDrag = () => { if (drag) { drag = null; setKnobDay(_knobIdx, true); } };
       arc.addEventListener('pointerup', endDrag);
       arc.addEventListener('pointercancel', endDrag);
       arc.addEventListener('click', (e) => {
@@ -4250,7 +4253,8 @@
       const fab = $('br-arc-fab');
       if (fab) fab.addEventListener('click', () => arc.classList.toggle('open'));
     }
-    const ci = (cur => cur ? _knobDays.indexOf(cur) : -1)(currentDayKey());
+    let ci = _knobDays.indexOf(prevDay);
+    if (ci < 0) ci = _knobDays.indexOf(currentDayKey());
     _knobIdx = ci >= 0 ? ci : 0;
     renderArc();
   }
@@ -4258,7 +4262,11 @@
     if (!_knobDays.length) return;
     _knobIdx = Math.max(0, Math.min(_knobDays.length - 1, i));
     renderArc();
-    if (jump) jumpToDay(_knobDays[_knobIdx]);
+    if (jump) {
+      _knobLock = true; clearTimeout(_knobLockT);
+      _knobLockT = setTimeout(() => { _knobLock = false; }, 450);  // 跳转期间屏蔽列表回写，避免滚轮被抢
+      jumpToDay(_knobDays[_knobIdx]);
+    }
   }
   // 渲染 3D 圆柱滚轮：保持项元素池，按天索引定位并过渡（滚动时整体平滑滚动而非瞬移）
   const _arcPool = new Map();   // dayIndex -> 元素（跨帧复用，触发 transform/opacity 过渡）
@@ -4310,8 +4318,9 @@
       setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 280);
     });
   }
-  // 主列表滚动时让圆弧跟随当前天（仅同步刻度，不主动跳转）
+  // 主列表滚动时让圆弧跟随当前天（仅同步刻度，不主动跳转）；滚轮跳转锁定期内跳过以免被抢
   function updateKnobToCurrent() {
+    if (_knobLock) return;
     const k = currentDayKey();
     if (!k) return;
     const i = _knobDays.indexOf(k);
