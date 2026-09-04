@@ -577,36 +577,30 @@
     border: 1px dashed var(--border, #e3e6eb); border-radius: 10px; cursor: pointer;
     text-align: center; }
   .day-collapsed:hover { color: #1d9bf0; }
-  /* D：右侧日期旋钮（滚轮调节想看哪一天；指针随当前天旋转，点开可直选） */
-  .br-knob { position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-    width: 60px; height: 60px; border-radius: 50%; z-index: 7; cursor: ns-resize;
-    background: radial-gradient(circle at 50% 36%, rgba(43,56,71,.94), rgba(15,22,30,.94));
-    border: 1px solid rgba(255,255,255,.16);
-    box-shadow: 0 6px 18px rgba(0,0,0,.42), inset 0 1px 2px rgba(255,255,255,.08);
-    user-select: none; -webkit-user-select: none; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; color: #fff;
-    transition: box-shadow .15s, transform .08s; }
-  .br-knob::before { content: ''; position: absolute; inset: 7px; border-radius: 50%;
-    border: 1px solid rgba(255,255,255,.1); pointer-events: none; }
-  .br-knob:hover { box-shadow: 0 6px 22px rgba(29,155,240,.5), inset 0 1px 2px rgba(255,255,255,.08); }
-  .br-knob:active { transform: translateY(-50%) scale(.95); }
-  .br-knob .knob-pointer { position: absolute; left: 50%; top: 50%; width: 3px; height: 21px;
-    border-radius: 3px; background: linear-gradient(#8ed0ff, #1d9bf0); transform-origin: 50% 100%;
-    transform: translate(-50%, -100%) rotate(var(--knob-ang, -135deg));
-    box-shadow: 0 0 7px rgba(29,155,240,.85); pointer-events: none; }
-  .br-knob .knob-mid { font-size: 10px; font-weight: 600; line-height: 1.1; text-align: center;
-    max-width: 46px; padding: 0 2px; z-index: 1; text-shadow: 0 1px 2px rgba(0,0,0,.7);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
-  .br-knob .knob-sub { font-size: 9px; opacity: .62; z-index: 1; pointer-events: none; margin-top: 1px; }
-  .br-knob .knob-pop { position: absolute; right: 68px; top: 50%; transform: translateY(-50%);
-    max-height: 72vh; overflow-y: auto; width: 134px; background: rgba(15,22,30,.97);
-    border: 1px solid rgba(255,255,255,.16); border-radius: 12px; padding: 6px; display: none;
-    box-shadow: 0 8px 24px rgba(0,0,0,.45); }
-  .br-knob.open .knob-pop { display: block; }
-  .br-knob .knob-pop div { padding: 6px 8px; border-radius: 8px; font-size: 12px; color: #e7e9ea;
-    cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .br-knob .knob-pop div:hover { background: rgba(29,155,240,.25); }
-  .br-knob .knob-pop div.cur { background: #1d9bf0; color: #fff; }
+  /* D：右侧圆弧时间轴（滚轮/拖动选日期，中心为选中天，越近中心越清晰；手机端可呼出） */
+  .br-arc { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    width: 66px; height: 320px; z-index: 7; touch-action: none;
+    user-select: none; -webkit-user-select: none; overflow: visible; cursor: ns-resize; }
+  .br-arc .arc-item { position: absolute; right: 8px; top: 50%;
+    transform-origin: 100% 50%; padding: 3px 9px; border-radius: 14px;
+    font-size: 12px; line-height: 1.2; white-space: nowrap; color: #e7e9ea;
+    background: rgba(15,22,30,.82); border: 1px solid rgba(255,255,255,.14);
+    box-shadow: 0 2px 8px rgba(0,0,0,.3); cursor: pointer; pointer-events: auto;
+    transition: opacity .12s ease, transform .12s ease; }
+  .br-arc .arc-item.sel { color: #fff; background: #1d9bf0; border-color: #1d9bf0;
+    font-weight: 700; font-size: 13px; box-shadow: 0 0 14px rgba(29,155,240,.7); }
+  /* 手机端呼出按钮（桌面端隐藏，由媒体查询控制） */
+  .br-arc-fab { position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    width: 44px; height: 44px; border-radius: 50%; z-index: 7; display: none;
+    align-items: center; justify-content: center; cursor: pointer; border: none; padding: 0;
+    background: #1d9bf0; color: #fff; box-shadow: 0 4px 14px rgba(29,155,240,.55);
+    -webkit-tap-highlight-color: transparent; }
+  .br-arc-fab svg { width: 22px; height: 22px; display: block; }
+  @media (max-width: 760px) {
+    .br-arc { display: none; }
+    .br-arc.open { display: block; }
+    .br-arc-fab { display: flex; }
+  }
   .br-dayfloat { position: absolute; top: 8px; left: 12px; z-index: 6; display: none;
     padding: 4px 10px; font-size: 12px; font-weight: 600; color: #fff;
     background: rgba(29,155,240,.92); border-radius: 14px; pointer-events: none;
@@ -975,13 +969,16 @@
       <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
       <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
     </div>
-    <!-- D：右侧日期旋钮（滚轮切换日期，点开直选，指针随当前天旋转） -->
-    <div id="br-knob" class="br-knob" title="日期旋钮：在上面滚动滚轮切换日期，点开可直选某天">
-      <div class="knob-pointer"></div>
-      <div class="knob-mid"></div>
-      <div class="knob-sub"></div>
-      <div class="knob-pop"></div>
-    </div>
+    <!-- D：右侧圆弧时间轴（滚轮/拖动选日期，中心为选中天；手机端自动隐藏，可由按钮呼出） -->
+    <div id="br-arc" class="br-arc" title="日期时间轴：在上面滚动或上下拖动选择日期，中心为您所选的那一天"></div>
+    <button id="br-arc-fab" class="br-arc-fab" title="呼出日期时间轴" aria-label="呼出日期时间轴">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h16M4 12h16M4 17h16"/>
+        <circle cx="9" cy="7" r="1.8" fill="currentColor" stroke="none"/>
+        <circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none"/>
+        <circle cx="8" cy="17" r="1.8" fill="currentColor" stroke="none"/>
+      </svg>
+    </button>
     <!-- B：滚动时浮在左上角的当前日期 -->
     <div id="br-dayfloat" class="br-dayfloat"></div>
   </div>
@@ -4206,68 +4203,86 @@
     }
     updateDayFloat();
   }
-  // D 旋钮：时间倒序的天列表 + 当前刻度索引；滚轮切换、点击展开直选、主列表滚动时同步指针
+  // D 圆弧时间轴：时间倒序的天列表 + 当前索引；滚轮/拖动切换、中心为选中天、主列表滚动时同步
   let _knobDays = [];   // 时间倒序（最新→最旧），与 _rows 一致
   let _knobIdx = 0;
+  const _ARC_RANGE = 4, _ARC_STEP = 34, _ARC_R = 200;   // 窗口半径 / 行距 / 圆弧半径
   function buildDayKnob(dayCount) {
     _knobDays = Array.from(dayCount.keys());
-    const knob = $('br-knob'); if (!knob) return;
-    const pop = knob.querySelector('.knob-pop');
-    pop.innerHTML = '';
-    _knobDays.forEach((k, i) => {
-      const d = document.createElement('div');
-      d.textContent = dayLabelOf(k) + ' · ' + (dayCount.get(k) || 0) + ' 条';
-      d.dataset.i = i;
-      d.addEventListener('click', () => { setKnobDay(i, true); knob.classList.remove('open'); });
-      pop.appendChild(d);
-    });
-    if (!knob.dataset.bound) {
-      knob.dataset.bound = '1';
-      // 在旋钮上滚动滚轮 = 切换日期（旋钮自身消费滚轮，不滚动主列表）
-      knob.addEventListener('wheel', (e) => {
+    const arc = $('br-arc'); if (!arc) return;
+    // 绑定一次：滚轮切换、上下拖动选日期、点击直选
+    if (!arc.dataset.bound) {
+      arc.dataset.bound = '1';
+      // 在弧上滚动滚轮 = 切换日期（弧自身消费滚轮，不滚动主列表）
+      arc.addEventListener('wheel', (e) => {
         e.preventDefault(); e.stopPropagation();
         if (!_knobDays.length) return;
         setKnobDay(_knobIdx + (e.deltaY > 0 ? 1 : -1), true);
       }, { passive: false });
-      knob.addEventListener('click', (e) => {
-        if (e.target.closest('.knob-pop')) return;   // 点列表项不切换开合
-        knob.classList.toggle('open');
+      // 鼠标/触摸上下拖动选择日期，松手跳转到所选天
+      let drag = null;
+      arc.addEventListener('pointerdown', (e) => {
+        drag = { y: e.clientY, idx: _knobIdx };
+        if (arc.setPointerCapture) { try { arc.setPointerCapture(e.pointerId); } catch (_) {} }
+        e.preventDefault();
       });
-      document.addEventListener('click', (e) => {
-        if (knob.classList.contains('open') && !knob.contains(e.target)) knob.classList.remove('open');
+      arc.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const steps = Math.round((drag.y - e.clientY) / _ARC_STEP);
+        const i = Math.max(0, Math.min(_knobDays.length - 1, drag.idx + steps));
+        if (i !== _knobIdx) { _knobIdx = i; renderArc(); }
       });
+      const endDrag = () => { if (drag) { drag = null; jumpToDay(_knobDays[_knobIdx]); } };
+      arc.addEventListener('pointerup', endDrag);
+      arc.addEventListener('pointercancel', endDrag);
+      arc.addEventListener('click', (e) => {
+        const it = e.target.closest('.arc-item'); if (!it) return;
+        setKnobDay(+it.dataset.i, true);
+      });
+      // 手机端呼出按钮
+      const fab = $('br-arc-fab');
+      if (fab) fab.addEventListener('click', () => arc.classList.toggle('open'));
     }
-    const cur = currentDayKey();
-    const ci = cur ? _knobDays.indexOf(cur) : -1;
+    const ci = (cur => cur ? _knobDays.indexOf(cur) : -1)(currentDayKey());
     _knobIdx = ci >= 0 ? ci : 0;
-    updateKnob();
+    renderArc();
   }
   function setKnobDay(i, jump) {
     if (!_knobDays.length) return;
     _knobIdx = Math.max(0, Math.min(_knobDays.length - 1, i));
-    updateKnob();
+    renderArc();
     if (jump) jumpToDay(_knobDays[_knobIdx]);
   }
-  function updateKnob() {
-    const knob = $('br-knob'); if (!knob) return;
+  // 渲染圆弧：只画选中天 ±_ARC_RANGE 的窗口，中心为选中天、越近越清晰
+  function renderArc() {
+    const arc = $('br-arc'); if (!arc) return;
     const n = _knobDays.length;
-    const ang = n > 1 ? (-135 + (_knobIdx / (n - 1)) * 270) : -135;   // 270° 表盘：最新在左下、最旧在右下
-    knob.style.setProperty('--knob-ang', ang + 'deg');
-    const k = _knobDays[_knobIdx];
-    const mid = knob.querySelector('.knob-mid'), sub = knob.querySelector('.knob-sub');
-    if (k) {
-      const p = String(k).split('-');
-      mid.textContent = (+p[1]) + '/' + (+p[2]);
-      sub.textContent = n > 1 ? ((_knobIdx + 1) + '/' + n) : '';
-    } else { mid.textContent = ''; sub.textContent = ''; }
-    knob.querySelectorAll('.knob-pop div').forEach((d) => d.classList.toggle('cur', +d.dataset.i === _knobIdx));
+    let html = '';
+    for (let j = -_ARC_RANGE; j <= _ARC_RANGE; j++) {
+      const i = _knobIdx + j;
+      if (i < 0 || i >= n) continue;
+      const k = _knobDays[i];
+      const y = j * _ARC_STEP;                         // 选中天在上、旧天在下
+      const yy = Math.min(Math.abs(y), _ARC_R * 0.96);
+      const x = _ARC_R - Math.sqrt(_ARC_R * _ARC_R - yy * yy);  // 圆弧凸起：中心最靠左
+      const t = Math.abs(j) / _ARC_RANGE;
+      const op = (1 - t * 0.7).toFixed(3);
+      const sc = (1 - t * 0.42).toFixed(3);
+      const sel = j === 0 ? ' sel' : '';
+      const pp = String(k).split('-');
+      const label = j === 0 ? dayLabelOf(k) : ((+pp[1]) + '/' + (+pp[2]));
+      html += '<div class="arc-item' + sel + '" data-i="' + i + '" style="transform:translate(' +
+        (-x).toFixed(1) + 'px,calc(-50% + ' + y + 'px)) scale(' + sc + ');opacity:' + op + '">' +
+        label + '</div>';
+    }
+    arc.innerHTML = html;
   }
-  // 主列表滚动时让旋钮指针跟随当前天（仅同步刻度，不主动跳转）
+  // 主列表滚动时让圆弧跟随当前天（仅同步刻度，不主动跳转）
   function updateKnobToCurrent() {
     const k = currentDayKey();
     if (!k) return;
     const i = _knobDays.indexOf(k);
-    if (i >= 0 && i !== _knobIdx) { _knobIdx = i; updateKnob(); }
+    if (i >= 0 && i !== _knobIdx) { _knobIdx = i; renderArc(); }
   }
   // 当前所在天：按偏移表找「底部已越过视口顶」的最后一个分组头（与挂载状态无关，兼容占位窗口化）
   function currentDayKey() {
