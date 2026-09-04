@@ -557,6 +557,41 @@
   /* 加载更多时新卡片淡入+上滑，避免硬插入的突兀感（带轻微缩放，更明显） */
   @keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
   .bm-card.card-enter { animation: cardIn .4s cubic-bezier(.22,.61,.36,1) both; }
+  /* ===== 首页浏览增强：A 虚拟滚动 / B 按天分组 / C 已读折叠 / D 右侧日期轴 ===== */
+  /* A：离屏卡片交给浏览器跳过布局/绘制（content-visibility），长列表只保留真实滚动高度，
+     彻底消除上千张卡同屏的卡顿；折叠天用 display:none 等效析构渲染。离屏内联视频另行自动暂停。 */
+  .bm-card { content-visibility: auto; contain-intrinsic-size: auto 340px; }
+  /* 浏览视图包裹层：让右轴/浮动日期头脱离滚动容器、吸在视口上 */
+  #view-browse-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  /* B：按天分组 + 吸附日期头 */
+  .day-sep { position: sticky; top: 0; z-index: 4; margin: 10px 0 6px; padding: 4px 10px;
+    font-size: 12px; font-weight: 600; color: var(--muted, #8899a6); background: var(--bg, #fff);
+    border: 1px solid var(--border, #e3e6eb); border-radius: 14px; display: flex; align-items: center;
+    justify-content: space-between; cursor: pointer; }
+  .day-sep .cnt { font-weight: 400; color: #aab8c2; font-size: 11px; }
+  /* C：已读折叠——按锚点派生的「已看天」收成一条细条，点一下展开 */
+  .day-collapsed { position: sticky; top: 0; z-index: 4; margin: 6px 0; padding: 6px 10px;
+    font-size: 12px; color: var(--muted, #8899a6); background: var(--daycollapsed-bg, #f5f8fa);
+    border: 1px dashed var(--border, #e3e6eb); border-radius: 10px; cursor: pointer;
+    text-align: center; }
+  .day-collapsed:hover { color: #1d9bf0; }
+  /* D：右侧日期轴（密度条 + 点击跳转 + 当前天高亮） */
+  .br-dayrail { position: absolute; top: 8px; right: 6px; bottom: 8px; width: 12px;
+    display: flex; flex-direction: column; gap: 1px; z-index: 6; opacity: .5;
+    transition: opacity .15s, width .15s; }
+  .br-dayrail:hover, .br-dayrail.active { opacity: 1; width: 60px; }
+  .br-dayrail .dr-cell { flex: 0 0 auto; min-height: 6px; border-radius: 4px; background: #cfd9e0;
+    cursor: pointer; position: relative; overflow: visible; }
+  .br-dayrail .dr-cell.cur { background: #1d9bf0; }
+  .br-dayrail .dr-cell.collapsed { background: #e3e6eb; }
+  .br-dayrail .dr-label { display: none; position: absolute; right: 70px; top: 50%;
+    transform: translateY(-50%); white-space: nowrap; background: #1d9bf0; color: #fff;
+    font-size: 11px; padding: 2px 6px; border-radius: 6px; pointer-events: none; z-index: 7; }
+  .br-dayrail:hover .dr-cell .dr-label { display: block; }
+  .br-dayfloat { position: absolute; top: 8px; left: 12px; z-index: 6; display: none;
+    padding: 4px 10px; font-size: 12px; font-weight: 600; color: #fff;
+    background: rgba(29,155,240,.92); border-radius: 14px; pointer-events: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,.12); }
   /* 我的 X（个人页） */
   .me-profile { margin-bottom: 10px; }
   .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
@@ -916,9 +951,15 @@
   </div>
 
   <!-- 浏览（首页·关注流）视图 -->
-  <div class="view" id="view-browse">
-    <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
-    <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
+  <div id="view-browse-wrap">
+    <div class="view" id="view-browse">
+      <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
+      <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
+    </div>
+    <!-- D：右侧日期轴（不随内容滚动，吸在视口右侧） -->
+    <div id="br-dayrail" class="br-dayrail" title="日期轴：点击跳到那天"></div>
+    <!-- B：滚动时浮在左上角的当前日期 -->
+    <div id="br-dayfloat" class="br-dayfloat"></div>
   </div>
 
   <!-- 搜索视图 -->
@@ -2081,6 +2122,7 @@
   const tabsEl = $('tabs');
   const viewDownload = $('view-download');
   const viewBrowse = $('view-browse');
+  const viewBrowseWrap = $('view-browse-wrap');
   const viewHistory = $('view-history');
   const viewCache = $('view-cache');
   const viewSettings = $('view-settings');
@@ -2299,6 +2341,7 @@
     tabsEl.querySelectorAll('.tab').forEach((x) => x.classList.toggle('active', x.dataset.view === v));
     viewDownload.style.display = v === 'download' ? '' : 'none';
     viewBrowse.style.display = v === 'browse' ? '' : 'none';
+    if (viewBrowseWrap) viewBrowseWrap.style.display = v === 'browse' ? '' : 'none';
     viewHistory.style.display = v === 'history' ? '' : 'none';
     viewCache.style.display = v === 'cache' ? '' : 'none';
     viewSettings.style.display = v === 'settings' ? '' : 'none';
@@ -3326,6 +3369,7 @@
     const card = document.createElement('div');
     card.className = 'bm-card';
     card.dataset.tid = tid;
+    card.dataset.day = dayKeyOf(item.created_at);   // B/C/D：按天分组与折叠用
     card.innerHTML = `
       ${item.retweeted_by ? rtNoteHtml(item.retweeted_by) : ''}
       <div class="head">
@@ -3683,6 +3727,7 @@
       brSeenIds.add(String(id));
       brList.appendChild(renderBrowseCard(full));
     });
+    afterBrowseRender();
   }
 
   // ---- 浏览位置记忆：交给框架 feed()，记住上次看到的推文，重进时定位回去 ----
@@ -3766,6 +3811,10 @@
   let _lastAnchorAt = 0;
   function anchorTo(tid, offset) {
     if (!tid) return false;
+    // C：若锚点所在天被折叠（手动折叠），恢复前先展开，否则 scrollCardToTop 找不到卡片
+    const _anc = tweetCacheGet(tid);
+    const _ak = _anc ? dayKeyOf(_anc.created_at) : null;
+    if (_ak && isCollapsed(_ak)) { dayOverride.set(_ak, false); refreshDayModel(); }
     _lastAnchorAt = Date.now();
     holdBrRestoring(1300);
     if (XFEED) {
@@ -3861,6 +3910,151 @@
     }, 320);
   }
 
+  // ===== 首页浏览增强：A 虚拟滚动 / B 按天分组 / C 已读折叠 / D 右侧日期轴 =====
+  // A：卡片用 CSS content-visibility:auto 跳过离屏布局/绘制（见 .bm-card 样式），长列表只保留
+  //    真实滚动高度，彻底消除上千张卡同屏的卡顿；离屏内联视频在 onBrowseScrollUI 里自动暂停。
+  // B/C/D 全部建立在「卡片留在普通文档流 + data-day 标记天」之上，绝不改动锚点恢复管线
+  //    （scrollCardToTop 仍按 offsetParent 反推 scrollTop，分组/折叠只改可见性与插入分隔条）。
+
+  // 天键 / 标签（本地日期，与 X 的 created_at 一致）
+  function dayKeyOf(createdAt) {
+    if (!createdAt) return '';
+    const d = new Date(createdAt);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
+    return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+  function dayLabelOf(key) {
+    if (!key) return '';
+    const p = String(key).split('-');
+    const dt = new Date(+p[0], +p[1] - 1, +p[2]);
+    const wk = ['日', '一', '二', '三', '四', '五', '六'][dt.getDay()];
+    return `${+p[1]}月${+p[2]}日 · 周${wk}`;
+  }
+  // 折叠状态：dayOverride 存手动覆盖（true=折叠 / false=展开）；无覆盖时按锚点派生——
+  // 锚点所在天及更新的天=展开，更旧的天=已看=折叠。派生基线在每次整表渲染时刷新。
+  const dayOverride = new Map();
+  let anchorCollapseDay = null;
+  function isCollapsed(k) {
+    if (dayOverride.has(k)) return dayOverride.get(k);
+    return !!(anchorCollapseDay && k && k < anchorCollapseDay);
+  }
+  // 视口顶部可见卡片（用于折叠/展开后保位）
+  function topVisibleCard() {
+    const cont = viewBrowse; if (!cont || !brList) return null;
+    const cr = cont.getBoundingClientRect();
+    for (const c of brList.querySelectorAll('.bm-card')) {
+      if (c.style.display === 'none') continue;
+      const r = c.getBoundingClientRect();
+      if (r.bottom > cr.top + 4) return { tid: c.dataset.tid, offset: r.top - cr.top };
+    }
+    return null;
+  }
+  // 整表渲染后：刷新锚点派生基线 + 重建天模型
+  function afterBrowseRender() {
+    const a = getBrowseAnchor();
+    anchorCollapseDay = a ? dayKeyOf((tweetCacheGet(a) || {}).created_at) : null;
+    refreshDayModel();
+    updateDayFloat();
+  }
+  // 从当前 DOM 重建分组头/折叠条/右轴（不改卡片内容，可重复调用）
+  function refreshDayModel() {
+    if (!brList) return;
+    const cards = Array.from(brList.querySelectorAll('.bm-card'));
+    if (!cards.length) { buildDayRail(new Map(), new Map()); return; }
+    brList.querySelectorAll('.day-sep,.day-collapsed').forEach((e) => e.remove());
+    cards.forEach((c) => { c.style.display = ''; });   // 先全部还原，再按折叠隐藏
+    const dayFirst = new Map(), dayCount = new Map();
+    cards.forEach((c) => {
+      const k = c.dataset.day || ''; if (!k) return;
+      if (!dayFirst.has(k)) dayFirst.set(k, c);
+      dayCount.set(k, (dayCount.get(k) || 0) + 1);
+    });
+    const days = Array.from(dayFirst.keys()); // DOM 顺序即时间倒序（最新在前）
+    days.forEach((k) => {
+      const first = dayFirst.get(k);
+      if (isCollapsed(k)) {
+        const bar = document.createElement('div');
+        bar.className = 'day-collapsed'; bar.dataset.day = k;
+        bar.textContent = `${dayLabelOf(k)} · ${dayCount.get(k)} 条 · 展开`;
+        bar.addEventListener('click', () => toggleDayCollapse(k));
+        first.before(bar);
+      } else {
+        const sep = document.createElement('div');
+        sep.className = 'day-sep'; sep.dataset.day = k;
+        sep.innerHTML = `<span>${dayLabelOf(k)}</span><span class="cnt">${dayCount.get(k)} 条</span>`;
+        sep.addEventListener('click', () => toggleDayCollapse(k));
+        first.before(sep);
+      }
+    });
+    // 折叠天：隐藏其全部卡片（display:none 彻底卸载渲染，配合 content-visibility 等效析构）
+    days.forEach((k) => {
+      if (isCollapsed(k)) cards.forEach((c) => { if (c.dataset.day === k) c.style.display = 'none'; });
+    });
+    buildDayRail(dayFirst, dayCount);
+    updateDayFloat();
+  }
+  function toggleDayCollapse(k) {
+    if (!k) return;
+    dayOverride.set(k, !isCollapsed(k));
+    const tv = topVisibleCard();
+    refreshDayModel();
+    if (tv && tv.tid) scrollCardToTop(tv.tid, tv.offset || 0);
+    updateDayFloat();
+  }
+  function jumpToDay(k) {
+    if (!k) return;
+    if (isCollapsed(k)) dayOverride.set(k, false);
+    refreshDayModel();
+    const card = brList.querySelector(`.bm-card[data-day="${CSS.escape(k)}"]`);
+    if (card) scrollCardToTop(card.dataset.tid, 0);
+    updateDayFloat();
+  }
+  function buildDayRail(dayFirst, dayCount) {
+    const rail = $('br-dayrail'); if (!rail) return;
+    rail.innerHTML = '';
+    const days = Array.from(dayFirst.keys());
+    if (!days.length) return;
+    days.forEach((k) => {
+      const cell = document.createElement('div');
+      cell.className = 'dr-cell' + (isCollapsed(k) ? ' collapsed' : '');
+      cell.dataset.day = k;
+      cell.style.height = Math.max(6, Math.min(30, 5 + (dayCount.get(k) || 0) * 0.7)) + 'px';
+      cell.title = dayLabelOf(k);
+      cell.innerHTML = `<span class="dr-label">${dayLabelOf(k)} · ${dayCount.get(k)} 条</span>`;
+      cell.addEventListener('click', () => jumpToDay(k));
+      rail.appendChild(cell);
+    });
+  }
+  function currentDayKey() {
+    if (!brList || !viewBrowse) return null;
+    const cr = viewBrowse.getBoundingClientRect();
+    for (const el of brList.children) {
+      if (el.dataset && el.dataset.day) {
+        const r = el.getBoundingClientRect();
+        if (r.bottom > cr.top + 2) return el.dataset.day;
+      }
+    }
+    return null;
+  }
+  function updateDayFloat() {
+    const fl = $('br-dayfloat'); if (!fl) return;
+    const k = currentDayKey();
+    if (k) { fl.style.display = ''; fl.textContent = dayLabelOf(k); }
+    else fl.style.display = 'none';
+    const rail = $('br-dayrail');
+    if (rail) rail.querySelectorAll('.dr-cell').forEach((c) => c.classList.toggle('cur', c.dataset.day === k));
+  }
+  // 滚动轻量 UI 更新（节流）：浮动日期头 + 右轴高亮 + 离屏视频自动暂停（A 配套）
+  function onBrowseScrollUI() {
+    updateDayFloat();
+    if (_inlineVid && _inlineVid.v && !_inlineVid.v.paused && _inlineVid.el) {
+      const cr = viewBrowse.getBoundingClientRect();
+      const r = _inlineVid.el.getBoundingClientRect();
+      if (r.bottom < cr.top - 60 || r.top > cr.bottom + 60) stopInlineVideo(_inlineVid);
+    }
+  }
+
   // 打开即秒开：先渲染上次缓存、恢复到上次查看位置，随后后台静默拉取最新（见 loadBrowse 的 open 模式）。
   function openBrowse() {
     brOpenMode = true;
@@ -3943,6 +4137,7 @@
     });
     if (!inserted) return 0;
     brList.insertBefore(frag, brList.firstChild);
+    refreshDayModel();   // B/C/D：新推文可能带来新的一天，重建分组头/右轴
     let _reanchorThrottle = null;
     const reanchor = () => {
       // 用户已自己滚动就彻底停止程序化定位——本函数会被立即调用 + rAF + ResizeObserver
@@ -4247,6 +4442,7 @@
       }
       if (appendedTotal >= BATCH_TARGET) break;
     }
+    refreshDayModel();   // B/C/D：更旧批次可能带来新的一天，重建分组头/右轴
     if (appendedTotal && allItems.length) saveBrowseCache(allItems, true);
   }
 
@@ -5560,6 +5756,7 @@
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
         brScrollTimer = null;
+        onBrowseScrollUI();
         if (brLoading || !brCursor) return;
         const nearBottom = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 400;
         if (nearBottom) loadBrowse(false);
