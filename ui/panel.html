@@ -553,7 +553,7 @@
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
   .bm-card .bm-play, .quoted .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
-  .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #000; max-height: none; }
+  .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #f3f5f7; max-height: none; }
   /* 原地点播中：解除 .media video 的 max-height:70vh（line 61）。
      该限制会覆盖 JS 钉死的像素高度，把 video 压得比封面小（「缩小一圈」）。
      容器高度已由 JS 冻结为封面高度（或 loadedmetadata 后贴合视频真实比例），无需再限高。 */
@@ -1969,30 +1969,31 @@
     if (_inlineVid && _inlineVid.el === rec.el) _inlineVid = null;
   }
   // 让内联视频播放器贴合视频真实宽高比（消除 object-fit:contain 的黑边）。
-  // 原则：视频多大播放窗口就多大，不强制撑满容器宽度。
+  // 策略：容器宽度保持 100% 不变（不破坏卡片布局），video 按真实尺寸渲染，
+  // 利用容器已有的 flex 居中——竖屏视频居中显示，两侧为卡片背景色（非黑边）。
   function fitVideoToNaturalSize(v, container) {
     const vw = v.videoWidth, vh = v.videoHeight;
     if (!vw || !vh || !container) return;
-    // 可用宽度：取容器父元素的实测宽度（卡片内容区），上限 600px 防竖屏过宽
     const parent = container.parentElement;
-    const maxW = parent ? Math.min(parent.clientWidth - 2, 600) : 500;
-    const maxH = window.innerHeight * 0.8;   // 不超过视口 80%
+    const maxW = parent ? parent.clientWidth - 4 : 500;   // 容器内可用宽度
+    const maxH = window.innerHeight * 0.8;
     let dw, dh;
     if (vh >= vw) {
-      // 竖屏/方屏：以高度为基准算宽度（避免横撑满宽后两侧黑边）
+      // 竖屏/方屏：以高度为基准算宽度（video 不会撑满容器宽，自然居中）
       dh = Math.min(vh, maxH);
       dw = Math.round(dh * vw / vh);
       if (dw > maxW) { dw = maxW; dh = Math.round(dw * vh / vw); }
     } else {
-      // 横屏：以宽度为基准算高度
+      // 横屏：以宽度为基准算高度（撑满或接近容器宽）
       dw = Math.min(vw, maxW);
       dh = Math.round(dw * vh / vw);
       if (dh > maxH) { dh = maxH; dw = Math.round(dh * vw / vh); }
     }
-    // 容器同步收缩到视频尺寸（原冻结高度是封面尺寸，可能远大于/小于视频实际）
-    container.style.width = dw + 'px';
+    // 容器：宽度不变（保持 100% 填满卡片），高度适配视频
+    container.style.width = '';
     container.style.height = dh + 'px';
-    v.style.cssText = `width:${dw}px;height:${dh}px;display:block;background:#000`;
+    // video：固定为真实比例尺寸，flex 容器自动居中
+    v.style.cssText = `width:${dw}px;height:${dh}px;display:block;background:#000;flex-shrink:0`;
   }
 
   function playInlineVideo(mediaEl, mp4, m3u8) {
