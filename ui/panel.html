@@ -415,6 +415,8 @@
   /* 内容列限宽并居中（同 X：timeline 是固定宽度的中间列，不是铺满整屏）。
      窗口很宽时卡片不再被拉成 1300+px，图两侧自然留白，避免"贴满"的压迫感。 */
   .bm-list { display: flex; flex-direction: column; gap: 10px; max-width: 1000px; margin: 0 auto; }
+  /* 搜索视图窗口化占位：撑出未渲染批次的滚动高度，纯本地、零渲染开销 */
+  .srch-ph-fill { width: 100%; flex-shrink: 0; }
   .bm-empty { color: #8899a6; font-size: 13px; text-align: center; padding: 24px 0; }
   .bm-card { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 10px 12px; }
   .bm-card .head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
@@ -5533,12 +5535,105 @@
     return { items: d.items || [], next_cursor: d.next_cursor || null };
   }
 
+  // 搜索视图窗口化（避免一次性创建上千张卡片把手机端卡死）：
+  // 只渲染「覆盖当前视口 + 缓冲」的批次，剩余用占位 div 撑出滚动高度；
+  // 滚到底部附近时 srchAutoFill 纯本地续挂载下一批，不重建整页、不碰网络。
+  const SRCH_RENDER_MIN = 40;   // 单次最少渲染条数（首次/续挂载批次）
+  const SRCH_BUF = 1400;        // 视口下方预渲染缓冲(px)，覆盖图片加载引起的高度抖动
+  const _srchEstH = 340;        // 估算行高(px)，仅用于占位撑高，略偏不影响功能
+  let _srchRendered = 0;        // 已真实渲染到 DOM 的条数
+  let _srchFill = null;         // 底部占位元素（撑出未渲染部分的滚动高度）
+
+  // 按当前滚动位置算需要渲染到的索引：始终覆盖视口 + 缓冲，
+  // 因此无论首打开还是「整体重渲染」都只建少量 DOM 且滚动位置不跳。
+  function srchRenderLimit() {
+    const cont = viewSearch;
+    if (!cont) return SRCH_RENDER_MIN;
+    const vh = cont.clientHeight || 800;
+    const need = Math.ceil((cont.scrollTop + vh + SRCH_BUF) / _srchEstH);
+    return Math.max(SRCH_RENDER_MIN, need);
+  }
+  function _srchSyncFill(total) {
+    if (_srchRendered < total) {
+      if (!_srchFill) { _srchFill = document.createElement('div'); _srchFill.className = 'srch-ph-fill'; srchList.appendChild(_srchFill); }
+      _srchFill.style.height = ((total - _srchRendered) * _srchEstH) + 'px';
+    } else if (_srchFill) { _srchFill.remove(); _srchFill = null; }
+  }
+  // 渲染单卡（抽取自 renderSrchProduct）。return null 表示被过滤/去重跳过。
+  function _srchMakeCard(it, seenText, filtering, delayIdx) {
+    const id = it.tweet_id || it.id;
+    if (!id || srchSeenIds.has(String(id))) return null;
+    srchSeenIds.add(String(id));
+    const full = tweetCacheGet(id) || it;
+    if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return null; }
+    const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
+    const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
+    if (!needFetch && srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
+    card.classList.add('card-enter');
+    card.style.animationDelay = Math.min(delayIdx * 18, 600) + 'ms';
+    srchList.appendChild(card);
+    if (needFetch) { _srchFetching.add(String(id)); fetchSearchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null); }
+    return card;
+  }
+  // 本地续挂载下一批（纯本地，不碰网络）：插到占位前，缩小占位高度
+  function srchRenderMore() {
+    const arr = srchAllItems;
+    if (!arr || _srchRendered >= arr.length) return;
+    const next = arr.slice(_srchRendered, _srchRendered + SRCH_RENDER_MIN);
+    const seenText = new Set();
+    const filtering = filterActive();
+    const anchor = _srchFill;
+    next.forEach((it) => {
+      const card = _srchMakeCard(it, seenText, filtering, 0);
+      if (card && anchor) srchList.insertBefore(card, anchor);
+    });
+    _srchRendered += next.length;
+    _srchSyncFill(arr.length);
+  }
+
   // 渲染当前 product 的那一份缓存（热门/最新），不触发网络
-  /* ---- 搜索过滤：屏蔽广告 / 批量注册机器人账号 ----
-     配置存 XSTATE（lww，跨设备同步）。
-     注意：结果数组（srchTopItems 等）只含 {tweet_id, created_at} 轻量成员，完整正文在
-     全局单缓存 XTWEETS 里，所以过滤必须在 tweetCacheGet() 回查出 full 之后做。 */
-  const SRCH_FILTER_KEY = 'x:filter:cfg';
+  // 窗口化：只渲染覆盖视口 + 缓冲的批次，剩余用占位撑高（见上方 SRCH_* 说明）。
+  function renderSrchProduct() {
+    const c = srchCur();
+    const arr = curArr();
+    srchSeenIds = new Set();   // 去重集合在渲染过程中逐个加入，不要预先塞满（否则全部被跳过）
+    _srchFetching.clear();     // 每轮渲染重新尝试补全（XTWEETS 可能已补齐该推文）
+    srchCursor = curCursorGet();
+    srchList.innerHTML = '';
+    _srchFill = null;
+    if (!arr.length) {
+      if (srchActiveKey === ALL_KEY) {
+        const loading = srchKwList.some((e) => {
+          const cc = srchCache.get(e.key);
+          return !!(cc && cc.loading);
+        });
+        srchList.innerHTML = loading ? '<div class="bm-empty">正在搜索…</div>'
+          : '<div class="bm-empty">还没有结果，添加关键词后会把它们合成一条流。</div>';
+      } else {
+        srchList.innerHTML = (c && c.err)
+          ? `<div class="bm-empty err">获取失败: ${esc2(c.err)}</div>`
+          : '<div class="bm-empty">该模式暂无缓存，点关键词上的重搜按钮获取。</div>';
+      }
+      updateFilterBadge();
+      return;
+    }
+    // 融合视图的顺序已排好（热门＝择优归并、最新＝时间倒序），单词视图沿用时间倒序
+    const ordered = (srchActiveKey === ALL_KEY) ? arr.slice() : sortItemsByTime(arr);
+    srchAllItems = ordered.slice();   // 存有序版本，续挂载/srchAutoFill 直接复用
+    let i = 0;
+    const seenText = new Set();          // 正文去重集合（仅本轮渲染内有效）
+    _fltHidden = 0;
+    const filtering = filterActive();
+    const limit = srchRenderLimit();
+    ordered.slice(0, limit).forEach((it) => {
+      const card = _srchMakeCard(it, seenText, filtering, i);
+      if (card) i++;
+    });
+    _srchRendered = Math.min(limit, ordered.length);
+    _srchSyncFill(ordered.length);
+    srchLoadmore.style.display = 'none';
+    updateFilterBadge();
+  }
   const SRCH_FILTER_DEF = {
     keywords: [], users: [], regex: false, dedupe: true,
     noAvatar: false, minLikes: 0, minFollowers: 0, maxRatio: 0,
@@ -5881,6 +5976,15 @@
     if (!cont) return;
     const nearBottom = cont.scrollTop + cont.clientHeight >= cont.scrollHeight - 400;
     const tooShort = cont.scrollHeight <= cont.clientHeight + 8;
+    // 本地缓存还有未渲染的批 → 纯本地续挂载（不碰网络、不卡死）：
+    // 只要「已渲染区域底部」还没覆盖到视口底部 + 缓冲，就补下一批——
+    // 既支持滚到底自动续载，也支持 restoreSearchScroll 恢复位置到中后部时补出视口内容。
+    const total = srchAllItems ? srchAllItems.length : 0;
+    const renderedBottom = _srchRendered * _srchEstH;
+    if (_srchRendered < total && renderedBottom < cont.scrollTop + cont.clientHeight + SRCH_BUF) {
+      srchRenderMore();
+      return;
+    }
     if (srchActiveKey === ALL_KEY) {
       // 融合视图的翻页进度分散在各关键词上，不能用单一游标判断
       if (srchMergedLoading || !mergedHasMore()) return;
@@ -6350,6 +6454,9 @@
     updateSrchBottom();
     srchUserScrolled = false;   // 打开即尝试恢复上次的位置（与首页续读一致）
     restoreSearchScroll();
+    // 恢复位置可能落在中后部，而 renderSrchProduct 只渲染了视口±缓冲的批次：
+    // 补一次续挂载，把恢复位置所在区域的卡片渲染出来（纯本地，不卡）。
+    setTimeout(srchAutoFill, 60);
   }
 
   // 输入框回车 / 点「＋ 添加」：加入清单并立即抓取（新词本来就没有缓存）
