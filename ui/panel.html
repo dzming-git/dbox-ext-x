@@ -626,7 +626,8 @@
      停靠左侧还是右侧由设置项 ui_arc_side 决定（.side-right / .side-left，默认右）。 */
   .br-arc { position: absolute; top: 50%; transform: translateY(-50%);
     width: 96px; height: 470px; z-index: 7; touch-action: none; perspective: 720px;
-    user-select: none; -webkit-user-select: none; overflow: visible; cursor: ns-resize; }
+    user-select: none; -webkit-user-select: none; overflow: visible; cursor: ns-resize;
+    transition: height .2s ease; }
   .br-arc.side-right { right: 0; }
   .br-arc.side-left { left: 0; }
   .br-arc .arc-item { position: absolute; top: 50%;
@@ -636,7 +637,8 @@
     box-shadow: 0 2px 9px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto;
     backface-visibility: hidden; will-change: transform, opacity;
     transition: transform .26s cubic-bezier(.22,.61,.36,1), opacity .26s ease,
-      color .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease; }
+      color .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease,
+      border-radius .26s ease, width .26s ease, height .26s ease, padding .26s ease; }
   /* 日期标签贴住停靠的那一侧：靠右停靠则右对齐，靠左停靠则左对齐 */
   .br-arc.side-right .arc-item { right: 6px; }
   .br-arc.side-left .arc-item { left: 6px; }
@@ -675,6 +677,25 @@
     .br-arc-fab { display: flex; }
   }
   .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由右侧圆弧时间轴(D)表达 */
+  /* 桌面端：默认收起为边缘悬浮的圆形图标；hover 展开、离开收起 */
+  @media (min-width: 761px) {
+    .br-arc.collapsed { width: 48px; height: auto; }
+    .br-arc.collapsed .arc-item:not(.sel) { pointer-events: none; }
+    /* 收起态：选中天化身边缘悬浮圆形图标，半露在屏幕右侧外，不遮挡内容图片 */
+    .br-arc.collapsed .arc-item.sel {
+      right: -14px;                 /* 推到边缘外，只露大半在屏内 */
+      width: 44px; height: 44px;
+      padding: 0; margin: 0;
+      border-radius: 50%;           /* 圆形；想要方角改 12px 即可 */
+      display: flex; align-items: center; justify-content: center;
+      flex-direction: column; gap: 0;
+      font-size: 0; line-height: 1;
+      box-shadow: 0 0 12px rgba(29,155,240,.6);
+      overflow: hidden;
+    }
+    .br-arc.collapsed .arc-item.sel .arc-y { display: none; }   /* 圆里只显「日」 */
+    .br-arc.collapsed .arc-item.sel .arc-d { font-size: 16px; font-weight: 700; }
+  }
   /* 我的 X（个人页） */
   .me-profile { margin-bottom: 10px; }
   .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
@@ -4979,6 +5000,7 @@
   let _knobIdx = 0;
   let _knobLock = false, _knobLockT = null;   // 滚轮/拖动触发跳转期间抑制「列表滚动回写」抢走选中天
   let _knobUserTill = 0;   // 用户主动操作轮盘后的「控制截止时间」，期间 updateKnobToCurrent 不回写
+  let _arcCollapsed = false;   // 桌面端罗盘是否处于收起态（仅显示当前天）
   const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
   // 罗盘停靠侧（right|left），由设置项 ui_arc_side 驱动：既决定 CSS 停靠在哪边，
   // 也决定弓形朝哪边内收（换边不翻转的话，弧线会朝屏幕外鼓出去）。
@@ -5032,6 +5054,16 @@
       // 手机端呼出按钮
       const fab = $('br-arc-fab');
       if (fab) fab.addEventListener('click', () => arc.classList.toggle('open'));
+      // 桌面端：默认收起（仅显示当前天小胶囊），hover 展开、离开收起；滚轮/拖动在展开期间照常可用
+      if (window.matchMedia && window.matchMedia('(min-width: 761px)').matches) {
+        _arcCollapsed = true; arc.classList.add('collapsed');
+        arc.addEventListener('mouseenter', () => {
+          if (_arcCollapsed) { _arcCollapsed = false; arc.classList.remove('collapsed'); renderArc(); }
+        });
+        arc.addEventListener('mouseleave', () => {
+          if (!_arcCollapsed) { _arcCollapsed = true; arc.classList.add('collapsed'); renderArc(); }
+        });
+      }
     }
     let ci = _knobDays.indexOf(prevDay);
     if (ci < 0) ci = _knobDays.indexOf(currentDayKey());
@@ -5069,24 +5101,37 @@
     // ⚠️ 缓存键必须带上「选中/非选中」状态：元素池按索引复用，滚一格后原本以非选中
     // 身份显示过某天的元素会变成选中项——若只按天键判定，会误判「内容没变」而跳过
     // 两行式重建，选中大胶囊里残留单行文本（表现为选中项一会儿是两行一会儿是单行）。
-    const ck = k + (sel ? '|sel' : '|n');
+    // 同时带 |c/|e：收起态(圆图标只显「日」)与展开态(年+月日周)文本不同，切换必须重建。
+    const ck = k + (sel ? '|sel' : '|n') + (_arcCollapsed ? '|c' : '|e');
     if (sel) {
-      // 选中天：上行年份、下行「月日 · 周」
-      if (el.dataset.k !== ck) {
-        el.dataset.k = ck; el.dataset.t = '';
-        el.textContent = '';
-        const y = document.createElement('span');
-        y.className = 'arc-y'; y.textContent = pp[0] + '年';
-        const d = document.createElement('span');
-        d.className = 'arc-d'; d.textContent = dayLabelOf(k);
-        el.appendChild(y); el.appendChild(d);
-        // 跨到另一年：让年份动一下
-        if (_arcYear && _arcYear !== pp[0]) {
-          el.classList.remove('year-changed');
-          void el.offsetWidth;                 // 强制重排，动画才能重新触发
-          el.classList.add('year-changed');
+      if (_arcCollapsed) {
+        // 收起态：选中天化身边缘悬浮的圆形图标，圈内只显示「日」
+        const dayNum = String(+pp[2]);
+        if (el.dataset.k !== ck) {
+          el.dataset.k = ck; el.dataset.t = '';
+          el.textContent = '';
+          const d = document.createElement('span');
+          d.className = 'arc-d'; d.textContent = dayNum;
+          el.appendChild(d);
         }
-        _arcYear = pp[0];
+      } else {
+        // 展开态：选中天上行年份、下行「月日 · 周」
+        if (el.dataset.k !== ck) {
+          el.dataset.k = ck; el.dataset.t = '';
+          el.textContent = '';
+          const y = document.createElement('span');
+          y.className = 'arc-y'; y.textContent = pp[0] + '年';
+          const d = document.createElement('span');
+          d.className = 'arc-d'; d.textContent = dayLabelOf(k);
+          el.appendChild(y); el.appendChild(d);
+          // 跨到另一年：让年份动一下
+          if (_arcYear && _arcYear !== pp[0]) {
+            el.classList.remove('year-changed');
+            void el.offsetWidth;                 // 强制重排，动画才能重新触发
+            el.classList.add('year-changed');
+          }
+          _arcYear = pp[0];
+        }
       }
     } else {
       // 非选中项一律带两位年份（如 23/2/13、22/10/19）。此前是「与选中天不同年才补」，
@@ -5098,8 +5143,16 @@
         el.textContent = txt;
       }
     }
-    el.style.opacity = (1 - t * 0.78).toFixed(3);
-    el.style.transform = arcTransform(j, t);
+    if (_arcCollapsed) {
+      // 收起态：选中项显示、其他项聚拢到中心缩小并透明，展开时从中散开淡入
+      el.style.opacity = sel ? '1' : '0';
+      el.style.transform = sel
+        ? 'translate(0,calc(-50% + 0px)) scale(1)'
+        : 'translate(0,calc(-50% + 0px)) scale(0.4)';
+    } else {
+      el.style.opacity = (1 - t * 0.78).toFixed(3);
+      el.style.transform = arcTransform(j, t);
+    }
   }
   function renderArc() {
     const arc = $('br-arc'); if (!arc) return;
