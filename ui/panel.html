@@ -5648,19 +5648,14 @@
     if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return null; }
     const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
     const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
-    // 检测 X SearchTimeline 缺陷：返回结果文本不含任何关键词但有条目是对话的一部分
-    // （有 in_reply_to 或被其他条目引用为父帖），则触发「回复补拉」尝试在对话线程中
-    // 找到真正命中的那条回复并替换卡片。
+    // 检测 X SearchTimeline 缺陷：关键词命中回复时 API 有时返回对话主帖（原推）而非
+    // 含关键词的回复本身。只要文本不含任一当前活跃关键词就触发「回复补拉」：
+    // 异步拉取 TweetDetail 获取对话线程，从中找文本含关键词的回复并替换卡片。
+    // 不再限制 isConversationRoot——因为 API 返回的原推往往不是回复（in_reply_to 为空）、
+    // 且搜索结果里也不一定同时返回了该原推的评论，导致此前检测条件永远不满足。
+    // 代价：极少数 X 因相关性返回的不含关键词的结果也会触发一次额外请求（可接受）。
     if (!needFetch && full.text != null && !_srchTextHasKeyword(full.text)) {
-      const isConversationRoot = (full.in_reply_to && full.in_reply_to.tweet_id)
-        || srchAllItems.some((oi) => {
-            const irt = (oi.full || oi).in_reply_to;
-            return irt && String(irt.tweet_id || '') === String(id);
-          });
-      if (isConversationRoot) {
-        card.dataset.maybeRoot = '1';
-        fetchSearchReplyMatch(id, card, srchActiveKey === ALL_KEY ? (it.kw || null) : null);
-      }
+      fetchSearchReplyMatch(id, card, srchActiveKey === ALL_KEY ? (it.kw || null) : null);
     }
     if (!needFetch && srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
     card.classList.add('card-enter');
