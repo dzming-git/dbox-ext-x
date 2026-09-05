@@ -2011,17 +2011,23 @@
     mediaEl.classList.add('playing');
     const v = document.createElement('video');
     v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false; v.preload = 'metadata';
-    // 初始占位：先用封面尺寸防止塌陷，loadedmetadata 后会由 fitVideoToNaturalSize 覆盖为真实比例
+    // 初始占位：先用封面尺寸防止塌陷，loadedmetadata 后会由 fitVideoToNaturalSize 覆盖为真实比例。
+    // 背景用浅灰 + 透明：避免「满宽黑框闪一下」再缩成正常尺寸的观感；metadata 就绪后 fit 并淡入。
     const _vh = Math.round(_rect.height);
-    v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#000;display:block`;
+    v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#f3f5f7;opacity:0;display:block;transition:opacity .12s`;
     const close = document.createElement('button');
     close.className = 'bm-vclose'; close.innerHTML = icon('xi-close');
     close.addEventListener('click', (e) => { e.stopPropagation(); stopInlineVideo(_inlineVid); });
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
     mediaEl.appendChild(close);
-    // 统一在 loadedmetadata 时贴合视频真实尺寸（消除黑边）
-    const onMeta = () => { if (v.videoWidth && v.videoHeight) fitVideoToNaturalSize(v, mediaEl); };
+    // 统一在 loadedmetadata 时贴合视频真实尺寸（消除黑边）并淡入，消除黑框闪烁
+    const onMeta = () => {
+      if (v.videoWidth && v.videoHeight) {
+        fitVideoToNaturalSize(v, mediaEl);
+        v.style.opacity = '1';
+      }
+    };
     v.addEventListener('loadedmetadata', onMeta);
     // 注意：不在这里调 v.play()——此时 src 尚未设置（下面才赋），调用必失败并被吞掉。
     // 各分支（HLS / mp4）在源就绪后各自触发 play。
