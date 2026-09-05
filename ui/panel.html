@@ -5453,7 +5453,7 @@
       }
       if (best < 0) break;
       const it = groups[best].items[cur[best]];
-      out.push({ tweet_id: it.tweet_id, created_at: it.created_at, kw: groups[best].kw });
+      out.push({ tweet_id: it.tweet_id, created_at: it.created_at, kw: groups[best].kw, full: it.full });
       cur[best]++;
     }
     return out;
@@ -5480,7 +5480,7 @@
       const c = srchCache.get(e.key);
       const arr = c ? (srchProduct === 'Top' ? (c.top || []) : (c.latest || [])) : [];
       const items = arr
-        .map((it) => ({ tweet_id: it.tweet_id || it.id, created_at: it.created_at }))
+        .map((it) => ({ tweet_id: it.tweet_id || it.id, created_at: it.created_at, full: it }))
         .filter((x) => x.tweet_id);
       if (items.length) groups.push({ kw: e.q, items });
     });
@@ -5489,7 +5489,7 @@
     } else {
       const all = [];
       groups.forEach((g) => g.items.forEach((it) => {
-        all.push({ tweet_id: it.tweet_id, created_at: it.created_at, kw: g.kw });
+        all.push({ tweet_id: it.tweet_id, created_at: it.created_at, kw: g.kw, full: it.full });
       }));
       srchMerged = dedupeById(sortItemsByTime(all));
     }
@@ -5569,7 +5569,7 @@
     const id = it.tweet_id || it.id;
     if (!id || srchSeenIds.has(String(id))) return null;
     srchSeenIds.add(String(id));
-    const full = tweetCacheGet(id) || it;
+    const full = (it && it.full) || tweetCacheGet(id) || it;
     if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return null; }
     const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
     const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
@@ -5797,11 +5797,12 @@
         fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
         fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
       ]);
-      // 内容只登记进全局单缓存 XTWEETS；本视图只保留成员 id + 排序（不重复存内容）
+      // 完整内容随各关键词缓存一起落库（不再只存成员 id）：刷新/切设备后融合流
+      // 直接用本地缓存渲染真实卡片，不再依赖会被覆盖/淘汰的共享 XTWEETS，避免满屏骨架。
       tweetCachePut((topD && topD.items) || []);
       tweetCachePut((latestD && latestD.items) || []);
-      c.top = toMembership((topD && topD.items) || []);
-      c.latest = toMembership((latestD && latestD.items) || []);
+      c.top = mergeTweets((topD && topD.items) || []);
+      c.latest = mergeTweets((latestD && latestD.items) || []);
       c.cursorTop = (topD && topD.next_cursor) || null;
       c.cursorLatest = (latestD && latestD.next_cursor) || null;
       c.ts = Date.now();
@@ -5893,7 +5894,7 @@
           const full = tweetCacheGet(id) || it;
           // 过滤广告/机器人：命中即跳过，且不写入结果数组（避免把垃圾缓存下来）
           if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
-          targetArr.push({ tweet_id: id, created_at: it.created_at });
+          targetArr.push(it);   // 存完整推文：刷新后无需重新拉内容
           // 未缓存作者：渲染中性骨架，懒拉补全后由 fetchSearchCard 换真卡或移除（不闪 @unknown）
           const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
           const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
@@ -5986,7 +5987,7 @@
           const id = String(it.tweet_id || it.id || '');
           if (!id || seen.has(id)) return;
           seen.add(id);
-          arr.push({ tweet_id: id, created_at: it.created_at });
+          arr.push(it);   // 存完整推文：融合流刷新后直接可渲染
         });
         if (srchProduct === 'Top') r.c.cursorTop = r.d.next_cursor || null;
         else r.c.cursorLatest = r.d.next_cursor || null;
@@ -6400,11 +6401,11 @@
     try { await XSTATE.pull(); } catch (_) {}
     loadKwList();
     migrateLegacySearch();     // 旧版 search:last → 作为第一个关键词导入
-    // 每个关键词的缓存都读一遍：chip 上要显示条数与「最后更新」
-    srchKwList.forEach((e) => {
-      const c = loadKwCache(e.key);
-      if (c) tweetCachePut((c.top || []).concat(c.latest || []));  // 兼容旧版全量缓存，无害
-    });
+    // 每个关键词的缓存都读一遍：chip 上要显示条数与「最后更新」。
+    // 内容已随各关键词缓存完整落库（见 searchKeyword / loadMergedOlder），融合流渲染
+    // 直接用本地内容，无需再把桩注入共享 XTWEETS——旧版那条 tweetCachePut 会把
+    // 完整推文覆盖成只有 id 的空壳，导致刷新后满屏骨架、逐条重拉超时。
+    srchKwList.forEach((e) => { loadKwCache(e.key); });
     const wantQ = (opts.q || '').trim();
     if (wantQ) {
       const kk = kwKey(wantQ);
