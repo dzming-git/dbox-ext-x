@@ -1976,15 +1976,13 @@ def create_blueprint(host):
                         # 与前端 XTWEETS 同一份内容缓存：feed('tweets') 在 UserState 的键是 feed:tweets:items
                         _bg_state_put('feed:tweets:items', merged, strategy='union_by_id', cap=1500,
                                       auth=auth, device=device)
-                    members_top = [{'tweet_id': str(it.get('tweet_id')
-                                       if it.get('tweet_id') is not None else it.get('id')),
-                                   'created_at': it.get('created_at')} for it in (top_items or [])]
-                    members_latest = [{'tweet_id': str(it.get('tweet_id')
-                                         if it.get('tweet_id') is not None else it.get('id')),
-                                       'created_at': it.get('created_at')} for it in (latest_items or [])]
+                    # 关键词缓存存完整对象（与前台 searchKeyword 路径一致），而非仅存
+                    # {tweet_id, created_at} 轻量桩。桩会导致前端渲染时无 author/text → 创建骨架
+                    # 依赖 fetchSearchCard 懒拉；懒拉若失败/XTWEETS LRU 淘汰后 → 永久骨架。
+                    # 尤其删词触发重渲染时会批量暴露此问题（整屏骨架不填充）。
                     err = '' if (top_items or latest_items) else '未返回结果'
                     _bg_state_put('search:kw:' + kk,
-                                  {'q': q, 'top': members_top, 'latest': members_latest,
+                                  {'q': q, 'top': (top_items or []), 'latest': (latest_items or []),
                                    'cursorTop': top_cur, 'cursorLatest': latest_cur,
                                    'ts': int(time.time() * 1000), 'err': err},
                                   strategy='lww', auth=auth, device=device)
