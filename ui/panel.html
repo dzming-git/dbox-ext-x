@@ -6203,20 +6203,37 @@
         const r = await req(`${API}/status?resource_key=${encodeURIComponent(srchTaskKey)}`);
         const d = await r.json();
         if (!d.success) {
-          // 任务已不存在（被清/过期）：复位按钮，避免永久禁用
           stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
           return;
         }
-        // 改成 innerHTML 后必须转义动态值：percent 来自服务端，直接拼接等于开一个注入口子
+        const pct = parseInt(d.percent, 10) || 0;
         if (srchRefreshAllBtn) {
           srchRefreshAllBtn.disabled = true;
-          srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 ' + (parseInt(d.percent, 10) || 0) + '%';
+          // 进度旁加取消按钮：用户不想等可随时停（后台继续跑，不影响）
+          srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '重搜 ' + pct + '%'
+            + ' <button id="srch-cancel-btn" style="margin-left:6px;font-size:12px;padding:1px 6px;border:1px solid #ccc;border-radius:4px;background:none;cursor:pointer;color:#666" title="停止轮询（后台任务继续）">取消</button>';
+          const cancelBtn = document.getElementById('srch-cancel-btn');
+          if (cancelBtn) cancelBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
+            if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
+          }, { once: true });
+        }
+        // 增量渲染：后端每完成一个词就写入 UserState，不必等全部完成。
+        // 每次 tick 都 pull 最新状态 → 重载各词缓存 → 立即渲染已有结果。
+        // 这样 24 词重搜时，完成 2-3 个就能看到内容，不用干等全部跑完。
+        if (pct > 0) {
+          try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
+          srchKwList.forEach((e) => loadKwCache(e.key));
+          if (srchActiveKey === ALL_KEY) rebuildMerged();
+          if (srchActiveKey) { renderSrchProduct(); updateSrchBottom(); }
+          renderKwChips();
         }
         if (d.done) {
           stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
-          // 后端已把结果写进 UserState 缓存（search:kw:<key> + tweets feed），拉取最新后重渲染
+          // 最终确认：再拉一次确保不遗漏最后几个词
           try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
           srchKwList.forEach((e) => loadKwCache(e.key));
           if (srchActiveKey === ALL_KEY) rebuildMerged();
