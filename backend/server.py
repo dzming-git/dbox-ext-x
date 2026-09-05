@@ -1284,6 +1284,8 @@ def create_blueprint(host):
         'likes_enabled': False,
         'likes_interval_min': 720,
         'likes_pages': 2,
+        # ---- 界面（前端展示偏好，随账号跨设备同步）----
+        'ui_arc_side': 'right',   # 首页日期罗盘（圆弧时间轴）停靠侧：right|left
     }
     _settings = None
     _settings_lock = threading.Lock()
@@ -1328,6 +1330,10 @@ def create_blueprint(host):
                     d = _SETTINGS_DEFAULTS[k]
                     if isinstance(d, bool):
                         cfg[k] = bool(v)
+                    elif isinstance(d, str):
+                        # 字符串型设置（如 ui_arc_side）：此前只还原 bool 与数值，
+                        # 字符串键即便写进了 settings.json 也读不回来，一重启就掉回默认值。
+                        cfg[k] = str(v)
                     elif isinstance(v, (int, float)) and not isinstance(v, bool):
                         cfg[k] = int(v)
         except Exception:
@@ -1351,6 +1357,8 @@ def create_blueprint(host):
         for k in ('home_enabled', 'home_prefetch_media',
                   'bookmarks_enabled', 'likes_enabled'):
             c[k] = bool(c[k])
+        # 日期罗盘只允许左右两侧：手改文件、旧值、大小写差异一律回落右侧
+        c['ui_arc_side'] = 'left' if str(c.get('ui_arc_side', 'right')).strip().lower() == 'left' else 'right'
         return c
 
     def _settings_save(cfg):
@@ -1682,6 +1690,8 @@ def create_blueprint(host):
                     continue
                 if isinstance(_SETTINGS_DEFAULTS[k], bool):
                     cfg[k] = bool(v)
+                elif isinstance(_SETTINGS_DEFAULTS[k], str):
+                    cfg[k] = str(v)
                 elif isinstance(v, (int, float)) and not isinstance(v, bool):
                     cfg[k] = int(v)
         cfg = _settings_save(cfg)
