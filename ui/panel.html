@@ -4407,15 +4407,20 @@
     } catch (_) {}
     return null;
   }
-  // 取「本机最新」锚点：服务端快照与本机 localStorage 取 at 较大者。
+  // 取最新锚点：本机 localStorage 与服务端快照两份取写入时间(at)较新的一份。
+  // ⚠️ 绝不可无条件以本机为准：本机只要存过锚点就永远读不到其它设备的新位置，
+  // 跨设备续读等于失效（本机 at 由本机时钟写，另一台设备之后读过也永远不被采纳）。
+  // 单机刷新时本机 at 总是最新（滚动即写、且服务端那份本就是本机推的），
+  // 行为与「本机优先」一致，不会因此引入额外的重定位。
   function pickAnchor() {
-    // 本机续读位置为唯一权威：只要 localStorage 存了有效锚点就优先用，
-    // 彻底避免服务端锚点（被其它设备/会话卡住的 RIGHTSNEED 等）在 at 较新时抢占本机位置、
-    // 造成「刷新先跳旧锚点、再跳回」的两段式闪烁。本机为空才回落服务端（跨设备续读）。
     const la = loadLocalAnchor();
-    if (la && la.id) { return { id: la.id, offset: la.offset }; }
-    const sv = XFEED && XFEED.anchor && XFEED.anchor();
-    return (sv && sv.id) ? { id: String(sv.id), offset: typeof sv.offset === 'number' ? sv.offset : 0 } : null;
+    const sv = (XFEED && XFEED.anchor) ? XFEED.anchor() : null;
+    const cand = [];
+    if (la && la.id) cand.push({ id: String(la.id), offset: la.offset, at: Number(la.at) || 0 });
+    if (sv && sv.id) cand.push({ id: String(sv.id), offset: typeof sv.offset === 'number' ? sv.offset : 0, at: Number(sv.at) || 0 });
+    if (!cand.length) return null;
+    cand.sort((a, b) => b.at - a.at);   // at 较大者胜（均由各自设备 Date.now() 写入）
+    return cand[0];
   }
   // 恢复到上次浏览位置：交给框架 feed()（按 id 定位 + 卡内偏移，并带补偿重定位）。
   // 锚点卡片若尚未渲染（位置较深 / 跨设备刚同步、列表还在加载更旧推文）则短暂重试，
