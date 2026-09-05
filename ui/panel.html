@@ -14,6 +14,15 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #f7f8fa; color: #1f2329; }
+  /* 面板为浅色主题：统一给出 X 暗色变量在浅色下的取值。这些变量此前从未定义，
+     一律走回退值——var(--text,#e7e9ea) 是近乎白色，落在白底上（关注/粉丝卡片的
+     bio、统计数字）几乎看不见。这里定义浅色取值，一次性修好所有引用这些变量的元素。 */
+  :root {
+    --text: #1f2329;
+    --muted: #536471;
+    --border: #e3e6eb;
+    --accent: #1d9bf0;
+  }
 
   /* 用 100% 而非 100vh：面板跑在 iframe 里，100vh 取的是「iframe 视口」且形态切换（小窗↔全屏）
      时尺寸变化后不会可靠重算，导致内部 flex 容器高度错乱（需刷新才恢复）。100% 配合 html/body
@@ -291,8 +300,8 @@
   /* 视图需独立滚动：wrap 是 overflow:hidden 的 flex column，此视图占满剩余高度并滚动。
      注意：任何新增的 .view 都必须进这条规则，否则内容会溢出被裁掉且无法下滑
      （搜索/历史/缓存三个视图此前就漏在这里）。 */
-  #view-bookmarks, #view-browse, #view-search, #view-history, #view-cache,
-  #view-settings {
+  #view-download, #view-bookmarks, #view-browse, #view-search, #view-history,
+  #view-cache, #view-settings, #view-stars {
     flex: 1; overflow-y: auto; min-height: 0; padding: 12px;
   }
   .bm-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -549,6 +558,18 @@
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
   .bm-card .actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
   .bm-card .actions .dl:hover { background: #1a8cd8; }
+  /* 内容未就绪的占位卡（成员已在时间线上，正文/媒体待拉取）：保持位置，避免行模型缺行
+     导致锚点排名偏小、定位偏上。骨架高度由 JS 对齐行高估值，网络补齐后原位替换成真实卡。 */
+  .bm-card.bm-skeleton { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+  .bm-skel-line { height: 12px; border-radius: 6px; animation: bm-skel 1.4s ease infinite; }
+  .bm-skel-line.w40 { width: 40%; }
+  .bm-skel-line.w80 { width: 80%; }
+  .bm-skel-box { flex: 1; min-height: 120px; border-radius: 10px; animation: bm-skel 1.4s ease infinite; }
+  .bm-skel-line, .bm-skel-box {
+    background: linear-gradient(90deg, #eef0f4 25%, #f7f8fa 37%, #eef0f4 63%);
+    background-size: 400% 100%;
+  }
+  @keyframes bm-skel { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 
   .bm-card .actions button:disabled { opacity: .6; cursor: not-allowed; }
   .bm-card .loading, .bm-card .err { font-size: 13px; color: #8899a6; padding: 8px 0; }
@@ -592,11 +613,14 @@
     border: 1px dashed var(--border, #e3e6eb); border-radius: 10px; cursor: pointer;
     text-align: center; }
   .day-collapsed:hover { color: #1d9bf0; }
-  /* D：右侧 3D 圆柱滚轮时间轴（drum picker 范式：选中天在最近内容侧、绕圆柱后仰+缩小+淡出；滚轮/拖动切换；手机端可呼出） */
-  .br-arc { position: absolute; right: 0; top: 50%; transform: translateY(-50%);
+  /* D：3D 圆柱滚轮时间轴（drum picker 范式：选中天在最近内容侧、绕圆柱后仰+缩小+淡出；滚轮/拖动切换；手机端可呼出）
+     停靠左侧还是右侧由设置项 ui_arc_side 决定（.side-right / .side-left，默认右）。 */
+  .br-arc { position: absolute; top: 50%; transform: translateY(-50%);
     width: 96px; height: 470px; z-index: 7; touch-action: none; perspective: 720px;
     user-select: none; -webkit-user-select: none; overflow: visible; cursor: ns-resize; }
-  .br-arc .arc-item { position: absolute; right: 6px; top: 50%;
+  .br-arc.side-right { right: 0; }
+  .br-arc.side-left { left: 0; }
+  .br-arc .arc-item { position: absolute; top: 50%;
     transform-origin: 50% 50%; padding: 4px 13px; border-radius: 16px;
     font-size: 13px; line-height: 1.15; white-space: nowrap; color: #cfd9e0;
     background: rgba(21,32,43,.8); border: 1px solid rgba(255,255,255,.12);
@@ -604,10 +628,22 @@
     backface-visibility: hidden; will-change: transform, opacity;
     transition: transform .26s cubic-bezier(.22,.61,.36,1), opacity .26s ease,
       color .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease; }
+  /* 日期标签贴住停靠的那一侧：靠右停靠则右对齐，靠左停靠则左对齐 */
+  .br-arc.side-right .arc-item { right: 6px; }
+  .br-arc.side-left .arc-item { left: 6px; }
   .br-arc .arc-item.sel { color: #fff; background: #1d9bf0; border-color: #1d9bf0;
-    font-weight: 700; font-size: 15px; box-shadow: 0 0 18px rgba(29,155,240,.7); }
+    font-weight: 700; font-size: 15px; box-shadow: 0 0 18px rgba(29,155,240,.7);
+    /* 年份单独一行、日期一行（而非并排写）：并排会把选中项撑到约 145px，横向压住时间线内容 */
+    display: flex; flex-direction: column; gap: 1px; padding: 3px 12px; line-height: 1.12; }
+  .br-arc.side-right .arc-item.sel { align-items: flex-end; }   /* 两行都贴住停靠侧 */
+  .br-arc.side-left .arc-item.sel { align-items: flex-start; }
+  .br-arc .arc-item .arc-y { font-size: 10px; font-weight: 600; opacity: .82; letter-spacing: .06em; }
+  .br-arc .arc-item .arc-d { font-size: 15px; font-weight: 700; }
+  /* 翻过年份交界时让年份动一下：否则连着滚过 12/31→1/1 只看见月份归零，毫无提示 */
+  @keyframes arc-year-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: .82; transform: none; } }
+  .br-arc .arc-item.sel.year-changed .arc-y { animation: arc-year-in .34s cubic-bezier(.22,.61,.36,1); }
   /* 手机端呼出按钮：小巧半透明，hover/active 才加重，不抢空间 */
-  .br-arc-fab { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  .br-arc-fab { position: absolute; top: 50%; transform: translateY(-50%);
     width: 34px; height: 34px; border-radius: 50%; z-index: 7; display: none;
     align-items: center; justify-content: center; cursor: pointer; border: 1px solid rgba(29,155,240,.4);
     padding: 0; background: rgba(29,155,240,.16); color: #1d9bf0; opacity: .7;
@@ -617,8 +653,14 @@
   .br-arc-fab:hover, .br-arc-fab:active { background: rgba(29,155,240,.3); opacity: 1; }
   .br-arc-fab:active { transform: translateY(-50%) scale(.9); }
   .br-arc-fab svg { width: 18px; height: 18px; display: block; }
+  /* 手机端呼出按钮跟着罗盘停靠侧走 */
+  .br-arc-fab.side-right { right: 8px; }
+  .br-arc-fab.side-left { left: 8px; }
   @media (max-width: 760px) {
-    .br-arc { opacity: 0; transform: translateY(-50%) translateX(24px);
+    /* 收起时朝停靠侧的外侧滑出（靠右则右滑、靠左则左滑），免得从内容区横穿 */
+    .br-arc.side-right { opacity: 0; transform: translateY(-50%) translateX(24px);
+      pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
+    .br-arc.side-left { opacity: 0; transform: translateY(-50%) translateX(-24px);
       pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
     .br-arc.open { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
     .br-arc-fab { display: flex; }
@@ -923,6 +965,23 @@
     </div>
 
     <div class="ac-box">
+      <div class="ac-head"><span class="ac-title"><svg class="ico-svg"><use href="#xi-settings"/></svg>界面</span></div>
+      <div class="ac-desc">首页的日期罗盘（圆弧时间轴）默认停靠右侧，可改到左侧——左手操作更顺手，或让开右侧被内容占用的区域。</div>
+      <div class="ac-grid">
+        <label>日期罗盘位置
+          <select id="st-arc-side">
+            <option value="right">右侧</option>
+            <option value="left">左侧</option>
+          </select>
+        </label>
+      </div>
+      <div class="ac-foot">
+        <span></span>
+        <button id="st-arc-confirm" class="ac-confirm" disabled>确认</button>
+      </div>
+    </div>
+
+    <div class="ac-box">
       <div class="ac-head">
         <label class="ac-switch">
           <input type="checkbox" id="st-bm-en" /><span><svg class="ico-svg"><use href="#xi-bookmark"/></svg>书签后台同步</span>
@@ -1006,9 +1065,9 @@
       <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
       <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
     </div>
-    <!-- D：右侧圆弧时间轴（滚轮/拖动选日期，中心为选中天；手机端自动隐藏，可由按钮呼出） -->
-    <div id="br-arc" class="br-arc" title="日期时间轴：在上面滚动或上下拖动选择日期，中心为您所选的那一天"></div>
-    <button id="br-arc-fab" class="br-arc-fab" title="呼出日期时间轴" aria-label="呼出日期时间轴">
+    <!-- D：圆弧时间轴（滚轮/拖动选日期，中心为选中天；手机端自动隐藏，可由按钮呼出） -->
+    <div id="br-arc" class="br-arc side-right" title="日期时间轴：在上面滚动或上下拖动选择日期，中心为您所选的那一天"></div>
+    <button id="br-arc-fab" class="br-arc-fab side-right" title="呼出日期时间轴" aria-label="呼出日期时间轴">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 7h16M4 12h16M4 17h16"/>
         <circle cx="9" cy="7" r="1.8" fill="currentColor" stroke="none"/>
@@ -3210,6 +3269,8 @@
   // 空数组表示「未启用分块」（buildRows 此时展开全部天，回退到旧行为，永不白屏）。
   let _revealDays = [];
   let _allDays = [];
+  // 每天条数（最新→最旧，**含尚未展开的天**）：时间轮盘的候选目录数据源。
+  let _dayCounts = new Map();
   let _winBusy = false;
   let _rowOff = null;               // 行起始偏移前缀和（高度累加），长度 _rows.length+1；高度/行变化置 null 重建
   let _rowByKey = new Map();        // rowKey -> row 对象；renderRowsDOM 时按当前 _rows 重建，热路径用元素自身 phKey 查它（与索引顺序解耦，防 _rows/子节点错位导致整窗不挂载）
@@ -3225,7 +3286,22 @@
     return 'coll:' + row.day;
   }
   function _rowEst(row) { return _hEst[row.kind] || 340; }
-  function _rowHeight(row) { return _hReal.get(_rowKey(row)) || _rowEst(row); }
+  // 行模型里有内容吗？（轻量成员记录：只有 id+时间，内容尚未拉取）
+  // ⚠️ 锚点行例外：即使内容残缺也视为「有内容」，否则锚点卡无法挂载定位（刷新闪回顶部）。
+  let _anchorRowTid = null;   // 本轮行模型的锚点 tid（buildRows 时记录）
+  function _rowHasContent(row) {
+    if (!row || row.kind !== 'card') return true;
+    if (_anchorRowTid && row.tid === _anchorRowTid) return true;
+    const it = row.item || tweetCacheGet(row.tid);
+    return !!(it && _browseValid(it));
+  }
+  function _rowHeight(row) {
+    // 无内容的成员行高记 0 且不挂载：它们只是「占位排序定位」用的逻辑行，
+    // 渲染成骨架会永久转圈（实测 68 条壳条目永远等不到内容）。0 高度＝视觉上不存在，
+    // 与旧行为（直接不渲染）一致；行模型仍保留它们，锚点排名才正确。
+    if (row.kind === 'card' && !_rowHasContent(row)) return 0;
+    return _hReal.get(_rowKey(row)) || _rowEst(row);
+  }
   // 行起始偏移前缀和（高度累加表）；高度或行变化后置 null 重建。供 ensureMounted/窗口判定用
   function rowOffsets() {
     if (_rowOff && _rowOff.length === _rows.length + 1) return _rowOff;
@@ -3238,14 +3314,30 @@
     const id = it && (it.tweet_id || it.id); if (!id) return false;
     const a = (it.author) || {}; return !!a.screen_name;
   }
+  // 行模型准入：比「内容完整」更宽松——成员记录（只有 id + timeline_at，内容尚未拉取）
+  // 也必须参与行模型，否则预览阶段行集合不完整。
+  //   实测：members=544 / withContent=427 → 117 条因缺内容被 .filter(Boolean) 剔除，
+  //   锚点排名因此变成 1（正确应为 12）→ 首次定位偏上，网络补齐内容后锚点被推后，
+  //   画面猛跳约 3900px（719→4669）；且那批「补回来」的条目会突然出现在正在阅读的位置旁。
+  // 成员记录只用于占位排序定位，内容到达后由 rebuildBrowseList 整表重建替换成真实卡。
+  // ⚠️ 绝不可用它做 tweetCachePut 的过滤条件——那会把无 author 的轻量成员回灌全局内容缓存。
+  function _rowEligible(it) {
+    const id = it && (it.tweet_id || it.id); if (!id) return false;
+    if (_browseValid(it)) return true;
+    return !!(it.timeline_at || it.created_at);   // 轻量成员：有时间戳即可参与排序定位
+  }
   // 由全量数据构造有序行：每个天先放 sep 头，再放其卡片（时间倒序=日期倒序）
   function buildRows(items) {
     const la = loadLocalAnchor();
     const laSid = la && la.id ? String(la.id) : null;
+    _anchorRowTid = laSid;   // 供 _rowHasContent 例外：锚点行即使内容残缺也可挂载定位
     // 续读锚点即使内容残缺（@unknown 壳条目）也保留进行集合，否则 _rows 无它、
     // restore 查不到 DOM、预览定位失败、刷新先闪到顶部。网络返回后有效内容覆盖之。
     const seen = new Set(); const uniq = [];
-    sortItemsByTime((items || []).filter((it) => _browseValid(it) || (laSid && String(it.tweet_id || it.id) === laSid))).forEach((it) => {
+    // 改用 _rowEligible：缺内容的成员记录也保留进行模型（否则行集合不完整 → 锚点排名偏小 →
+    // 首次定位偏上，网络补齐后被推后产生大幅跳变）。它们会被渲染成骨架卡，内容到达后原位替换。
+    const _filtered = (items || []).filter((it) => _rowEligible(it) || (laSid && String(it.tweet_id || it.id) === laSid));
+    sortItemsByTime(_filtered).forEach((it) => {
       const id = String(it.tweet_id || it.id);
       if (seen.has(id)) return; seen.add(id);
       uniq.push(tweetCacheGet(id) || it);
@@ -3254,6 +3346,9 @@
     uniq.forEach((it) => { const k = dayKeyOf(timelineAt(it)); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(it); });
     const days = Array.from(byDay.keys()).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
     _allDays = days;   // 记住全部天（滑动续展下一天用）
+    // 在按天分块过滤**之前**统计每天的条数：轮盘要列出所有已缓存的天，
+    // 若只按已展开的天统计，轮盘里就只剩一两天。
+    _dayCounts = new Map(days.map((k) => [k, byDay.get(k).length]));
     const revealSet = (_revealDays && _revealDays.length) ? new Set(_revealDays) : null;  // null=展开全部（旧行为/兜底）
     const rows = [];
     days.forEach((k) => {
@@ -3311,8 +3406,13 @@
     let el = _cardCache.get(k);
     if (el) return el;
     if (row.kind === 'card') {
-      const it = row.item || tweetCacheGet(row.tid);
-      el = renderBrowseCard(it || { tweet_id: row.tid });
+      // 优先取「内容缓存里的完整内容」：row.item 可能是预览阶段留下的轻量成员记录，
+      // 若直接用它，网络补齐内容后这张卡会一直是骨架（成员记录永不升级）。
+      const _c = tweetCacheGet(row.tid);
+      const it = (_c && _browseValid(_c)) ? _c : (row.item || _c || { tweet_id: row.tid });
+      // 内容尚未拉取（轻量成员记录）→ 渲染骨架卡占位，保持它在行模型里的位置；
+      // 网络返回后 rebuildBrowseList 整表重建，此处会取到完整内容并渲染成真实卡。
+      el = _browseValid(it) ? renderBrowseCard(it) : makeBrowseSkeleton(it);
     } else if (row.kind === 'sep') {
       el = document.createElement('div');
       el.className = 'day-sep'; el.dataset.day = row.day;
@@ -3385,7 +3485,7 @@
       for (let i = 0; i < kids.length; i++) {
         const d = dec[i];
         if (!d.row && d.isPh) continue;
-        if (d.isPh) { if (d.inWin) { _mountRowEl(d.el, d.key, d.row); _dirty = true; } }
+        if (d.isPh) { if (d.inWin && _rowHasContent(d.row)) { _mountRowEl(d.el, d.key, d.row); _dirty = true; } }
         else { _hReal.set(d.key, Math.max(_rowEst(d.row), d.h)); if (!d.inWin) { _unmountRowEl(d.el, d.key, d.row); _dirty = true; } }
       }
       // 挂载/卸载改变了布局高度，下一帧再跑一次把新露出的窗区填满（收敛后 _dirty=false 自然停止）
@@ -3726,6 +3826,7 @@
   window.addEventListener('resize', relayoutAllJustified);
 
   // 给某个卡片区块内的媒体缩略图绑定交互：点图进灯箱、点视频原地点播
+
   function wireMediaBlock(blockEl, mediaList) {
     if (!blockEl) return;
     const lbItems = (mediaList || []).filter((m) => m.type !== 'video' && (m.url || m.cover))
@@ -3797,6 +3898,19 @@
         <div class="q-text">${linkifyMentions(q && q.text)}</div>
         ${cardMediaInner((q && q.media) || [])}
       </div>`;
+  }
+
+  // 内容未就绪的卡片占位：成员已在时间线上（有 id + 时间），但正文/媒体尚未拉取。
+  // 高度对齐行高估值 _hEst.card，使预览阶段的定位与虚拟滚动的估算一致，
+  // 避免骨架过矮导致上方累计高度失真、内容补齐后位置漂移。
+  function makeBrowseSkeleton(item) {
+    const el = document.createElement('div');
+    el.className = 'bm-card bm-skeleton';
+    el.dataset.tid = String((item && (item.tweet_id || item.id)) || '');
+    el.dataset.day = dayKeyOf(timelineAt(item));
+    el.style.minHeight = ((_hEst && _hEst.card) || 340) + 'px';
+    el.innerHTML = '<div class="bm-skel-line w40"></div><div class="bm-skel-line w80"></div><div class="bm-skel-box"></div>';
+    return el;
   }
 
   // 浏览卡片：缩略图/作者点击直接跳原推文或作者 profile，actions 是 [⭐ 收藏] [⬇ 下载]
@@ -4142,7 +4256,10 @@
       // 本 feed 只存成员 id；内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
       const ids = XFEED ? XFEED.items() : [];
       if (!ids.length) return false;
-      const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id)).filter(Boolean);
+      // 缺内容的成员不能丢：实测 members=544 中仅 427 条有内容，丢掉另外 117 条会让
+      // 行模型不完整、锚点排名偏小（1 而非 12）→ 首次定位偏上，网络补齐后猛跳约 3900px。
+      // 改为回退到成员记录本身（带 timeline_at，可正确排序定位）。
+      const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id) || it);
       // 续读锚点可能本地内容残缺（@unknown 壳条目被清洗、预览阶段未就绪）导致被上面的
       // tweetCacheGet 过滤、不在 list 里，于是预览无法渲染该卡、定位失败、刷新先闪到顶部。
       // 这里把锚点的「成员记录」强制补回（带 timeline_at、不过滤作者），让预览也能展开到
@@ -4172,7 +4289,13 @@
   // （即「深度滚动后刷新，位置被强制刷到最新」）。
   // 完整列表的正确处理是整表按时间重建，再由调用方定位到锚点。
   function rebuildBrowseList(items) {
-    const list = mergeTweets(items || []);
+    // 重建前取基准：续读锚点 {id, offset}。重建后把锚点卡按回 offset 位置——
+    // 上方内容补齐/图片加载引起的整体推移被吸收在视口之外，阅读位置视觉零位移。
+    const _sa = buildScrollAnchorRef();
+    // 轻量成员记录（无 author）不并入 TWEET_STORE：它只需 id + 时间参与行模型定位，
+    // 入库会污染总库（残缺条目可能被其它视图渲染成 @unknown）。故只合并有内容的那部分。
+    const list = mergeTweets((items || []).filter(_browseValid))
+      .concat((items || []).filter((it) => !_browseValid(it) && _rowEligible(it)));
     const la = loadLocalAnchor();
     const laSid = la && la.id ? String(la.id) : null;
     // 只把「有效内容」并回全局单缓存：避免把残缺锚点（@unknown 壳条目）写回 XTWEETS 再次污染；
@@ -4180,7 +4303,9 @@
     tweetCachePut(list.filter(_browseValid));
     // 续读锚点即使内容残缺（缺 author.screen_name）也保留渲染：预览阶段需渲染该卡才能定位，
     // 否则 _rows 没有它、restore 查不到 DOM、刷新先闪到顶部。网络返回后有效内容覆盖之。
-    const valid = list.filter((it) => _browseValid(it) || (laSid && String(it.tweet_id || it.id) === laSid));
+    // 同 buildRows：用 _rowEligible 保留缺内容的成员记录（仅占位定位），
+    // 但 tweetCachePut 仍只回灌 _browseValid 的完整内容，绝不污染全局内容缓存。
+    const valid = list.filter((it) => _rowEligible(it) || (laSid && String(it.tweet_id || it.id) === laSid));
     brSeenIds.clear();
     valid.forEach((it) => brSeenIds.add(String(it.tweet_id || it.id)));
     _browseItems = valid.map((it) => tweetCacheGet(String(it.tweet_id || it.id)) || it);
@@ -4190,7 +4315,15 @@
     _preloadedKeys.clear();        // 预加载记录随内容重建失效，清掉避免无限增长
     _rows = buildRows(_browseItems);
     renderRowsDOM();                // 占位重建 + 窗口挂载，避免一次创建上千张卡
-    afterBrowseRender();
+    afterBrowseRender();             // 内部再次 buildRows + renderRowsDOM，故补偿放在它之后
+    // 滚动锚定补偿：把重建前那张顶部卡片按高度差挪回原位（视觉零位移）。
+    // 随后调用方的 anchorTo 会算得同一个落点，两者一致 → 不再产生可见跳变。
+    if (_sa) {
+      restoreScrollAnchor(_sa);
+      // 武装持续补偿：图片陆续加载会让上方行继续长高，只补一次会残留位移。
+      // 之后调用方的 anchorTo 会重采同一基准，两者不会拉扯。
+      armScrollAnchorWatch(_sa);
+    }
   }
 
   // ---- 浏览位置记忆：交给框架 feed()，记住上次看到的推文，重进时定位回去 ----
@@ -4242,20 +4375,16 @@
   // 刷新恢复时优先取「本机最新」的位置（at 较大者），从而绕过服务端陈旧锚点。
   // 仅本机续读用，不做跨设备；多设备时若某设备锚点 at 更新，pickAnchor 仍会让位给它。
   const BR_ANCHOR_KEY = 'x_br_anchor_v1';
+  // 判定规则统一交给框架 feed()（state.js 的 capture），本面板不再另抄一份：
+  // 本机锚点与服务端锚点必须同规则，否则「刷新看到的」和「跨设备续读看到的」会不一致
+  // （曾经就是两套：框架 4px 判定 + 这里另一份，改一处漏一处）。
+  // 框架的 itemSelector/idAttr 与本面板卡片（.bm-card[data-tid]）完全一致，可直接复用。
+  // 无 XFEED 时恢复本身不可用（restoreBrowseScroll 亦直接 return），故不做猜测式兜底。
   function localCapture() {
-    const c = viewBrowse;
-    if (!c) return null;
-    const cr = c.getBoundingClientRect();
-    const nodes = c.querySelectorAll('.bm-card');
-    for (let i = 0; i < nodes.length; i++) {
-      const r = nodes[i].getBoundingClientRect();
-      if (r.bottom > cr.top + 4) {
-        const id = nodes[i].getAttribute('data-tid');
-        if (!id) continue;
-        return { id: String(id), offset: Math.max(0, r.top - cr.top) };
-      }
-    }
-    return null;
+    if (!XFEED || typeof XFEED.capture !== 'function') return null;
+    const a = XFEED.capture();
+    if (!a || !a.id) return null;
+    return { id: String(a.id), offset: typeof a.offset === 'number' ? a.offset : 0 };
   }
   function saveLocalAnchor() {
     const a = localCapture();
@@ -4339,6 +4468,9 @@
       try { XFEED.cancelRestore(); } catch (e) {}
     } else scrollCardToTop(tid, offset);
     watchStableThenAnchor(tid, offset);
+    // 权威定位后重采基准再武装：基准就是 {tid, offset}，与本次定位构造上完全一致，
+    // 后续图片加载的高度变化围绕它补偿，定位即最终落点，不会被反向拉走。
+    armScrollAnchorWatch(buildScrollAnchorRef());
     return true;
   }
   // 布局稳定后做唯一一次校正：替代框架固定延时的四次补偿定位。
@@ -4405,6 +4537,7 @@
   function markUserScrolled() {
     if (brUserScrolled) return;
     brUserScrolled = true;
+    disarmScrollAnchorWatch();     // 用户已接管：立即停止滚动补偿，绝不抢用户的位置
     endAwaitRestore();     // 用户真实接管：等待定位阶段立即结束
     cancelAutoRestore();
   }
@@ -4482,6 +4615,64 @@
     }
     return null;
   }
+  // ---- 滚动锚定（scroll anchoring）----
+  // 内容补齐（骨架卡→真实卡）会改变锚点上方的累计高度：骨架按行高估值 340 占位，
+  // 真实卡片（带图）往往更高，补齐后正在阅读的卡片被整体下推（实测约 484px），
+  // 表现为「刷新后先停在邻近推文、过一会才跳回正确位置」。
+  // 解法：重建前记下视口顶部卡片在「内容坐标系」里的位置，重建后按高度差补偿 scrollTop，
+  // 该卡片在视觉上纹丝不动——上方高度的变化发生在视口之外，用户完全无感。
+  // 记的是「锚点卡片相对视口顶部的偏移」(viewTop)，不是内容绝对坐标。
+  // 用视口偏移才能在每次权威定位(anchorTo)之后重新采基准，两者不会互相拉扯
+  // （用绝对坐标时，anchorTo 改过 scrollTop 后再补偿会反向把卡片拉走，实测 -47px）。
+  // 基准不靠「捕获」：续读锚点 {id, offset} 本身就是权威基准——offset 就是卡片应在的视口位置。
+  // 补偿与 anchorTo 用同一个基准，构造上即一致，不存在互相拉扯。
+  // 此前用 topVisibleCard「捕获」踩了三个坑：抓到只露一角的顶部卡 / 锚点卡未挂载查不到 /
+  // ensureMounted 有改动 scrollTop 的副作用。全部规避。
+  function buildScrollAnchorRef() {
+    const pa = pickAnchor();
+    if (pa && pa.id) {
+      ensureMounted(pa.id);   // 挂载后补偿才量得到卡片位置（顺带预挂载定位区域）
+      return { tid: String(pa.id), viewTop: (typeof pa.offset === 'number' ? pa.offset : 0), isAnchor: true };
+    }
+    const tv = topVisibleCard();   // 无锚点（首次进入）兜底：用顶部可见卡
+    if (tv && tv.tid) return { tid: String(tv.tid), viewTop: tv.offset || 0, isAnchor: false };
+    return null;
+  }
+  // 把锚点卡片按回它「应有的视口位置」，返回补偿的像素差（0=无需补偿，找不到卡片返回 null）。
+  function restoreScrollAnchor(ref) {
+    const cont = viewBrowse; if (!ref || !cont || !brList) return null;
+    ensureMounted(ref.tid);           // 二期 A：目标卡可能还是占位，先挂上才能量到真实位置
+    const el = brList.querySelector(`.bm-card[data-tid="${CSS.escape(ref.tid)}"]`);
+    if (!el) return null;
+    const rCont = cont.getBoundingClientRect();
+    const now = el.getBoundingClientRect().top - rCont.top;
+    const delta = Math.round(now - ref.viewTop);
+    if (!delta) return 0;
+    cont.scrollTop += delta;
+    return delta;
+  }
+  // 持续补偿：图片陆续加载会让上方行不断长高，只补一次跟不上（实测残留 71px）。
+  // 这里用 ResizeObserver 盯住列表总高度，每次变化都把锚点卡片按回原视口位置，
+  // 直到用户自己滚动或超时。anchorTo 结束后会重新采基准再武装，故永不与之拉扯。
+  let _saRef = null, _saRo = null, _saTimer = null;
+  function armScrollAnchorWatch(ref) {
+    if (!ref || typeof ResizeObserver === 'undefined' || !brList) return;
+    _saRef = ref;
+    if (!_saRo) {
+      _saRo = new ResizeObserver(() => {
+        if (brUserScrolled || !_saRef) { disarmScrollAnchorWatch(); return; }
+        restoreScrollAnchor(_saRef);
+      });
+      _saRo.observe(brList);
+    }
+    if (_saTimer) clearTimeout(_saTimer);
+    _saTimer = setTimeout(disarmScrollAnchorWatch, 5000);
+  }
+  function disarmScrollAnchorWatch() {
+    if (_saRo) { try { _saRo.disconnect(); } catch (e) {} _saRo = null; }
+    if (_saTimer) { clearTimeout(_saTimer); _saTimer = null; }
+    _saRef = null;
+  }
   // 整表渲染后：刷新锚点派生基线 + 重建天模型
   function afterBrowseRender() {
     const a = getBrowseAnchor();
@@ -4493,8 +4684,14 @@
   }
   // 由 rows 模型派生右轴（天数/密度），替代原 refreshDayModel 的 DOM 读取
   function _rebuildDayRail(preserve) {
-    const dayCount = new Map();
-    _rows.forEach((r) => { if (r.kind === 'sep' || r.kind === 'coll') dayCount.set(r.day, r.count); });
+    // 候选天取「全部缓存内容覆盖的天」（_dayCounts，含未展开的天），而非只取当前 _rows 里
+    // 已展开的那几天：轮盘是「跳到哪一天」的目录，内容既然已在缓存就都该出现在目录里，
+    // 不该要求用户先滑到底把那一天逐天「载入」才看得到。
+    let dayCount = (_dayCounts && _dayCounts.size) ? _dayCounts : null;
+    if (!dayCount) {   // 兜底：尚未 buildRows 过（理论上不会）时退回旧的「按 _rows 统计」
+      dayCount = new Map();
+      _rows.forEach((r) => { if (r.kind === 'sep' || r.kind === 'coll') dayCount.set(r.day, r.count); });
+    }
     buildDayKnob(dayCount, preserve);
   }
   // 从 rows 模型重建分组头/折叠条/右轴（不改卡片内容，可重复调用）
@@ -4517,8 +4714,21 @@
     if (tv && tv.tid) scrollCardToTop(tv.tid, tv.offset || 0);
     updateDayFloat();
   }
+  // 把按天分块的展开窗口一次性推进到目标天（含）：轮盘里的天来自缓存，很可能尚未展开，
+  // 此时 _rows 里没有那一天的卡片，不先展开就会「点了没反应」。
+  function revealDaysUpTo(k) {
+    if (!_allDays.length) return false;
+    const i = _allDays.indexOf(k);
+    if (i < 0) return false;
+    // _allDays 为最新→最旧，展开到目标天 = 取它及其之前（更新）的整段前缀
+    _revealDays = _allDays.slice(0, i + 1);
+    refreshDayModel();     // 重建 _rows，随后才能查到该天的卡片并定位
+    return true;
+  }
   function jumpToDay(k) {
     if (!k) return;
+    // 目标天尚未展开（内容其实已在缓存，只是没倒进 _rows）→ 先展开到该天
+    if (_revealDays && _revealDays.length && !_revealDays.includes(k)) revealDaysUpTo(k);
     if (isCollapsed(k)) { dayOverride.set(k, false); refreshDayModel(); }   // 仅折叠天需整表重建以现卡片行
     for (let i = 0; i < _rows.length; i++) {
       const r = _rows[i];
@@ -4527,10 +4737,25 @@
     updateDayFloat();
   }
   // D 圆弧时间轴：时间倒序的天列表 + 当前索引；滚轮/拖动切换、中心为选中天、主列表滚动时同步
-  let _knobDays = [];   // 时间倒序（最新→最旧），与 _rows 一致
+  let _knobDays = [];   // 时间倒序（最新→最旧），覆盖全部已缓存的天（含尚未按天分块展开的）
   let _knobIdx = 0;
   let _knobLock = false, _knobLockT = null;   // 滚轮/拖动触发跳转期间抑制「列表滚动回写」抢走选中天
   const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
+  // 罗盘停靠侧（right|left），由设置项 ui_arc_side 驱动：既决定 CSS 停靠在哪边，
+  // 也决定弓形朝哪边内收（换边不翻转的话，弧线会朝屏幕外鼓出去）。
+  let _arcSide = 'right';
+  function applyArcSide(side) {
+    const s = (side === 'left') ? 'left' : 'right';
+    const o = (s === 'left') ? 'right' : 'left';
+    _arcSide = s;
+    const arc = $('br-arc'), fab = $('br-arc-fab');
+    [arc, fab].forEach((el) => {
+      if (!el) return;
+      el.classList.remove('side-' + o);
+      el.classList.add('side-' + s);
+    });
+    renderArc();   // 弓量方向随停靠侧变化，需重算
+  }
   function buildDayKnob(dayCount, preserve) {
     // 折叠展开/滚轮跳转会触发整表重建：preserve=true 时保留当前选中天，避免被 currentDayKey() 抢回旧位置
     const prevDay = (preserve && _knobDays[_knobIdx]) ? _knobDays[_knobIdx] : currentDayKey();
@@ -4588,16 +4813,49 @@
   const _arcPool = new Map();   // dayIndex -> 元素（跨帧复用，触发 transform/opacity 过渡）
   function arcTransform(j, t) {
     const y = j * _ARC_STEP;
-    const tx = -( _ARC_BOW * (1 - t * t) ).toFixed(1);   // 选中天最靠内容侧，越偏越向边缘收敛
+    // 弓量朝内容侧内收：靠右停时向左收（负），靠左停时向右收（正）
+    const tx = ((_arcSide === 'left' ? 1 : -1) * _ARC_BOW * (1 - t * t)).toFixed(1);
     const rx = (-j / _ARC_RANGE * _ARC_TILT).toFixed(1); // 上仰/下列：绕水平轴后仰
     const sc = (1 - t * 0.4).toFixed(3);
     return 'translate(' + tx + 'px,calc(-50% + ' + y + 'px)) rotateX(' + rx + 'deg) scale(' + sc + ')';
   }
+  let _arcYear = '';   // 选中天所属年份，用于识别「刚跨过年份交界」
   function arcApply(el, j, k) {
     const t = Math.abs(j) / _ARC_RANGE;
     const pp = String(k).split('-');
-    el.textContent = j === 0 ? dayLabelOf(k) : ((+pp[1]) + '/' + (+pp[2]));
-    el.classList.toggle('sel', j === 0);
+    const sel = (j === 0);
+    el.classList.toggle('sel', sel);
+    // 内容没变就不重建 DOM：列表滚动会高频调用本函数，每帧重建纯属浪费
+    if (sel) {
+      // 选中天：上行年份、下行「月日 · 周」
+      if (el.dataset.k !== String(k)) {
+        el.dataset.k = String(k); el.dataset.t = '';
+        el.textContent = '';
+        const y = document.createElement('span');
+        y.className = 'arc-y'; y.textContent = pp[0] + '年';
+        const d = document.createElement('span');
+        d.className = 'arc-d'; d.textContent = dayLabelOf(k);
+        el.appendChild(y); el.appendChild(d);
+        // 跨到另一年：让年份动一下
+        if (_arcYear && _arcYear !== pp[0]) {
+          el.classList.remove('year-changed');
+          void el.offsetWidth;                 // 强制重排，动画才能重新触发
+          el.classList.add('year-changed');
+        }
+        _arcYear = pp[0];
+      }
+    } else {
+      // 与选中天不同年的条目补上两位年份（如 25/12/31），让年份交界在滚轮里一眼可见。
+      // 依赖选中天年份，故缓存键必须带上算出的文本，否则滚动换天后不会刷新。
+      const sy = (_knobDays[_knobIdx] || '').split('-')[0];
+      const txt = (sy && sy !== pp[0])
+        ? (pp[0].slice(2) + '/' + (+pp[1]) + '/' + (+pp[2]))
+        : ((+pp[1]) + '/' + (+pp[2]));
+      if (el.dataset.k !== String(k) || el.dataset.t !== txt) {
+        el.dataset.k = String(k); el.dataset.t = txt;
+        el.textContent = txt;
+      }
+    }
     el.style.opacity = (1 - t * 0.78).toFixed(3);
     el.style.transform = arcTransform(j, t);
   }
@@ -7058,6 +7316,7 @@
     bmRun: $('st-bm-run'), bmConfirm: $('st-bm-confirm'), bmStatus: $('st-bm-status'),
     lkEn: $('st-lk-en'), lkIv: $('st-lk-iv'), lkPages: $('st-lk-pages'),
     lkRun: $('st-lk-run'), lkConfirm: $('st-lk-confirm'), lkStatus: $('st-lk-status'),
+    arcSide: $('st-arc-side'), arcConfirm: $('st-arc-confirm'),
   };
   let stCfg = null;
   let stPollIv = null;
@@ -7127,6 +7386,10 @@
       stSetSel(E.lkIv, stCfg.likes_interval_min || 720,
                fmtMinutes(stCfg.likes_interval_min || 720));
       stSetSel(E.lkPages, stCfg.likes_pages || 2, `${stCfg.likes_pages || 2} 页`);
+      // 日期罗盘停靠侧：读回即生效（不必重开设置页）
+      const arcSide = stCfg.ui_arc_side === 'left' ? 'left' : 'right';
+      stSetSel(E.arcSide, arcSide, arcSide === 'left' ? '左侧' : '右侧');
+      applyArcSide(arcSide);
       const jobs = d.jobs || {};
       stJobStatus(E.homeStatus, jobs.home);
       stJobStatus(E.bmStatus, jobs.bookmarks);
@@ -7204,6 +7467,9 @@
       likes_pages: parseInt(stE.lkPages.value, 10),
     };
   }
+  function stPatchUi() {
+    return { ui_arc_side: stE.arcSide.value === 'left' ? 'left' : 'right' };
+  }
   function stBindBox(fields, confirmBtn, patchFn) {
     fields.forEach((el) => {
       if (el) el.addEventListener('change', () => {
@@ -7229,6 +7495,7 @@
   stBindBox([stE.clPreload, stE.clAhead], stE.clConfirm, stPatchCl);
   stBindBox([stE.bmEn, stE.bbIv, stE.bmPages], stE.bmConfirm, stPatchBm);
   stBindBox([stE.lkEn, stE.lkIv, stE.lkPages], stE.lkConfirm, stPatchLk);
+  stBindBox([stE.arcSide], stE.arcConfirm, stPatchUi);
 
   async function stRun(job, btn) {
     if (!btn) return;
