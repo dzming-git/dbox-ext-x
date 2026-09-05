@@ -352,6 +352,11 @@
   .kw-btn:hover { opacity: 1; background: rgba(15,20,25,.09); }
   .kw-chip.active .kw-btn:hover { background: rgba(255,255,255,.26); }
   .kw-chip .kw-del:hover { background: #f4212e; color: #fff; opacity: 1; }
+  /* 折叠/展开切换按钮（词较多时出现在 chip 行末尾） */
+  .kw-more { border: 1px dashed #c4cfd9; background: transparent; border-radius: 999px;
+    padding: 4px 12px; font-size: 12px; color: #1d9bf0; cursor: pointer; line-height: 1.6;
+    transition: background .15s; }
+  .kw-more:hover { background: rgba(29,155,240,.08); }
   /* 「全部」chip 是融合视图入口，比其他关键词 chip 稍重一档 */
   .kw-chip.kw-all { font-weight: 600; }
   .kw-chip.kw-all .kw-txt { cursor: pointer; }
@@ -6159,6 +6164,8 @@
     if (h < 24) return h + ' 小时前';
     return Math.floor(h / 24) + ' 天前';
   }
+  const KW_COLLAPSE_THRESHOLD = 8;   // 超过此数默认折叠，避免一整排 chip 占用过多空间
+  let srchChipsExpanded = false;     // 用户手动展开后保持（后续重渲染不回退）
   function renderKwChips() {
     if (!srchChips) return;
     srchChips.innerHTML = '';
@@ -6177,7 +6184,17 @@
       allChip.append(allTxt, allCnt);
       srchChips.appendChild(allChip);
     }
-    srchKwList.forEach((e) => {
+    // 折叠：词过多时只露前若干个 + 「展开 N 个」；激活的词一定可见（否则用户找不到当前在看的词）
+    const needCollapse = !srchChipsExpanded && srchKwList.length > KW_COLLAPSE_THRESHOLD;
+    let list = srchKwList;
+    if (needCollapse) {
+      list = srchKwList.slice(0, KW_COLLAPSE_THRESHOLD - 1);
+      if (srchActiveKey && srchActiveKey !== ALL_KEY && !list.some((e) => e.key === srchActiveKey)) {
+        const idx = srchKwList.findIndex((e) => e.key === srchActiveKey);
+        if (idx >= 0) list[list.length - 1] = srchKwList[idx];  // 用激活词顶掉最后一个，保证可见
+      }
+    }
+    list.forEach((e) => {
       const c = srchCache.get(e.key);
       const chip = document.createElement('span');
       chip.className = 'kw-chip' + (e.key === srchActiveKey ? ' active' : '')
@@ -6212,6 +6229,22 @@
       chip.append(spin, txt, cnt, re, del);
       srchChips.appendChild(chip);
     });
+    // 折叠/展开切换按钮（仅词较多时才有意义）
+    if (needCollapse) {
+      const more = document.createElement('button');
+      more.className = 'kw-more';
+      more.textContent = '展开 ' + (srchKwList.length - list.length) + ' 个';
+      more.title = '展开剩余关键词';
+      more.addEventListener('click', () => { srchChipsExpanded = true; renderKwChips(); });
+      srchChips.appendChild(more);
+    } else if (srchKwList.length > KW_COLLAPSE_THRESHOLD) {
+      const less = document.createElement('button');
+      less.className = 'kw-more';
+      less.textContent = '收起';
+      less.title = '收起关键词列表';
+      less.addEventListener('click', () => { srchChipsExpanded = false; renderKwChips(); });
+      srchChips.appendChild(less);
+    }
   }
 
   /* ---- 关键词增删 / 切换 / 重搜 ---- */
