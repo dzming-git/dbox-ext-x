@@ -3326,9 +3326,19 @@
     _cardCache.set(k, el);
     return el;
   }
+  // 多图布局必须在「插入 DOM 之后」补排：卡片是在游离态创建的（clientWidth=0，
+  // layoutJustified 会直接跳过），不补排就一直是 CSS 兜底排版（aspect-ratio 3/4，
+  // 排布与 X 不符），等 resize 事件触发 relayoutAllJustified 才重排 → 排版跳变。
+  // jlDone 守卫保证同一张卡（_cardCache 复用）不会被反复重排。
+  function layoutJustifiedIn(card) {
+    if (!card || !card.querySelectorAll) return;
+    card.querySelectorAll('.media.justified').forEach((j) => { if (!j.dataset.jlDone) layoutJustified(j); });
+  }
   function _mountRowEl(el, key, row) {
     if (!row) return;
-    el.replaceWith(_createRowEl(row));
+    const card = _createRowEl(row);
+    el.replaceWith(card);
+    layoutJustifiedIn(card);
   }
   function _unmountRowEl(el, key, row) {
     if (!row) return;
@@ -3512,7 +3522,11 @@
       if (!d.success || !d.tweet) return;
       const item = mergeTweet(d.tweet);
       persistTweetToFeed(d.tweet);   // 写回唯一持久化缓存：刷新/换设备不再回到旧内容
-      if (card.parentNode) card.replaceWith(renderBrowseCard(item));
+      if (card.parentNode) {
+        const nc = renderBrowseCard(item);
+        card.replaceWith(nc);
+        layoutJustifiedIn(nc);   // 插入 DOM 后补排多图布局（创建时游离态会被跳过）
+      }
     } catch (_) {}
   }
 
@@ -3537,6 +3551,7 @@
         const nc = renderBrowseCard(item);
         if (kw) addKwSourceTag(nc, kw);
         card.replaceWith(nc);
+        layoutJustifiedIn(nc);   // 插入 DOM 后补排多图布局（创建时游离态会被跳过）
       }
     } catch (_) {}
   }
