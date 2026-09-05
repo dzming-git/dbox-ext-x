@@ -4781,6 +4781,7 @@
   let _knobDays = [];   // 时间倒序（最新→最旧），覆盖全部已缓存的天（含尚未按天分块展开的）
   let _knobIdx = 0;
   let _knobLock = false, _knobLockT = null;   // 滚轮/拖动触发跳转期间抑制「列表滚动回写」抢走选中天
+  let _knobUserTill = 0;   // 用户主动操作轮盘后的「控制截止时间」，期间 updateKnobToCurrent 不回写
   const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
   // 罗盘停靠侧（right|left），由设置项 ui_arc_side 驱动：既决定 CSS 停靠在哪边，
   // 也决定弓形朝哪边内收（换边不翻转的话，弧线会朝屏幕外鼓出去）。
@@ -4846,7 +4847,8 @@
     renderArc();
     if (jump) {
       _knobLock = true; clearTimeout(_knobLockT);
-      _knobLockT = setTimeout(() => { _knobLock = false; }, 450);  // 跳转期间屏蔽列表回写，避免滚轮被抢
+      _knobLockT = setTimeout(() => { _knobLock = false; }, 800);   // 跳转动画期间屏蔽回写
+      _knobUserTill = Date.now() + 10000;   // 用户主动操作后，10 秒内轮盘不被滚动回写抢走
       jumpToDay(_knobDays[_knobIdx]);
     }
   }
@@ -4938,6 +4940,7 @@
   // 主列表滚动时让圆弧跟随当前天（仅同步刻度，不主动跳转）；滚轮跳转锁定期内跳过以免被抢
   function updateKnobToCurrent() {
     if (_knobLock) return;
+    if (Date.now() < _knobUserTill) return;   // 用户主动操作轮盘后，暂不回写
     const k = currentDayKey();
     if (!k) return;
     const i = _knobDays.indexOf(k);
