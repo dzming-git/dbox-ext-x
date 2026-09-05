@@ -6416,20 +6416,14 @@
             if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
           }, { once: true });
         }
-        // 增量渲染：后端每完成一个词就写入 UserState，不必等全部完成。
-        // 每次 tick 都 pull 最新状态 → 重载各词缓存 → 立即渲染已有结果。
-        // 这样 24 词重搜时，完成 2-3 个就能看到内容，不用干等全部跑完。
-        if (pct > 0) {
-          try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
-          srchKwList.forEach((e) => loadKwCache(e.key));
-          if (srchActiveKey === ALL_KEY) rebuildMerged();
-          if (srchActiveKey) { renderSrchProduct(); updateSrchBottom(); }
-          renderKwChips();
-        }
+        // 重搜过程中保持页面稳定：每个 tick 只更新进度按钮，绝不重建列表。
+        // 此前每个 tick 都 pull + rebuildMerged + renderSrchProduct（innerHTML 清空重建），
+        // 导致整页每秒抖动一次、完全无法阅读。现改为：用户当前看到的结果原样保留供阅读，
+        // 后台继续累加成结果，仅当 d.done（全部关键词爬完）时才一次性 pull + 重建替换。
         if (d.done) {
           stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
-          // 最终确认：再拉一次确保不遗漏最后几个词
+          // 最终统一替换：拉最新状态 → 重载各词缓存 → 重算融合流 → 整体重渲染一次
           try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
           srchKwList.forEach((e) => loadKwCache(e.key));
           if (srchActiveKey === ALL_KEY) rebuildMerged();
