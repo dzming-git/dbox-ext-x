@@ -1517,6 +1517,26 @@ def _discover_home_timeline_qid(opener, cookie_header):
     return None
 
 
+def _raise_for_gql_error(data, raw, what):
+    """GraphQL 失败必须显式抛错，绝不能静默返回空列表。
+
+    X 在鉴权失效 / 限流 / 接口变更时返回 4xx，或 200 但只带 errors 数组——
+    两种情况下响应里都没有 data 字段。若照常解析，会得到「0 条推文」并让后台
+    任务记成 ok=True 条=0：用户明明开着自动更新，却既没有新内容也看不到任何
+    异常，问题可以静默存在很久（本次即如此，连续多轮 0 条才被发现）。
+    """
+    if not isinstance(data, dict):
+        return
+    errs = data.get('errors') or []
+    if not errs and data.get('data') is not None:
+        return
+    msg = ''
+    if isinstance(errs, list) and errs and isinstance(errs[0], dict):
+        msg = str(errs[0].get('message') or '')
+    raise RuntimeError('%s 请求失败：%s'
+                       % (what, (msg or (raw or ''))[:200].replace('\n', ' ')))
+
+
 def list_home_timeline(cookie_header, count=20, cursor=None):
     """读取 X 关注流（home timeline）推文列表。
 
@@ -1539,6 +1559,7 @@ def list_home_timeline(cookie_header, count=20, cursor=None):
     headers = build_headers(cookie_header, with_bearer=True)
     raw = fetch_text(url, opener, headers, timeout=30)
     data = json.loads(raw)
+    _raise_for_gql_error(data, raw, 'HomeTimeline')
     # 响应结构：data.home.home_timeline_urt 直接含 instructions（无 timeline 层）
     home = (data.get('data', {}) or {}).get('home', {}) or {}
     tl = home.get('home_timeline_urt') or {}
@@ -1640,12 +1661,21 @@ def list_following_timeline(cookie_header, count=20, cursor=None):
     headers = build_headers(cookie_header, with_bearer=True)
     headers['Content-Type'] = 'application/json'
     req = urllib.request.Request(url, data=body, headers=headers, method='POST')
+    status = 200
     try:
         with opener.open(req, timeout=30) as r:
             raw = r.read().decode('utf-8', 'replace')
+            status = getattr(r, 'status', 200) or 200
     except urllib.error.HTTPError as e:
         raw = e.read().decode('utf-8', 'replace')
+        status = e.code
     data = json.loads(raw)
+    # HTTP 非 2xx：必须抛错。此前吞掉后当正常响应解析，得到 0 条并被后台任务
+    # 记成 ok=True 条=0，鉴权失效/限流因此长期无人知晓。
+    if status >= 400:
+        raise RuntimeError('HomeLatestTimeline HTTP %s：%s'
+                           % (status, (raw or '')[:200].replace('\n', ' ')))
+    _raise_for_gql_error(data, raw, 'HomeLatestTimeline')
     # 响应结构：data.home.home_timeline_urt 直接含 instructions（无 timeline 层）
     home = (data.get('data', {}) or {}).get('home', {}) or {}
     tl = home.get('home_timeline_urt') or {}
@@ -1969,12 +1999,35 @@ def _extract_bookmark_tweets(data):
     instructions = tl.get('instructions', []) or []
     for inst in instructions:
         entries = list(inst.get('entries') or inst.get('moduleItems') or [])
+        # X 新版时间线把推文嵌在 TimelineTimelineModule.items[].item 里（而非
+        # 直接在 entries[].content）。此处展平：把模块内各条目提升到 entries 级别，
+        # 后续解析逻辑无需区分两种格式。
+        _flat = []
+        for entry in entries:
+            content = entry.get('content') or {}
+            if content.get('__typename') == 'TimelineTimelineModule':
+                for sub in (content.get('items') or []):
+                    si = (sub.get('item') or {})
+                    si['_mod_entryId'] = sub.get('entryId') or ''
+                    _flat.append(si)
+            else:
+                _flat.append(entry)
+        entries = _flat
         for entry in entries:
             # 嵌套 entries（某些 instruction 结构）
             if entry.get('entries'):
                 entries = entries + list(entry['entries'])
             content = entry.get('content') or {}
             item = (content.get('itemContent') or content.get('tweetResult') or {})
+            # TimelineTimelineModule 展平后的条目：推文数据直接在 entry（即原 item）
+            # 上，不在 entry.content 下。此处 fallback 到 entry 自身；
+            # 若 entry 就是展平后的模块子项，则 tweet_data 还可能嵌在 entry.itemContent 下。
+            if not item:
+                item = entry
+            if not item.get('tweet_results') and not item.get('tweetResults'):
+                ic = item.get('itemContent')
+                if isinstance(ic, dict):
+                    item = ic
             # 兼容两种键名：tweet_results（X 新结构，下划线）/ tweetResults（旧结构）
             tr = item.get('tweet_results')
             if tr is None:
@@ -2094,25 +2147,25 @@ def _extract_bookmark_tweets(data):
                     'tweet_id': _irt_id,
                     'screen_name': legacy.get('in_reply_to_screen_name') or '',
                 }
-                # 时间轴位置用「时间线条目自身」的时间（原推被转发的那一刻），
-                # 而非被嵌进来的原推时间——否则转推会错排到原推发布日。
-                # 纯转推时 result 已是原推，legacy.created_at 是原推时间，故单独取外层条目时间。
-                entry_created_at = (outer.get('legacy') or {}).get('created_at')
-                out.append({
+            # 时间轴位置用「时间线条目自身」的时间（原推被转发的那一刻），
+            # 而非被嵌进来的原推时间——否则转推会错排到原推发布日。
+            # 纯转推时 result 已是原推，legacy.created_at 是原推时间，故单独取外层条目时间。
+            entry_created_at = (outer.get('legacy') or {}).get('created_at')
+            out.append({
                     'tweet_id': tid,
                     'text': _strip_media_tco(legacy.get('full_text', ''), legacy),
                     'created_at': legacy.get('created_at'),
                     'timeline_at': entry_created_at or legacy.get('created_at'),
                     'favorite_count': legacy.get('favorite_count'),
-                'retweet_count': legacy.get('retweet_count'),
-                'author': author,
-                'media': media,
-                'retweeted_by': retweeted_by,
-                'quoted': quoted,
-                'in_reply_to': in_reply_to,
-                'url': 'https://x.com/{}/status/{}'.format(
-                    author.get('screen_name') or 'unknown', tid),
-            })
+                    'retweet_count': legacy.get('retweet_count'),
+                    'author': author,
+                    'media': media,
+                    'retweeted_by': retweeted_by,
+                    'quoted': quoted,
+                    'in_reply_to': in_reply_to,
+                    'url': 'https://x.com/{}/status/{}'.format(
+                        author.get('screen_name') or 'unknown', tid),
+                })
     return out
 
 
