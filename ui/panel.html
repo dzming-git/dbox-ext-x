@@ -3486,7 +3486,14 @@
         const d = dec[i];
         if (!d.row && d.isPh) continue;
         if (d.isPh) { if (d.inWin && _rowHasContent(d.row)) { _mountRowEl(d.el, d.key, d.row); _dirty = true; } }
-        else { _hReal.set(d.key, Math.max(_rowEst(d.row), d.h)); if (!d.inWin) { _unmountRowEl(d.el, d.key, d.row); _dirty = true; } }
+        else {
+          // 实测高度变化必须让偏移表失效：表若停留在旧值（图片加载前的高度），
+          // currentDayKey 拿真实 scrollTop 对比过时偏移，会把「当前天」判定到更旧的一天
+          //（时间轮盘跳日）。仅在值真的变化时失效，避免每帧白重建。
+          const nh = Math.max(_rowEst(d.row), d.h);
+          if (_hReal.get(d.key) !== nh) { _hReal.set(d.key, nh); _rowOff = null; }
+          if (!d.inWin) { _unmountRowEl(d.el, d.key, d.row); _dirty = true; }
+        }
       }
       // 挂载/卸载改变了布局高度，下一帧再跑一次把新露出的窗区填满（收敛后 _dirty=false 自然停止）
       if (_dirty) requestAnimationFrame(() => { if (!_winBusy) renderWindow(); });
@@ -4905,10 +4912,33 @@
     const cont = viewBrowse; if (!cont || !_rows.length) return null;
     const top = cont.scrollTop + 1;
     const off = rowOffsets();
+    // 校准：偏移表里「从未挂载过的行」只能取行高估值，与真实高度有系统性偏差；加上占位
+    // 高度可能滞后一帧才同步，累计误差可达数千 px（实测 5959px）。直接拿真实 scrollTop
+    // 对比偏移表，会把「当前天」判到更旧的一天；滚到列表底部时真实 scrollTop 甚至大于
+    // 整张表的总高，于是所有分隔符都被判为「已越过」，时间轮盘直接跳到最后一天。
+    // 故先用「最靠顶的已挂载行的真实位置」把 top 换算到偏移表的坐标系，再走分隔符判定。
+    let cal = 0;
+    if (brList) {
+      const kids = brList.children;
+      for (let i = 0; i < kids.length; i++) {
+        const el = kids[i];
+        if (el.classList.contains('br-ph')) continue;
+        const key = el.dataset.phKey || rowKeyOfEl(el);
+        let idx = -1;
+        for (let j = 0; j < _rows.length; j++) { if (_rowKey(_rows[j]) === key) { idx = j; break; } }
+        if (idx >= 0) {
+          const rCont = cont.getBoundingClientRect();
+          const real = el.getBoundingClientRect().top - rCont.top + cont.scrollTop;
+          cal = (off[idx] || 0) - real;   // 表位置 − 真实位置（负值＝表偏小）
+        }
+        break;   // 只取最靠顶的已挂载行
+      }
+    }
+    const topT = top + cal;     // 换算到偏移表坐标系
     let cur = null;
     for (let i = 0; i < _rows.length; i++) {
       const r = _rows[i];
-      if (r.kind === 'sep' || r.kind === 'coll') { if (off[i + 1] <= top) cur = r.day; else break; }
+      if (r.kind === 'sep' || r.kind === 'coll') { if (off[i + 1] <= topT) cur = r.day; else break; }
     }
     return cur;
   }
