@@ -553,12 +553,12 @@
   }
   .ptr-indicator .ptr-icon { font-size: 16px; }
   .bm-card .bm-play, .quoted .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
-  .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #000; }
+  .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #000; max-height: none; }
   /* 原地点播中：解除 .media video 的 max-height:70vh（line 61）。
      该限制会覆盖 JS 钉死的像素高度，把 video 压得比封面小（「缩小一圈」）。
-     容器高度已由 JS 冻结为封面高度，无需再限高。 */
+     容器高度已由 JS 冻结为封面高度（或 loadedmetadata 后贴合视频真实比例），无需再限高。 */
   .bm-card .bm-media.playing video, .quoted .bm-media.playing video {
-    object-fit: contain; max-height: none;
+    object-fit: fill; max-height: none; max-width: none;
   }
   .bm-card .bm-vclose, .quoted .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
   .bm-card .actions { display: flex; gap: 6px; margin-top: 4px; }
@@ -1968,6 +1968,33 @@
     }
     if (_inlineVid && _inlineVid.el === rec.el) _inlineVid = null;
   }
+  // 让内联视频播放器贴合视频真实宽高比（消除 object-fit:contain 的黑边）。
+  // 原则：视频多大播放窗口就多大，不强制撑满容器宽度。
+  function fitVideoToNaturalSize(v, container) {
+    const vw = v.videoWidth, vh = v.videoHeight;
+    if (!vw || !vh || !container) return;
+    // 可用宽度：取容器父元素的实测宽度（卡片内容区），上限 600px 防竖屏过宽
+    const parent = container.parentElement;
+    const maxW = parent ? Math.min(parent.clientWidth - 2, 600) : 500;
+    const maxH = window.innerHeight * 0.8;   // 不超过视口 80%
+    let dw, dh;
+    if (vh >= vw) {
+      // 竖屏/方屏：以高度为基准算宽度（避免横撑满宽后两侧黑边）
+      dh = Math.min(vh, maxH);
+      dw = Math.round(dh * vw / vh);
+      if (dw > maxW) { dw = maxW; dh = Math.round(dw * vh / vw); }
+    } else {
+      // 横屏：以宽度为基准算高度
+      dw = Math.min(vw, maxW);
+      dh = Math.round(dw * vh / vw);
+      if (dh > maxH) { dh = maxH; dw = Math.round(dh * vw / vh); }
+    }
+    // 容器同步收缩到视频尺寸（原冻结高度是封面尺寸，可能远大于/小于视频实际）
+    container.style.width = dw + 'px';
+    container.style.height = dh + 'px';
+    v.style.cssText = `width:${dw}px;height:${dh}px;display:block;background:#000`;
+  }
+
   function playInlineVideo(mediaEl, mp4, m3u8) {
     // 已在该卡片内播放：交给原生 controls 处理暂停/继续；直接返回，避免点击视频中央或
     // 原生控件时又被重建为新的 <video>+hls 实例（旧实例未停干净 → 残留声音 / 多实例）。
@@ -1983,9 +2010,7 @@
     mediaEl.classList.add('playing');
     const v = document.createElement('video');
     v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false; v.preload = 'metadata';
-    // 高度用像素值而非 100%：CSS multicol（多图瀑布流）中百分比高度解析不可靠，
-    // video 会按内在比例塌成比封面小的框（「缩小一圈」）。直接钉死原封面高度最稳。
-    // 高度异常（0）时退回 100%，避免 video 被压成不可见。
+    // 初始占位：先用封面尺寸防止塌陷，loadedmetadata 后会由 fitVideoToNaturalSize 覆盖为真实比例
     const _vh = Math.round(_rect.height);
     v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#000;display:block`;
     const close = document.createElement('button');
@@ -1994,6 +2019,9 @@
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
     mediaEl.appendChild(close);
+    // 统一在 loadedmetadata 时贴合视频真实尺寸（消除黑边）
+    const onMeta = () => { if (v.videoWidth && v.videoHeight) fitVideoToNaturalSize(v, mediaEl); };
+    v.addEventListener('loadedmetadata', onMeta);
     // 注意：不在这里调 v.play()——此时 src 尚未设置（下面才赋），调用必失败并被吞掉。
     // 各分支（HLS / mp4）在源就绪后各自触发 play。
     if (m3u8 && window.Hls && window.Hls.isSupported()) {
@@ -2013,6 +2041,7 @@
       _inlineVid = { el: mediaEl, v, hls, close };
     } else if (mp4) {
       v.src = mp4;
+      // mp4 的 loadedmetadata 已在上面统一监听（onMeta），这里只补 play
       v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
       // mp4 直链加载失败时（代理超时/403/网络断开/CORS），<video> 会静默进入死锁：
       // 黑屏 + 0:00 + 播放按钮点了没反应（error 事件不冒泡、原生控件无错误提示）。
