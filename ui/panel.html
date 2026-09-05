@@ -3648,6 +3648,28 @@
   // 否则被关键词/广告规则命中的推文会绕过过滤、以「懒拉回来的完整推文」重新插回列表——
   // 表现为「应用方案→广告贴又出现」「重新应用过滤→广告贴回来」。命中过滤直接移除占位卡，
   // 不回插；未命中才替换为完整卡（融合视图补回关键词来源标签）。
+  // 懒拉补全并发上限：融合流里成百上千张骨架卡若同时打 /tweet/<id>，会触发 X 限流 /
+  // 服务端过载→请求成片失败、骨架永久卡在「加载中」。用简单信号量把在途请求限制在
+  // 少量并发，剩下的排队依次执行；每张卡带自己的 DOM，完成时若已被移除（滚走/被过滤）
+  // 则跳过替换——不需要全局协调。
+  const _srchFetchQ = [];
+  let _srchFetchRun = 0;
+  const SRCH_FETCH_MAX = 6;
+  function enqueueFetchCard(tid, card, kw) {
+    if (!tid || !card) return;
+    _srchFetchQ.push({ tid, card, kw });
+    _pumpFetch();
+  }
+  function _pumpFetch() {
+    while (_srchFetchRun < SRCH_FETCH_MAX && _srchFetchQ.length) {
+      const job = _srchFetchQ.shift();
+      _srchFetchRun++;
+      fetchSearchCard(job.tid, job.card, job.kw).finally(() => {
+        _srchFetchRun--;
+        _pumpFetch();
+      });
+    }
+  }
   async function fetchSearchCard(tid, card, kw) {
     if (!tid || !card) return;
     try {
@@ -5582,7 +5604,7 @@
     card.classList.add('card-enter');
     card.style.animationDelay = Math.min(delayIdx * 18, 600) + 'ms';
     srchList.appendChild(card);
-    if (needFetch) { _srchFetching.add(String(id)); fetchSearchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null); }
+    if (needFetch) { _srchFetching.add(String(id)); enqueueFetchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null); }
     return card;
   }
   // 本地续挂载下一批（纯本地，不碰网络）：插到占位前，缩小占位高度
@@ -5911,7 +5933,7 @@
           appended++; appendedTotal++;
           if (needFetch) {
             _srchFetching.add(String(id));
-            fetchSearchCard(String(id), card, null);
+            enqueueFetchCard(String(id), card, null);
           }
         });
         srchCursor = d.next_cursor || null;
@@ -6081,6 +6103,29 @@
                 cursorLatest: null, ts: 0, err: '', loading: false };
     srchCache.set(kk, n);
     return n;
+  }
+  // 旧版缓存只存 {tweet_id,created_at} 桩（见 791b1b5 之前的实现）。融合流渲染需要完整内容，
+  // 否则只能回退共享 XTWEETS（1500 LRU，多关键词下大量推文被淘汰→整屏骨架）。这里在加载时用
+  // XTWEETS 已有内容把桩补全为完整对象并落库，使 791b1b5 的「每词独立存完整内容」对存量数据
+  // 也生效：升级后融合流脱离 XTWEETS，增删关键词 / 刷新都不再丢内容（删词或重算融合流后，
+  // 可见批次恰好落在 XTWEETS 淘汰区之外的坑也随之消失）。XTWEETS 没有的（超出 1500 上限的
+  // 较旧推文）保持桩，渲染时由 fetchSearchCard 懒拉补全。
+  function upgradeKwCacheFromTweets(kk) {
+    const c = srchCache.get(kk);
+    if (!c) return;
+    let changed = false;
+    ['top', 'latest'].forEach((k) => {
+      const arr = c[k] || [];
+      if (!arr.length) return;
+      c[k] = arr.map((it) => {
+        if (it && it.author && it.author.screen_name && it.text != null) return it;  // 已是完整对象
+        const id = it && (it.tweet_id || it.id);
+        const full = id ? tweetCacheGet(id) : null;
+        if (full) { changed = true; return full; }
+        return it;
+      });
+    });
+    if (changed) saveKwCache(kk);
   }
   // 兼容旧版：单关键词时代的结果存在 search:last，升级后把它作为第一个关键词导入，
   // 免得用户一升级就发现上次搜的东西全没了。
@@ -6413,6 +6458,9 @@
     // 直接用本地内容，无需再把桩注入共享 XTWEETS——旧版那条 tweetCachePut 会把
     // 完整推文覆盖成只有 id 的空壳，导致刷新后满屏骨架、逐条重拉超时。
     srchKwList.forEach((e) => { loadKwCache(e.key); });
+    // 旧桩缓存用 XTWEETS 已有内容升级为完整对象并落库（见 upgradeKwCacheFromTweets）：
+    // 让「每词独立存完整内容」对存量数据也生效，融合流脱离 XTWEETS 后删词/刷新都不再丢内容。
+    srchKwList.forEach((e) => { upgradeKwCacheFromTweets(e.key); });
     const wantQ = (opts.q || '').trim();
     if (wantQ) {
       const kk = kwKey(wantQ);
