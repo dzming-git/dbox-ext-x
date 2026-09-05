@@ -4832,11 +4832,15 @@
     const pp = String(k).split('-');
     const sel = (j === 0);
     el.classList.toggle('sel', sel);
-    // 内容没变就不重建 DOM：列表滚动会高频调用本函数，每帧重建纯属浪费
+    // 内容没变就不重建 DOM：列表滚动会高频调用本函数，每帧重建纯属浪费。
+    // ⚠️ 缓存键必须带上「选中/非选中」状态：元素池按索引复用，滚一格后原本以非选中
+    // 身份显示过某天的元素会变成选中项——若只按天键判定，会误判「内容没变」而跳过
+    // 两行式重建，选中大胶囊里残留单行文本（表现为选中项一会儿是两行一会儿是单行）。
+    const ck = k + (sel ? '|sel' : '|n');
     if (sel) {
       // 选中天：上行年份、下行「月日 · 周」
-      if (el.dataset.k !== String(k)) {
-        el.dataset.k = String(k); el.dataset.t = '';
+      if (el.dataset.k !== ck) {
+        el.dataset.k = ck; el.dataset.t = '';
         el.textContent = '';
         const y = document.createElement('span');
         y.className = 'arc-y'; y.textContent = pp[0] + '年';
@@ -4852,14 +4856,12 @@
         _arcYear = pp[0];
       }
     } else {
-      // 与选中天不同年的条目补上两位年份（如 25/12/31），让年份交界在滚轮里一眼可见。
-      // 依赖选中天年份，故缓存键必须带上算出的文本，否则滚动换天后不会刷新。
-      const sy = (_knobDays[_knobIdx] || '').split('-')[0];
-      const txt = (sy && sy !== pp[0])
-        ? (pp[0].slice(2) + '/' + (+pp[1]) + '/' + (+pp[2]))
-        : ((+pp[1]) + '/' + (+pp[2]));
-      if (el.dataset.k !== String(k) || el.dataset.t !== txt) {
-        el.dataset.k = String(k); el.dataset.t = txt;
+      // 非选中项一律带两位年份（如 23/2/13、22/10/19）。此前是「与选中天不同年才补」，
+      // 结果选中天一换（滚过年份交界时），同一条目就在「23/2/13」和「2/13」之间反复横跳，
+      // 看起来年份一会有一会没有。固定显示后与选中天解耦，完全确定、零闪烁。
+      const txt = pp[0].slice(2) + '/' + (+pp[1]) + '/' + (+pp[2]);
+      if (el.dataset.k !== ck || el.dataset.t !== txt) {
+        el.dataset.k = ck; el.dataset.t = txt;
         el.textContent = txt;
       }
     }
