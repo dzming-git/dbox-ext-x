@@ -5586,6 +5586,54 @@
       _srchFill.style.height = ((total - _srchRendered) * _srchEstH) + 'px';
     } else if (_srchFill) { _srchFill.remove(); _srchFill = null; }
   }
+  // 检索推文文本是否包含任一当前活跃关键词（不区分大小写）。
+  // 用于检测 X SearchTimeline 的已知缺陷：关键词命中回复时 API 有时返回对话主帖
+  // （原推）而非包含关键词的回复本身。文本不含任何关键词 + 有 in_reply_to 即为疑似。
+  function _srchTextHasKeyword(text) {
+    if (!text) return false;
+    const t = text.toLowerCase();
+    return srchKwList.some((e) => {
+      const q = (e.q || '').trim().toLowerCase();
+      if (!q) return false;
+      return t.includes(q);
+    });
+  }
+  // 已触发的「回复补拉」集合（按 tweet_id 去重），避免同一张卡重复请求
+  const _srchReplyFetching = new Set();
+  // 对疑似「API 返回了对话主帖而非命中回复」的结果，异步拉取 TweetDetail 获取
+  // 对话线程，从中找到文本包含关键词的回复并替换当前卡片。
+  // X SearchTimeline 已知问题：关键词匹配在回复里时，entries 有时返回原推数据
+  // （tweet_id / author / text 都是主帖的），导致用户看到与关键词无关的内容。
+  function fetchSearchReplyMatch(tid, card, kw) {
+    if (!tid || !card || _srchReplyFetching.has(String(tid))) return;
+    _srchReplyFetching.add(String(tid));
+    req(`${API}/tweet/${encodeURIComponent(tid)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.success || !(d.replies || []).length) return;
+        // 在回复列表中找文本包含任一关键词的条目
+        const hit = (d.replies || []).find((rp) => {
+          const t = (rp.text || '').toLowerCase();
+          return srchKwList.some((e) => {
+            const q = (e.q || '').trim().toLowerCase();
+            return q && t.includes(q);
+          });
+        });
+        if (!hit || !hit.tweet_id) return;
+        // 找到了含关键词的回复：用回复数据替换当前卡片
+        const merged = mergeTweet(hit);
+        if (filterActive() && !srchFilterOk(merged, new Set())) { if (card.parentNode) card.remove(); return; }
+        if (card.parentNode) {
+          const nc = renderBrowseCard(merged);
+          if (kw) addKwSourceTag(nc, kw);
+          // 标记此卡是「从对话线程中找到的实际匹配回复」
+          nc.dataset.replyMatch = '1';
+          card.replaceWith(nc);
+          layoutJustifiedIn(nc);
+        }
+      })
+      .catch(() => {});
+  }
   // 渲染单卡（抽取自 renderSrchProduct）。return null 表示被过滤/去重跳过。
   function _srchMakeCard(it, seenText, filtering, delayIdx) {
     const id = it.tweet_id || it.id;
@@ -5600,6 +5648,20 @@
     if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return null; }
     const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
     const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
+    // 检测 X SearchTimeline 缺陷：返回结果文本不含任何关键词但有条目是对话的一部分
+    // （有 in_reply_to 或被其他条目引用为父帖），则触发「回复补拉」尝试在对话线程中
+    // 找到真正命中的那条回复并替换卡片。
+    if (!needFetch && full.text != null && !_srchTextHasKeyword(full.text)) {
+      const isConversationRoot = (full.in_reply_to && full.in_reply_to.tweet_id)
+        || srchAllItems.some((oi) => {
+            const irt = (oi.full || oi).in_reply_to;
+            return irt && String(irt.tweet_id || '') === String(id);
+          });
+      if (isConversationRoot) {
+        card.dataset.maybeRoot = '1';
+        fetchSearchReplyMatch(id, card, srchActiveKey === ALL_KEY ? (it.kw || null) : null);
+      }
+    }
     if (!needFetch && srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
     card.classList.add('card-enter');
     card.style.animationDelay = Math.min(delayIdx * 18, 600) + 'ms';
