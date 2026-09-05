@@ -5748,64 +5748,6 @@
       : '配置搜索过滤（屏蔽广告/机器人）';
   }
 
-  function renderSrchProduct() {
-    const c = srchCur();
-    const arr = curArr();
-    srchAllItems = arr.slice();
-    srchSeenIds = new Set();   // 去重集合在渲染过程中逐个加入，不要预先塞满（否则全部被跳过）
-    _srchFetching.clear();     // 每轮渲染重新尝试补全（XTWEETS 可能已补齐该推文）
-    srchCursor = curCursorGet();
-    srchList.innerHTML = '';
-    if (!arr.length) {
-      if (srchActiveKey === ALL_KEY) {
-        const loading = srchKwList.some((e) => {
-          const cc = srchCache.get(e.key);
-          return !!(cc && cc.loading);
-        });
-        srchList.innerHTML = loading ? '<div class="bm-empty">正在搜索…</div>'
-          : '<div class="bm-empty">还没有结果，添加关键词后会把它们合成一条流。</div>';
-      } else {
-        srchList.innerHTML = (c && c.err)
-          ? `<div class="bm-empty err">获取失败: ${esc2(c.err)}</div>`
-          : '<div class="bm-empty">该模式暂无缓存，点关键词上的重搜按钮获取。</div>';
-      }
-      updateFilterBadge();
-      return;
-    }
-    let i = 0;
-    const seenText = new Set();          // 正文去重集合（仅本轮渲染内有效）
-    _fltHidden = 0;
-    const filtering = filterActive();
-    // 融合视图的顺序是排好的（热门＝择优归并、最新＝时间倒序），**不能再按时间重排**，
-    // 否则热门模式算出来的顺序会被抹平；单词视图沿用原来的时间倒序。
-    const ordered = (srchActiveKey === ALL_KEY) ? arr.slice() : sortItemsByTime(arr);
-    ordered.forEach((it) => {
-      const id = it.tweet_id || it.id;
-      if (!id || srchSeenIds.has(String(id))) return;
-      srchSeenIds.add(String(id));
-      // 内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
-      const full = tweetCacheGet(id) || it;
-      // 过滤广告/机器人：命中规则即跳过，不渲染该卡片
-      if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
-      // 内容缓存缺失 author（被 XTWEETS 1500 上限淘汰 / 跨设备未同步）：先渲染中性骨架占位，
-      // 再按 id 懒拉单条补全；补全后 fetchSearchCard 会按过滤结果换成真卡或移除（不回插 @unknown 推文脸）。
-      const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
-      const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
-      // 融合视图：标出这条来自哪个关键词，否则混排后用户看不出它为什么出现在这里
-      if (!needFetch && srchActiveKey === ALL_KEY && it.kw) addKwSourceTag(card, it.kw);
-      card.classList.add('card-enter');
-      card.style.animationDelay = Math.min(i * 18, 600) + 'ms';
-      srchList.appendChild(card);
-      i++;
-      if (needFetch) {
-        _srchFetching.add(String(id));
-        fetchSearchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null);
-      }
-    });
-    srchLoadmore.style.display = 'none';
-    updateFilterBadge();
-  }
-
   // 给卡片打「来自哪个关键词」的小标签（仅融合视图用）
   function addKwSourceTag(card, kw) {
     const head = card.querySelector('.head');
