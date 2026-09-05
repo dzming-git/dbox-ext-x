@@ -6317,10 +6317,17 @@
                { replace: true, silent: true });
     }
     if (kk === ALL_KEY) {
+      // 融合视图：所有关键词的桩缓存都用 XTWEETS 已有内容升级为完整对象。
+      // 后台批量任务（/search/run）会把关键词缓存覆盖为轻量桩（仅 tweet_id+created_at），
+      // 若 XTWEETS 也因 LRU 淘汰（上限1500）而缺失，渲染时只能创建骨架并依赖
+      // fetchSearchCard 懒拉——懒拉若失败/超时则骨架永久停留。此处主动升级可大幅减少骨架。
+      srchKwList.forEach((e) => { upgradeKwCacheFromTweets(e.key); });
       rebuildMerged();          // 融合流按当前模式重算
       srchCursor = null;
     } else {
       loadKwCache(kk) || srchCur();   // 确保该关键词的缓存对象已就位
+      // 同上：单关键词视图也先升级桩再渲染，避免删词后整屏骨架
+      upgradeKwCacheFromTweets(kk);
       srchCursor = curCursorGet();
     }
     srchSeenIds = new Set();
