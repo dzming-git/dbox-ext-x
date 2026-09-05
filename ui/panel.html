@@ -5569,7 +5569,12 @@
     const id = it.tweet_id || it.id;
     if (!id || srchSeenIds.has(String(id))) return null;
     srchSeenIds.add(String(id));
-    const full = (it && it.full) || tweetCacheGet(id) || it;
+    // 数据优先级：融合条目自带的完整内容 > XTWEETS 共享缓存 > 桩本身。
+    // 关键：it.full 若是旧格式桩（只有 id+created_at，无 author/text），不能当作有效内容
+    // 使用——否则过滤判断和渲染都会用错数据，且 needFetch 虽为 true 创建了骨架，
+    // 但 fetchSearchCard 可能静默失败（catch 吞异常），骨架就永远留在了页面上。
+    const hasFull = it && it.full && it.full.author && it.full.author.screen_name;
+    const full = hasFull ? it.full : (tweetCacheGet(id) || it);
     if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return null; }
     const needFetch = (!full.author || !full.author.screen_name) && !_srchFetching.has(String(id));
     const card = needFetch ? makeSrchSkeleton() : renderBrowseCard(full);
@@ -5891,7 +5896,9 @@
           const id = it.tweet_id || it.id;
           if (!id || srchSeenIds.has(String(id))) return;
           srchSeenIds.add(String(id));
-          const full = tweetCacheGet(id) || it;
+          // it 已是完整推文对象（来自 mergeTweets(d.items)），优先用于过滤/渲染；
+          // 不回退到 XTWEETS——共享缓存可能存了被覆盖的旧数据或不同推文的脏数据。
+          const full = it;
           // 过滤广告/机器人：命中即跳过，且不写入结果数组（避免把垃圾缓存下来）
           if (filtering && !srchFilterOk(full, seenText)) { _fltHidden++; return; }
           targetArr.push(it);   // 存完整推文：刷新后无需重新拉内容
