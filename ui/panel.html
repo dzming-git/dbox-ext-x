@@ -5005,6 +5005,14 @@
   // 罗盘停靠侧（right|left），由设置项 ui_arc_side 驱动：既决定 CSS 停靠在哪边，
   // 也决定弓形朝哪边内收（换边不翻转的话，弧线会朝屏幕外鼓出去）。
   let _arcSide = 'right';
+  // 罗盘当前是否可交互：手机端须 FAB 呼出(.open)；桌面端须 hover 展开(非 collapsed)。
+  // 未激活（手机未呼出 / 桌面收起）时，手指或滚轮在边缘附近滑动不应触发跳日，应让底层列表正常滚动。
+  function arcInteractive() {
+    if (window.matchMedia && window.matchMedia('(max-width: 760px)').matches)
+      return arcEl().classList.contains('open');
+    return !_arcCollapsed;
+  }
+  function arcEl() { return $('br-arc'); }
   function applyArcSide(side) {
     const s = (side === 'left') ? 'left' : 'right';
     const o = (s === 'left') ? 'right' : 'left';
@@ -5027,6 +5035,7 @@
       arc.dataset.bound = '1';
       // 在弧上滚动滚轮 = 切换日期（弧自身消费滚轮，不滚动主列表）
       arc.addEventListener('wheel', (e) => {
+        if (!arcInteractive()) return;   // 未激活：交还滚轮给主列表，不拦、不跳日
         e.preventDefault(); e.stopPropagation();
         if (!_knobDays.length) return;
         setKnobDay(_knobIdx + (e.deltaY > 0 ? 1 : -1), true);
@@ -5034,6 +5043,7 @@
       // 鼠标/触摸上下拖动选择日期，松手跳转到所选天
       let drag = null;
       arc.addEventListener('pointerdown', (e) => {
+        if (!arcInteractive()) return;   // 未激活：不抢触摸/指针，底层列表照常滑动
         drag = { y: e.clientY, idx: _knobIdx };
         if (arc.setPointerCapture) { try { arc.setPointerCapture(e.pointerId); } catch (_) {} }
         e.preventDefault();
@@ -5048,6 +5058,7 @@
       arc.addEventListener('pointerup', endDrag);
       arc.addEventListener('pointercancel', endDrag);
       arc.addEventListener('click', (e) => {
+        if (!arcInteractive()) return;   // 未激活：忽略点击
         const it = e.target.closest('.arc-item'); if (!it) return;
         setKnobDay(+it.dataset.i, true);
       });
