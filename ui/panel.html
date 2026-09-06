@@ -681,9 +681,9 @@
     .br-arc-fab { display: flex; }
   }
   .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由右侧圆弧时间轴(D)表达 */
-  /* 桌面端：默认收起为边缘悬浮的圆形图标；hover 展开、离开收起 */
+  /* 桌面端：默认收起为边缘悬浮的圆形图标；点它展开，指针离开收起 */
   @media (min-width: 761px) {
-    .br-arc.collapsed { width: 48px; height: auto; }
+    .br-arc.collapsed { width: 48px; height: auto; pointer-events: none; }
     .br-arc.collapsed .arc-item:not(.sel) { pointer-events: none; }
     /* 收起态：选中天化身边缘悬浮圆形图标，半露在屏幕右侧外，不遮挡内容图片 */
     .br-arc.collapsed .arc-item.sel {
@@ -696,6 +696,11 @@
       font-size: 0; line-height: 1;
       box-shadow: 0 0 12px rgba(29,155,240,.6);
       overflow: hidden;
+      /* 收起态**只留这一颗小圆图标可点**，且点它是「展开」不是跳日。
+         ⚠️ 必须显式写：.arc-item 自身带 pointer-events:auto，会盖过父级的 none，
+         少了这条，收起态整块依旧能命中 → 误触直接跳日。 */
+      pointer-events: auto;
+      cursor: pointer;
     }
     .br-arc.collapsed .arc-item.sel .arc-y { display: none; }   /* 圆里只显「日」 */
     .br-arc.collapsed .arc-item.sel .arc-d { font-size: 16px; font-weight: 700; }
@@ -5019,6 +5024,13 @@
     return !_arcCollapsed;
   }
   function arcEl() { return $('br-arc'); }
+  // 展开 / 收起（桌面端）。收起态 CSS 已让整块不可命中，只留小圆图标可点。
+  function setArcExpanded(on) {
+    const arc = arcEl(); if (!arc) return;
+    _arcCollapsed = !on;
+    arc.classList.toggle('collapsed', !on);
+    renderArc();
+  }
   function applyArcSide(side) {
     const s = (side === 'left') ? 'left' : 'right';
     const o = (s === 'left') ? 'right' : 'left';
@@ -5064,21 +5076,25 @@
       arc.addEventListener('pointerup', endDrag);
       arc.addEventListener('pointercancel', endDrag);
       arc.addEventListener('click', (e) => {
-        if (!arcInteractive()) return;   // 未激活：忽略点击
         const it = e.target.closest('.arc-item'); if (!it) return;
+        // 收起态：这一下**只负责展开，绝不跳日**——否则「想展开」却把列表滚到别处，
+        // 正是「误触直接跳转」的来源。
+        if (_arcCollapsed) { setArcExpanded(true); return; }
+        if (!arcInteractive()) return;   // 未激活（手机端未呼出）：忽略点击
         setKnobDay(+it.dataset.i, true);
       });
       // 手机端呼出按钮
       const fab = $('br-arc-fab');
       if (fab) fab.addEventListener('click', () => arc.classList.toggle('open'));
-      // 桌面端：默认收起（仅显示当前天小胶囊），hover 展开、离开收起；滚轮/拖动在展开期间照常可用
+      // 桌面端：默认收起（仅显示当前天小圆图标），**点击它才展开**，指针离开自动收起。
+      // 这里刻意去掉了原来的 hover 展开：hover 一碰就把它撑成 96×470 的整块，
+      // 鼠标路过右边缘（哪怕只是去拖滚动条）就展开并吞掉滚轮 → 直接跳日。
+      // 触摸设备同样受益：以前一次轻点会先触发兼容的 mouseenter 把它展开，
+      // 紧接着的 click 就通过守卫跳日了。现在必须显式点一下才展开。
       if (window.matchMedia && window.matchMedia('(min-width: 761px)').matches) {
         _arcCollapsed = true; arc.classList.add('collapsed');
-        arc.addEventListener('mouseenter', () => {
-          if (_arcCollapsed) { _arcCollapsed = false; arc.classList.remove('collapsed'); renderArc(); }
-        });
         arc.addEventListener('mouseleave', () => {
-          if (!_arcCollapsed) { _arcCollapsed = true; arc.classList.add('collapsed'); renderArc(); }
+          if (!_arcCollapsed) setArcExpanded(false);
         });
       }
     }
