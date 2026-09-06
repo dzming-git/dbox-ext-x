@@ -1765,6 +1765,60 @@ def create_blueprint(host):
     def check():
         return jsonify({'success': True, **_check_x_session()})
 
+    # ---- 网页登录：在用户桌面打开真实浏览器，人工登录，自动取回 cookie ----
+    # 不自己破解 X 的人机校验（Arkose/滑块/邮箱验证码）：那是对抗对方风控，违反 ToS，
+    # 且对方一改就失效；邮箱验证码更是天然无法自动化。交给用户在真实浏览器里完成最可靠。
+    _LOGIN_URL = 'https://x.com/i/flow/login'
+    _LOGIN_MATCH = ['auth_token', 'ct0']
+
+    @bp.route('/login/start', methods=['POST'])
+    @host.login_required
+    def login_start():
+        wl = getattr(host, 'weblogin', None)
+        if wl is None:
+            return jsonify({'success': False,
+                            'message': '当前 Dbox 版本不支持网页登录（缺少 weblogin 能力）'}), 501
+        r = wl.start(url=_LOGIN_URL, match=_LOGIN_MATCH, domain='x.com')
+        if not r.get('ok'):
+            return jsonify({'success': False,
+                            'message': r.get('error') or '无法打开登录浏览器'}), 500
+        return jsonify({'success': True, 'sid': r.get('sid'),
+                        'message': '已在桌面打开浏览器，请在其中完成 X 登录'})
+
+    @bp.route('/login/status', methods=['GET'])
+    @host.login_required
+    def login_status():
+        wl = getattr(host, 'weblogin', None)
+        sid = (request.args.get('sid') or '').strip()
+        if wl is None:
+            return jsonify({'success': False, 'message': '不支持网页登录'}), 501
+        st = wl.status(sid)
+        if not st.get('ok'):
+            return jsonify({'success': False, 'message': st.get('error')}), 404
+        # 登录完成即写入凭证库（add 按 kind|domain|name 定位，重复登录是覆盖而非新增）
+        if st.get('state') == 'done' and st.get('cookies'):
+            try:
+                host.vault._vault.add(kind='cookie', name='X 登录态', domain='x.com',
+                                      value=st['cookies'], fmt='netscape',
+                                      note='由「网页登录」自动获取')
+            except Exception as e:
+                return jsonify({'success': False, 'state': 'done', 'saved': False,
+                                'message': '已拿到 cookie，但写入凭证库失败：%s' % e}), 500
+            return jsonify({'success': True, 'state': 'done', 'saved': True,
+                            'count': len(st['cookies'])})
+        return jsonify({'success': True, 'state': st.get('state'), 'saved': False,
+                        'error': st.get('error') or ''})
+
+    @bp.route('/login/cancel', methods=['POST'])
+    @host.login_required
+    def login_cancel():
+        wl = getattr(host, 'weblogin', None)
+        sid = ((request.get_json(force=True, silent=True) or {}).get('sid')
+               or request.args.get('sid') or '')
+        if wl is not None:
+            wl.cancel((sid or '').strip())
+        return jsonify({'success': True})
+
     def _check_x_session():
         """实时校验 X 登录态：缺/残缺 Cookie 直接判否；字段齐全再拉 1 条关注流确认真实有效。
 

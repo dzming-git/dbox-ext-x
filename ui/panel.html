@@ -224,6 +224,10 @@
   .xd-session-alert .xa-sub { color: #a33; font-size: 11.5px; font-weight: 400; }
   .xd-session-alert .xa-retry { display: block; margin-top: 8px; padding: 4px 12px; border: 1px solid #f5c6c6; border-radius: 6px; background: #fff; color: #c0392b; font-size: 12px; cursor: pointer; }
   .xd-session-alert .xa-retry:disabled { opacity: .6; cursor: default; }
+  /* 一键登录：主操作用 X 品牌蓝，与「重试」的次要样式明确区分 */
+  .xd-session-alert .xa-login { display: block; margin-top: 8px; padding: 6px 14px; border: none; border-radius: 7px; background: #1d9bf0; color: #fff; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .xd-session-alert .xa-login:hover { background: #1a8cd8; }
+  .xd-session-alert .xa-cancel-login { display: block; margin-top: 8px; padding: 4px 12px; border: 1px solid #f5c6c6; border-radius: 6px; background: #fff; color: #c0392b; font-size: 12px; cursor: pointer; }
   .bm-folderbar { display: flex; gap: 6px; margin-bottom: 10px; }
   .bm-folderbar select, .bm-folderbar input { flex: 1; border: 1px solid #e3e6eb; border-radius: 8px; padding: 7px 8px; font-size: 12px; color: #0f1419; background: #fff; }
   .bm-folderbar button { border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 12px; cursor: pointer; color: #536471; }
@@ -5342,6 +5346,7 @@
   async function checkXSession() {
     const el = $('xd-session-alert');
     if (!el || _sessionChecking) return;
+    if (_loginSid) return;            // 登录流程进行中：别用旧结果覆盖「等待登录」提示
     _sessionChecking = true;
     try {
       const r = await req(`${API}/check`);
@@ -5353,11 +5358,15 @@
       const cookieIssue = (reason === 'no_cookie' || reason === 'incomplete' || reason === 'expired');
       const title = (cookieIssue ? icon('xi-alert') + 'X 登录态失效' : icon('xi-alert') + '暂时连不上 X');
       const sub = cookieIssue
-        ? '请到「凭证库」中重新注册有效的 x.com Cookie（需含 auth_token 与 ct0），再刷新本面板。'
+        ? '可点「一键登录 X」：会在你的桌面打开一个真实浏览器直达 X 官方登录页，'
+          + '你正常登录（含滑块、验证码、邮箱验证）后自动取回 Cookie，不用再手动复制粘贴。'
         : '这通常是网络或代理问题，与 Cookie 无关；网络恢复后本提示会自动消失，无需重新注册 Cookie。';
       el.style.display = '';
       el.innerHTML = `<div class="xa-inner">${title}：${esc2(msg)}<br><span class="xa-sub">${sub}</span>`
+        + (cookieIssue ? `<button class="xa-login" type="button">一键登录 X</button>` : '')
         + `<button class="xa-retry" type="button">重试</button></div>`;
+      const lb = el.querySelector('.xa-login');
+      if (lb) lb.addEventListener('click', (ev) => { ev.stopPropagation(); startWebLogin(); });
       const btn = el.querySelector('.xa-retry');
       if (btn) btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -5371,6 +5380,79 @@
       _sessionChecking = false;
     }
   }
+  // ---- 网页登录：桌面打开真实浏览器 → 用户人工登录 → 自动取回 Cookie ----
+  // 不自动破解 X 的人机校验：那是对抗风控、违反 ToS，且对方一改就失效；
+  // 邮箱验证码更是只能由人完成。用户在真实浏览器里过一遍最可靠，也不会触发风控。
+  let _loginSid = null, _loginTimer = null;
+
+  function stopLoginPoll() {
+    if (_loginTimer) { clearInterval(_loginTimer); _loginTimer = null; }
+  }
+  function renderLoginWaiting(text) {
+    const el = $('xd-session-alert');
+    if (!el) return;
+    el.style.display = '';
+    el.innerHTML = `<div class="xa-inner">${icon('xi-alert')}等待登录完成`
+      + `<br><span class="xa-sub">${esc2(text)}</span>`
+      + `<button class="xa-cancel-login" type="button">取消</button></div>`;
+    const b = el.querySelector('.xa-cancel-login');
+    if (b) b.addEventListener('click', (ev) => { ev.stopPropagation(); cancelWebLogin(); });
+  }
+  async function startWebLogin() {
+    if (_loginSid) return;                       // 已有进行中的登录
+    let d = {};
+    try {
+      const r = await req(`${API}/login/start`, { method: 'POST' });
+      d = await r.json();
+    } catch (e) {
+      showBrowseStatus('无法发起登录：' + e, 'err');
+      return;
+    }
+    if (!d || !d.success) {
+      showBrowseStatus('无法发起登录：' + ((d && d.message) || '未知错误'), 'err');
+      return;
+    }
+    _loginSid = d.sid;
+    renderLoginWaiting('已在你的桌面打开浏览器，请在其中完成 X 登录（含滑块、验证码、邮箱验证）。'
+      + '登录成功后本提示会自动消失。');
+    showBrowseStatus('等待在桌面浏览器中完成 X 登录…', 'ok');
+    stopLoginPoll();
+    _loginTimer = setInterval(pollWebLogin, 1500);
+  }
+  async function pollWebLogin() {
+    if (!_loginSid) return;
+    let d = {};
+    try {
+      const r = await req(`${API}/login/status?sid=${encodeURIComponent(_loginSid)}`);
+      d = await r.json();
+    } catch (_) { return; }
+    if (!d || !d.success) return;
+    if (d.state === 'done') {
+      stopLoginPoll(); _loginSid = null;
+      showBrowseStatus('登录成功，正在重新加载…', 'ok');
+      setTimeout(() => { checkXSession(); refreshBrowseKeepPos(); }, 800);
+      return;
+    }
+    if (d.state === 'timeout' || d.state === 'error' || d.state === 'cancelled') {
+      stopLoginPoll(); _loginSid = null;
+      showBrowseStatus('登录未完成：' + ((d && d.error) || d.state), 'err');
+      checkXSession();
+    }
+  }
+  async function cancelWebLogin() {
+    if (!_loginSid) return;
+    const sid = _loginSid;
+    stopLoginPoll(); _loginSid = null;
+    try {
+      await req(`${API}/login/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid }),
+      });
+    } catch (_) {}
+    checkXSession();
+  }
+
   // 仅当告警条正显示时才复检：网络恢复后自动清除，不必等用户手动刷新面板。
   function recheckSessionIfAlerted() {
     const el = $('xd-session-alert');
