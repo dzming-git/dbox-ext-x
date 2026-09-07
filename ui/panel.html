@@ -2812,6 +2812,10 @@
   function bootRoute() {
     if (routeInited) return;
     if (_bootTimer) { clearTimeout(_bootTimer); _bootTimer = null; }
+    // 启动时读一次设置：日期罗盘停靠侧等 UI 偏好原先**只有打开设置页才会被应用**，
+    // 于是「设成了左侧、每次打开却还在右侧，必须进设置再回来才生效」。
+    // 顺带也让 stCfg 在首屏就有值（媒体预取开关原本要等开过设置页才生效）。
+    loadSettings();
     const r0 = initialRoute();
     applyRoute(r0, { fromUrl: true, silent: true });   // routeInited 仍为 false → 必定加载
     routeInited = true;
@@ -5047,8 +5051,16 @@
       el.classList.remove('side-' + o);
       el.classList.add('side-' + s);
     });
+    // 记一份本地缓存：下次打开**立刻**按它上色，不等设置请求回来。
+    // 否则会先用 HTML 里的默认值渲染成右侧、请求回来再跳到左侧（肉眼可见的跳动）。
+    try { localStorage.setItem('xd_arc_side', s); } catch (_) {}
     renderArc();   // 弓量方向随停靠侧变化，需重算
   }
+  // 启动时先用本地缓存上色（真值仍由 bootRoute 里的 loadSettings() 从服务端读回）。
+  try {
+    const _cachedSide = localStorage.getItem('xd_arc_side');
+    if (_cachedSide === 'left' || _cachedSide === 'right') applyArcSide(_cachedSide);
+  } catch (_) {}
   function buildDayKnob(dayCount, preserve) {
     // 折叠展开/滚轮跳转会触发整表重建：preserve=true 时保留当前选中天，避免被 currentDayKey() 抢回旧位置
     const prevDay = (preserve && _knobDays[_knobIdx]) ? _knobDays[_knobIdx] : currentDayKey();
