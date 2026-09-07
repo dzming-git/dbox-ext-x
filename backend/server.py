@@ -238,17 +238,16 @@ def create_blueprint(host):
                 return '; '.join(pairs)
         return ''
 
-    # ---------- 媒体预览缓存（LRU 磁盘缓存，对标 ehentai 下载器） ----------
-    # 用户点开的图片/视频预览直接代理下载并落盘缓存，回看命中本地字节，
-    # 不再重复访问 twimg；也便于后续"缓存即下载"。
-    _CACHE_DIR = os.path.join(host.data_dir, 'media_cache')
-    _CACHE_LRU_DIR = os.path.join(_CACHE_DIR, 'lru')        # 字节：<md5(url)><ext>
-    _CACHE_INDEX_FILE = os.path.join(_CACHE_DIR, 'lru_index.json')
-    _CACHE_MAX_BYTES = 512 * 1024 * 1024                    # 512MB 上限
+    # ---------- 媒体预览缓存（统一接入框架托管缓存分区） ----------
+    # 经 host.cache('media') 直读直写框架管理的磁盘 LRU 分区；淘汰/容量/统计/迁移
+    # 统一由 cached 微服务治理。这里只负责读写字节与暴露信息，文件名保持
+    # <md5(url)><ext>，与历史缓存一致，迁移脚本可直接承接旧文件。
+    _CACHE_PART = host.cache('media', key_hash='md5', key_len=32)
+    _CACHE_LRU_DIR = _CACHE_PART.root          # 兼容旧调用点：<md5(url)><ext> 路径拼接
+    _CACHE_INDEX_FILE = os.path.join(_CACHE_LRU_DIR, '.cache_index.json')
     os.makedirs(_CACHE_LRU_DIR, exist_ok=True)
 
     # 清理上次运行残留的 .part：服务重启会中断进行中的下载，留下半截文件。
-    # 这些残骸既占空间，又会让后续请求误以为「正在下载」而一直空转。
     try:
         for _fn in os.listdir(_CACHE_LRU_DIR):
             if _fn.endswith('.part'):
@@ -259,45 +258,11 @@ def create_blueprint(host):
     except Exception:
         pass
 
-    _LRU_LOCK = threading.Lock()
-    _lru_meta = OrderedDict()   # key -> {"ext": str, "size": int, "type": str}
-    _lru_total = 0
+    # 启动时按磁盘重建索引（迁移来的旧文件也在此被纳入统计与淘汰）
+    _CACHE_PART.reindex()
 
     def _cache_key(url):
         return hashlib.md5(url.encode('utf-8')).hexdigest()
-
-    def _cache_load_index():
-        nonlocal _lru_meta, _lru_total
-        _lru_meta = OrderedDict()
-        _lru_total = 0
-        try:
-            with open(_CACHE_INDEX_FILE, 'r', encoding='utf-8') as f:
-                saved = json.load(f)
-            items = saved.get('items', {})
-            for k in saved.get('keys', []):
-                if k in items:
-                    _lru_meta[k] = items[k]
-                    _lru_total += items[k].get('size', 0)
-        except Exception:
-            # 索引缺失/损坏：按 mtime 重建
-            try:
-                for fn in os.listdir(_CACHE_LRU_DIR):
-                    base, ext = os.path.splitext(fn)
-                    if not base:
-                        continue
-                    sz = os.path.getsize(os.path.join(_CACHE_LRU_DIR, fn))
-                    _lru_meta[base] = {'ext': ext, 'size': sz, 'type': 'image'}
-                    _lru_total += sz
-            except Exception:
-                pass
-
-    def _cache_save_index():
-        try:
-            with open(_CACHE_INDEX_FILE, 'w', encoding='utf-8') as f:
-                json.dump({'keys': list(_lru_meta.keys()),
-                           'items': _lru_meta}, f)
-        except Exception:
-            pass
 
     def _cache_max_bytes():
         """缓存上限（字节），取自统一设置；设置未就绪时退回默认 512MB。"""
@@ -308,82 +273,24 @@ def create_blueprint(host):
 
     def _cache_stats():
         """供设置页展示：文件数 / 已占用 / 上限。"""
-        with _LRU_LOCK:
-            return {'files': len(_lru_meta), 'bytes': _lru_total,
-                    'max_bytes': _cache_max_bytes()}
+        st = _CACHE_PART.stat()
+        return {'files': st['count'], 'bytes': st['bytes'], 'max_bytes': _cache_max_bytes()}
 
     def _cache_evict():
-        nonlocal _lru_total
-        # 上限改为可配置（设置页可调），故每次回收都现取，不缓存成常量
-        limit = _cache_max_bytes()
-        while _lru_total > limit and len(_lru_meta) > 1:
-            old_key, old_val = _lru_meta.popitem(last=False)
-            _lru_total -= old_val.get('size', 0)
-            try:
-                os.remove(os.path.join(_CACHE_LRU_DIR, old_key + old_val.get('ext', '')))
-            except Exception:
-                pass
-        _cache_save_index()
+        _CACHE_PART.cap = _cache_max_bytes()
+        _CACHE_PART.enforce_cap()
 
     def _cache_get(url):
         """命中返回 (path, ext)；并刷新访问顺序。未命中返回 None。"""
-        nonlocal _lru_total
-        key = _cache_key(url)
-        with _LRU_LOCK:
-            if key not in _lru_meta:
-                return None
-            val = _lru_meta.pop(key)
-            _lru_meta[key] = val
-            path = os.path.join(_CACHE_LRU_DIR, key + val.get('ext', ''))
-            if not os.path.exists(path):
-                _lru_total -= val.get('size', 0)
-                _cache_save_index()
-                return None
-            return path, val.get('ext', '')
+        return _CACHE_PART.get(url)
 
     def _cache_put_file(url, tmp_path, ext, keep_on_fail=False):
-        """把已落盘的临时文件登记进 LRU 缓存（流式代理用）。
+        """把已落盘的临时文件原子改名登记进托管分区；返回最终路径或 None。
 
-        与 _cache_put 的区别：不要求整份字节已在内存里。视频动辄几十上百 MB，先
-        read() 到内存再返回，前端就要等整个文件下载完才出画面（表现为「一直加载」），
-        且整份字节驻留内存容易把进程撑爆。流式代理先写 .part，完整读完后原子改名
-        登记；中途失败只留临时文件，不会被当成有效缓存。
+        流式代理先写 .part，完整读完后原子改名登记；中途失败只留临时文件，
+        不会被当成有效缓存。分区内部负责容量上限兜底淘汰。
         """
-        nonlocal _lru_total
-        key = _cache_key(url)
-        path = os.path.join(_CACHE_LRU_DIR, key + ext)
-        with _LRU_LOCK:
-            if key in _lru_meta:
-                _lru_total -= _lru_meta[key].get('size', 0)
-                del _lru_meta[key]
-            # 若 .part 此刻仍被流式响应的读句柄占用，Windows 下 os.replace 会抛错。
-            # 生成器在没有新数据时会主动关闭句柄，这里重试若干次以覆盖那个窗口；
-            # 此前一次失败即放弃，.part 永远残留、缓存永不生效。
-            replaced = False
-            # 重试次数从 12 提到 40（约 6 秒）：流式响应的读句柄释放往往慢于
-            # 1.8 秒，此前窗口太短导致改名失败、.part 永久残留、缓存永不生效。
-            for _attempt in range(40):
-                try:
-                    os.replace(tmp_path, path)
-                    replaced = True
-                    break
-                except Exception:
-                    time.sleep(0.15)
-            if not replaced:
-                # keep_on_fail：若仍被流式响应的读句柄占用，就不要删除。
-                # 删掉会让已下完的字节白费、本次请求拿到残缺数据；保留下来，
-                # 由响应的 finally（句柄已释放）补做改名登记。
-                if not keep_on_fail:
-                    try:
-                        os.remove(tmp_path)
-                    except Exception:
-                        pass
-                return None
-            sz = os.path.getsize(path)
-            _lru_meta[key] = {'ext': ext, 'size': sz}
-            _lru_total += sz
-            _cache_evict()
-            return path
+        return _CACHE_PART.put_file(url, tmp_path, ext, keep_on_fail=keep_on_fail)
 
     # ---------- 媒体边下边播（未缓存完也能拖动进度条） ----------
     # 同一 url 只起一个后台下载线程写 .part；响应从 .part 渐进读取并支持 Range，
@@ -740,7 +647,7 @@ def create_blueprint(host):
     _folder_lock = threading.Lock()
 
     # 启动时恢复媒体缓存索引（访问顺序 + 总量），避免重启后重复下载已缓存资源
-    _cache_load_index()
+    _CACHE_PART.reindex()
 
     def _folder_conn():
         conn = sqlite3.connect(_folder_db_path, timeout=10)
@@ -2518,21 +2425,14 @@ def create_blueprint(host):
     def media_cache():
         """媒体缓存管理（P2-9）：GET 列表 / DELETE 清空。"""
         if request.method == 'DELETE':
-            nonlocal _lru_total
-            with _LRU_LOCK:
-                for fn in os.listdir(_CACHE_LRU_DIR):
-                    try:
-                        os.remove(os.path.join(_CACHE_LRU_DIR, fn))
-                    except Exception:
-                        pass
-                _lru_meta.clear()
-                _lru_total = 0
-            _cache_save_index()
+            _CACHE_PART.clear()
             return jsonify({'success': True})
         # GET 列表
         items = []
         try:
             for fn in os.listdir(_CACHE_LRU_DIR):
+                if fn == '.cache_index.json':
+                    continue
                 p = os.path.join(_CACHE_LRU_DIR, fn)
                 if os.path.isfile(p):
                     ext = os.path.splitext(fn)[1].lower()
