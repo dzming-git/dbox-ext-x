@@ -2082,8 +2082,16 @@
     const vw = v.videoWidth, vh = v.videoHeight;
     if (!vw || !vh || !container) return;
     const parent = container.parentElement;
-    const maxW = parent ? parent.clientWidth - 4 : 500;   // 容器内可用宽度
-    const maxH = window.innerHeight * 0.8;
+    // 关键：以「单元格自身」可用宽度为上限，而非父容器(.media.justified 整行)宽度。
+    // 图文混排卡片里视频只是网格中的一个小格，若按整行宽算，dw 会约 2 倍于单元格宽，
+    // <video> 溢出单元格被 .bm-media{overflow:hidden} 裁切 → 视频显示不全、原生控件跑到框外点不到。
+    const cellW = container.clientWidth || (parent ? parent.clientWidth : 500);
+    const maxW = Math.max(60, cellW - 4);
+    // 网格单元(justified/multi)内：高度上限取单元格现有高度，视频正好填满单元、不撑大行高、不变形邻格；
+    // 单图/单视频(m1)：允许放大到视口 85%，消除黑边。
+    const inGrid = !!(container.closest && container.closest('.media.justified, .quoted .media.justified'));
+    const maxH = inGrid ? Math.max(60, container.clientHeight || window.innerHeight * 0.85)
+                        : window.innerHeight * 0.85;
     let dw, dh;
     if (vh >= vw) {
       // 竖屏/方屏：以高度为基准算宽度（video 不会撑满容器宽，自然居中）
@@ -2133,6 +2141,12 @@
       if (v.videoWidth && v.videoHeight) {
         fitVideoToNaturalSize(v, mediaEl);
         v.style.opacity = '1';
+        // 竖屏/放大后的视频可能比可视区更高，若展开后顶部或底部落到视口外，
+        // 轻量滚到居中，保证原生播放控件始终可见可点（只在确实溢出时才滚，不打扰正常浏览）。
+        const r = v.getBoundingClientRect();
+        if (r.height > 0 && (r.bottom > window.innerHeight - 8 || r.top < 8)) {
+          v.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
       }
     };
     v.addEventListener('loadedmetadata', onMeta);
