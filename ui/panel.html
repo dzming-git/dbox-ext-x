@@ -5767,6 +5767,7 @@
   // 首轮 pull 取回旧值把刚应用的方案覆盖掉。localStorage 同步可读、刷新必在，作为本机权威兜底。
   const SRCH_KWL_LOCAL = 'xd_srch_kwlist';
   const SRCH_FLT_LOCAL = 'xd_srch_filter';
+  const SRCH_FILTER_KEY = 'search:filter';   // XSTATE 键，与搜索关键词键 search:kwlist 同约定
   const srchCache = new Map();   // key -> {q,top,latest,cursorTop,cursorLatest,ts,err,loading}
   const srchFeeds = new Map();   // key -> feed（每个视图一份独立的浏览位置）
   let srchRefreshingAll = false; // 「全部重搜」进行中
