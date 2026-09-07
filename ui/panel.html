@@ -639,6 +639,8 @@
     font-size: 13px; line-height: 1.15; white-space: nowrap; color: #cfd9e0;
     background: rgba(21,32,43,.8); border: 1px solid rgba(255,255,255,.12);
     box-shadow: 0 2px 9px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto;
+    /* 长按不弹选择框/不触发系统震动（兜底，配合 pointer-events 一起用） */
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
     backface-visibility: hidden; will-change: transform, opacity;
     transition: transform .26s cubic-bezier(.22,.61,.36,1), opacity .26s ease,
       color .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease,
@@ -678,6 +680,10 @@
     .br-arc.side-left { opacity: 0; transform: translateY(-50%) translateX(-24px);
       pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
     .br-arc.open { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
+    /* 未呼出时**条目也必须不可命中**：.arc-item 自带 pointer-events:auto 会盖过
+       容器的 none，少了这条，隐藏的条目仍能被长按/点击（表现为长按出现淡蓝
+       选择框 + 手机震动，按一下则直接跳日）。 */
+    .br-arc:not(.open) .arc-item { pointer-events: none; }
     .br-arc-fab { display: flex; }
   }
   .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由右侧圆弧时间轴(D)表达 */
@@ -5200,7 +5206,9 @@
       if (!el) {
         el = document.createElement('div');
         el.className = 'arc-item'; el.dataset.i = i;
-        el.addEventListener('click', () => setKnobDay(+el.dataset.i, true));
+        // **不能**在这里挂 click：条目级监听不受 arcInteractive() 约束，
+        // 隐藏 / 收起状态下被误触也会直接跳日（手机端「没按展开却跳日」的根因）。
+        // 统一走上方 arc 上的委托处理：带守卫，且收起态只展开、不跳日。
         arc.appendChild(el); _arcPool.set(i, el);
         // 新进入的天：先落在外侧并透明，下一帧滑入（滚动时衔接平滑）
         el.style.opacity = '0';
