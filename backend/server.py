@@ -31,7 +31,7 @@ import importlib.util as _ilu
 
 # X 反爬令牌（x-client-transaction-id）生成。与本页面同包，用相对导入——
 # 插件内裸名导入在宿主进程会 ModuleNotFoundError，进而导致整个蓝图 404。
-from .x_client_tx import get_transaction_id
+from .x_client_tx import get_transaction_id, invalidate
 
 # run.py 仅依赖标准库（无重型副作用），可直接 import 复用其 X API 能力。
 # 注意：不能用裸 `import run`，否则会和 pixiv 的 run.py 抢占全局 sys.modules['run']，
@@ -265,16 +265,18 @@ def create_blueprint(host):
         return hashlib.md5(url.encode('utf-8')).hexdigest()
 
     def _cache_max_bytes():
-        """缓存上限（字节），取自统一设置；设置未就绪时退回默认 512MB。"""
+        """缓存上限（字节）：优先读取 cached 微服务统一治理的 _caps.json（中心「缓存管理」页设置），
+        读取失败退回 512MB 默认。这样后台设置的容量上限对 X 即时生效。"""
         try:
-            return int(_settings_load().get('cache_max_mb') or 512) * 1024 * 1024
+            import json as _json
+            _caps_file = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(_CACHE_PART.root)))),
+                'cache', '_caps.json')
+            with open(_caps_file, 'r', encoding='utf-8') as f:
+                caps = _json.load(f)
+            return int(caps.get('x/media', 512)) * 1024 * 1024
         except Exception:
             return 512 * 1024 * 1024
-
-    def _cache_stats():
-        """供设置页展示：文件数 / 已占用 / 上限。"""
-        st = _CACHE_PART.stat()
-        return {'files': st['count'], 'bytes': st['bytes'], 'max_bytes': _cache_max_bytes()}
 
     def _cache_evict():
         _CACHE_PART.cap = _cache_max_bytes()
@@ -1582,8 +1584,11 @@ def create_blueprint(host):
         """返回统一设置 + 各后台任务运行状态 + 媒体缓存占用。"""
         with _settings_lock:
             jobs = {n: dict(_job_state[n]) for n in _JOB_NAMES}
+        _st = _CACHE_PART.stat()
         return jsonify({'success': True, 'settings': _settings_load(),
-                        'jobs': jobs, 'cache': _cache_stats()})
+                        'jobs': jobs,
+                        'cache': {'files': _st['count'], 'bytes': _st['bytes'],
+                                  'max_bytes': _cache_max_bytes()}})
 
     @bp.route('/settings', methods=['PUT', 'POST'])
     @host.login_required
@@ -1804,9 +1809,21 @@ def create_blueprint(host):
             def _txid(method, path):
                 return get_transaction_id(_home_headers, method, path, ua=xrun.UA)
 
-            items, next_cursor = xrun.search_tweets(
-                cookie, request.args.get('q').strip(), count, cursor, product,
-                txid_func=_txid)
+            def _do():
+                return xrun.search_tweets(
+                    cookie, request.args.get('q').strip(), count, cursor, product,
+                    txid_func=_txid)
+
+            try:
+                items, next_cursor = _do()
+            except Exception as e1:
+                # 令牌材料可能因 X 发版而失效（缓存的 ClientTransaction 用了旧 site key /
+                # ondemand.s，X 拒收 → 404）。丢弃缓存重建一次再试，避免「发版后必须重启进程」。
+                if '404' in str(e1):
+                    invalidate()
+                    items, next_cursor = _do()
+                else:
+                    raise
         except Exception as e:
             # 404 基本都指向 X 的反爬校验（拿不到令牌或令牌不被接受），
             # 给个能定位方向的提示，避免用户只看到一个干巴巴的状态码
@@ -2420,34 +2437,11 @@ def create_blueprint(host):
             time.sleep(0.1)
         return _serve_media_partial(tmp_path, ct, request, url, ext)
 
-    @bp.route('/media/cache', methods=['GET', 'DELETE'])
+    @bp.route('/media/cache', methods=['DELETE'])
     @host.login_required
-    def media_cache():
-        """媒体缓存管理（P2-9）：GET 列表 / DELETE 清空。"""
-        if request.method == 'DELETE':
-            _CACHE_PART.clear()
-            return jsonify({'success': True})
-        # GET 列表
-        items = []
-        try:
-            for fn in os.listdir(_CACHE_LRU_DIR):
-                if fn == '.cache_index.json':
-                    continue
-                p = os.path.join(_CACHE_LRU_DIR, fn)
-                if os.path.isfile(p):
-                    ext = os.path.splitext(fn)[1].lower()
-                    items.append({
-                        'file': fn,
-                        'ext': ext,
-                        'size': os.path.getsize(p),
-                        'mtime': os.path.getmtime(p),
-                        'type': 'video' if ext in ('.mp4', '.webm', '.mov') else 'image',
-                    })
-        except Exception:
-            pass
-        items.sort(key=lambda x: -x['mtime'])
-        total = sum(x['size'] for x in items)
-        return jsonify({'success': True, 'items': items, 'count': len(items),
-                        'total_bytes': total, 'max_bytes': _cache_max_bytes()})
+    def media_cache_clear():
+        """媒体缓存清空（兼容旧调用方；统计/上限改由中心「缓存管理」页统一治理）。"""
+        _CACHE_PART.clear()
+        return jsonify({'success': True})
 
     return bp

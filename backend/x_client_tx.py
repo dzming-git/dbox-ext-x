@@ -14,13 +14,20 @@ queryId、features 都不是影响因素。
 """
 
 import threading
+import time
 import urllib.request
 
 _lock = threading.Lock()
 _ct = None          # 已备料的 ClientTransaction（内含站点 key 与 animation key）
+_ct_ts = 0          # _ct 备料完成时刻（unix 秒），用于 TTL 自愈
+
+# X 前端发版会轮换 site-verification meta 与 ondemand.s 的哈希，旧 _ct 生成的令牌会被拒（404）。
+# 设一个较短 TTL：过期即重建，避免「某次发版后搜索一直 404 直到手动重启」的静默失效。
+_CT_TTL = 15 * 60
 
 # 首页候选：带登录态时 / 会 302 到 /home；两者都含所需的 site verification meta。
 # 抓首页要用「网页浏览」那套头（不带 Authorization），带 Bearer 会被判 401。
+# 注意：必须带登录 Cookie，否则 X 返回游客态首页（无 ondemand.s 引用）→ 取不到令牌材料。
 _HOME_URLS = ('https://x.com/', 'https://x.com/home')
 
 
@@ -58,9 +65,19 @@ def _build(home_headers, ua, timeout=20):
 
 def invalidate():
     """丢弃已缓存的备料。X 前端发版、或令牌连续失效时调用以重新抓取。"""
-    global _ct
+    global _ct, _ct_ts
     with _lock:
         _ct = None
+        _ct_ts = 0
+
+
+def _ensure_ct(home_headers, ua):
+    """在锁内确保 _ct 已备料且未过期；返回可用的 ClientTransaction 或抛出异常。"""
+    global _ct, _ct_ts
+    if _ct is None or (time.time() - _ct_ts) > _CT_TTL:
+        _ct = _build(home_headers, ua)
+        _ct_ts = time.time()
+    return _ct
 
 
 def get_transaction_id(home_headers, method, path, ua=None, refresh=False):
@@ -68,17 +85,28 @@ def get_transaction_id(home_headers, method, path, ua=None, refresh=False):
 
     home_headers：抓首页用的请求头，由调用方传入（复用 run.py 的 build_headers，
     注意必须是不带 Bearer 的那套，否则首页会 401）。
-    备料（站点 key + animation key）在进程内缓存复用；令牌本身含时间戳、按
+    备料（站点 key + animation key）在进程内缓存复用，并带 TTL 自愈：X 发版轮换
+    site key/ondemand.s 后旧备料会失效，过期自动重建。令牌本身含时间戳、按
     (method, path) 现算，所以缓存备料不会导致令牌重复。
+
+    若生成抛异常（备料在两次调用间失效/网络抖动），会丢弃缓存重建一次再试。
     """
     global _ct
     if refresh:
         invalidate()
     with _lock:
-        if _ct is None:
-            _ct = _build(home_headers, ua)
-        ct = _ct
+        ct = _ensure_ct(home_headers, ua)
     try:
         return ct.generate_transaction_id(method=method, path=path)
     except Exception:
-        return None
+        # 备料在抓取后失效（如 ondemand.s 已被 X 轮换），重建一次再试
+        with _lock:
+            invalidate()
+            try:
+                ct = _ensure_ct(home_headers, ua)
+            except Exception:
+                return None
+        try:
+            return ct.generate_transaction_id(method=method, path=path)
+        except Exception:
+            return None
