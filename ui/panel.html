@@ -13,7 +13,11 @@
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #f7f8fa; color: #1f2329; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif; background: #f7f8fa; color: #1f2329; -webkit-tap-highlight-color: transparent; }
+  /* 移动端：长按图片/视频会弹出浏览器「资源选中」框（淡蓝色高亮 + 长按菜单），滑屏误触也会触发。
+     禁用媒体元素的触摸唤起菜单与文本选中，并消除点击高亮。推文正文仍可选中以便复制。 */
+  img, video { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  .bm-media, .dt-media, .dt-video, .media, .lightbox { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   /* 面板为浅色主题：统一给出 X 暗色变量在浅色下的取值。这些变量此前从未定义，
      一律走回退值——var(--text,#e7e9ea) 是近乎白色，落在白底上（关注/粉丝卡片的
      bio、统计数字）几乎看不见。这里定义浅色取值，一次性修好所有引用这些变量的元素。 */
