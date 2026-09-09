@@ -2073,9 +2073,20 @@
     try { rec.hls && rec.hls.destroy(); } catch (e) {}
     try { rec.v.pause(); } catch (e) {}
     if (rec.el && rec.el._thumbHtml !== undefined) {
+      // 还原多图网格的占满行布局（playInlineVideo 里临时改过 grid + 行高）
+      if (rec.grid && rec.grid._jSaved) {
+        const s = rec.grid._jSaved;
+        rec.grid.style.gridTemplateColumns = s.cols;
+        rec.grid.style.gridTemplateRows = s.rows;
+        const its = rec.grid.querySelectorAll('.bm-media');
+        s.items.forEach((cs, i) => { if (its[i]) its[i].style.cssText = cs; });
+        delete rec.grid._jSaved;
+      }
+      rec.el.dataset.playFull = '';
+      rec.el.style.gridColumn = '';
+      rec.el.style.height = '';   // 解除冻结，高度交还封面自行撑开
       rec.el.innerHTML = rec.el._thumbHtml;
       rec.el.classList.remove('playing');
-      rec.el.style.height = '';   // 解除冻结，高度交还封面自行撑开
     }
     if (_inlineVid && _inlineVid.el === rec.el) _inlineVid = null;
   }
@@ -2094,8 +2105,13 @@
     // 网格单元(justified/multi)内：高度上限取单元格现有高度，视频正好填满单元、不撑大行高、不变形邻格；
     // 单图/单视频(m1)：允许放大到视口 85%，消除黑边。
     const inGrid = !!(container.closest && container.closest('.media.justified, .quoted .media.justified'));
-    const maxH = inGrid ? Math.max(60, container.clientHeight || window.innerHeight * 0.85)
-                        : window.innerHeight * 0.85;
+    // 多图网格点播时视频已占满整行（grid-column:1/-1，见 playInlineVideo），
+    // 此时 container.clientWidth 已是整行宽 → maxW 自然够大；但高度上限不能再套用
+    // 「单元格原有高度」（那个小格子很矮），否则视频被压成细条。占满行的播放态用整屏高度兜底。
+    const fullWidth = inGrid && container.dataset && container.dataset.playFull === '1';
+    const maxH = fullWidth ? window.innerHeight * 0.85
+                : (inGrid ? Math.max(60, container.clientHeight || window.innerHeight * 0.85)
+                          : window.innerHeight * 0.85);
     let dw, dh;
     if (vh >= vw) {
       // 竖屏/方屏：以高度为基准算宽度（video 不会撑满容器宽，自然居中）
@@ -2121,18 +2137,40 @@
     if (mediaEl.classList.contains('playing')) return;
     if (_inlineVid) stopInlineVideo(_inlineVid);   // 同时只播一个
     if (mediaEl._thumbHtml === undefined) mediaEl._thumbHtml = mediaEl.innerHTML;
+    // 多图网格里点播：让该视频占满整行（全宽），否则它会被困在 1/2~1/4 的小格子里，
+    // fitVideoToNaturalSize 把宽度上限钉死在格子宽 → 横向视频被压成细条（用户反馈的
+    // 「视频框变成非常小的一个窗口」）。占满整行后 cellW 即整行宽，高度用整屏兜底。
+    // 同时清空网格行高、让其余媒体自动回流，避免与占满行的视频重叠。
+    const inGridEl = mediaEl.closest('.media.justified, .quoted .media.justified');
+    if (inGridEl) {
+      inGridEl._jSaved = {
+        cols: inGridEl.style.gridTemplateColumns,
+        rows: inGridEl.style.gridTemplateRows,
+        items: Array.from(inGridEl.querySelectorAll('.bm-media')).map((it) => it.style.cssText),
+      };
+      inGridEl.style.gridTemplateRows = '';
+      Array.from(inGridEl.querySelectorAll('.bm-media')).forEach((it) => { it.style.gridRow = ''; it.style.height = ''; });
+      mediaEl.style.gridColumn = '1 / -1';
+      mediaEl.dataset.playFull = '1';
+    }
     // 冻结容器高度：单图/单视频（m1）的 .bm-media 高度是「由内容撑开」的，
     // 一旦 innerHTML 清空就塌陷，video 的 height:100% 失去基准 → 先黑成一条，
     // 等 loadedmetadata 拿到内在尺寸后才撑开，即「加载前框变小、加载后框变大」。
-    // 把当前实测高度钉住，可让点播前后尺寸完全一致（停止时还原）。
+    // 把实测高度钉住，可让点播前后尺寸一致（停止时还原）。多图占满行后格子无高度，
+    // 用整行宽 × 16:9 估算一个占位高，避免元数据就绪前塌成 0。
     const _rect = mediaEl.getBoundingClientRect();
-    if (_rect.height > 0) mediaEl.style.height = Math.round(_rect.height) + 'px';
+    let _vh = Math.round(_rect.height) || 0;
+    if (!_vh) {
+      const estW = mediaEl.clientWidth || 0;
+      if (estW) _vh = Math.min(Math.round(estW * 9 / 16), Math.round(window.innerHeight * 0.85));
+    }
+    if (_vh > 0) mediaEl.style.height = _vh + 'px';
     mediaEl.classList.add('playing');
     const v = document.createElement('video');
     v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false; v.preload = 'metadata';
     // 初始占位：先用封面尺寸防止塌陷，loadedmetadata 后会由 fitVideoToNaturalSize 覆盖为真实比例。
     // 背景用浅灰 + 透明：避免「满宽黑框闪一下」再缩成正常尺寸的观感；metadata 就绪后 fit 并淡入。
-    const _vh = Math.round(_rect.height);
+    // 注意：上面的 _vh（let）已算好冻结/估算高度，这里直接复用，不能再 const 声明一次（否则重复声明报错）。
     v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#f3f5f7;opacity:0;display:block;transition:opacity .12s`;
     const close = document.createElement('button');
     close.className = 'bm-vclose'; close.innerHTML = icon('xi-close');
@@ -2170,7 +2208,7 @@
       v.addEventListener('webkitbeginfullscreen', sync);
       v.addEventListener('webkitendfullscreen', sync);
       v._hls = hls;
-      _inlineVid = { el: mediaEl, v, hls, close };
+      _inlineVid = { el: mediaEl, v, hls, close, grid: inGridEl };
     } else if (mp4) {
       v.src = mp4;
       // mp4 的 loadedmetadata 已在上面统一监听（onMeta），这里只补 play
@@ -2201,7 +2239,7 @@
         }
       };
       v.addEventListener('error', _onMp4Error);
-      _inlineVid = { el: mediaEl, v, hls: null, close };
+      _inlineVid = { el: mediaEl, v, hls: null, close, grid: inGridEl };
     } else {
       mediaEl.innerHTML = mediaEl._thumbHtml; mediaEl.classList.remove('playing');  // 无可用源：还原缩略图
     }
