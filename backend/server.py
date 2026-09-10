@@ -354,7 +354,7 @@ def create_blueprint(host):
         path_ext = os.path.splitext(path)[1].lower()
         if path_ext == '.m3u8':
             ext = '.m3u8'
-        elif mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov'):
+        elif mtype == 'video' or path_ext in ('.mp4', '.m4v', '.webm', '.mov', '.ts', '.m4s', '.aac', '.m4a'):
             ext = path_ext if path_ext else '.mp4'
         elif mtype == 'image' or path_ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp'):
             ext = path_ext if path_ext else '.jpg'
@@ -363,8 +363,29 @@ def create_blueprint(host):
         else:
             ext = '.mp4' if mtype == 'video' else '.jpg'
         ct = ('application/vnd.apple.mpegurl' if ext == '.m3u8'
+              else 'video/mp2t' if ext == '.ts'
               else 'video/mp4' if ext == '.mp4' else mimetypes.guess_type(url)[0] or 'image/jpeg')
         return ext, ct
+
+    # HLS 清单里的片源地址改写：把分片(.ts)/变体子列表(.m3u8)的绝对 twimg 地址
+    # 改写成走本代理的相对地址 media?u=<编码后地址>&type=video，使 hls.js 经 /media
+    # 带 cookie 拉取并落本地 LRU 缓存。否则分片被浏览器直连 video.twimg.com 现拉——
+    # 既绕过服务端 cookie（部分环境直连 CDN 不稳/被墙），也不进缓存，表现为
+    # 「每次点开视频都重新从 X 拉流、首播与回看都慢」。非片源地址（如解密 key）保持不变。
+    _TS_EXT = ('.ts', '.m3u8', '.mp4', '.m4v', '.aac', '.m4a', '.m4s')
+    _M3U8_URL_RE = re.compile(r'(https?://[^\s"\']+)')
+
+    def _rewrite_m3u8(text):
+        def _rep(m):
+            u = m.group(1)
+            _host = urllib.parse.urlparse(u).hostname or ''
+            if not _host.endswith('twimg.com'):
+                return u
+            _p = u.split('?', 1)[0]
+            if not (_p.endswith(_TS_EXT) or '/vid/' in u):
+                return u
+            return 'media?u=%s&type=video' % urllib.parse.quote(u, safe='')
+        return _M3U8_URL_RE.sub(_rep, text)
 
     _MEDIA_DL_TRIES = 3          # 单次代理抖动（ERRNO2 / 10053）很常见，允许重试
 
@@ -2422,6 +2443,7 @@ def create_blueprint(host):
                     # 当成 image/jpeg 返回，hls.js 拿不到播放列表。
                     ct = mimetypes.guess_type(path)[0] or (
                         'application/vnd.apple.mpegurl' if ext == '.m3u8'
+                        else 'video/mp2t' if ext == '.ts'
                         else 'video/mp4' if ext == '.mp4' else 'image/jpeg')
                     resp = send_file(path, mimetype=ct, conditional=True,
                                      max_age=86400)
@@ -2461,7 +2483,7 @@ def create_blueprint(host):
         # 于是「刷新后就能播」——这正是该问题【必现】而非偶发竞态的原因。
         # 此前只对 m3u8 做了处理（误判「边下边播对 mp4 才对」），mp4 漏了。
         # Flask 以 threaded=True 运行，等待只占用本请求线程，不会阻塞整个服务。
-        if ext in ('.mp4', '.m3u8'):
+        if ext == '.mp4':
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             _mt0 = time.time()
             while (time.time() - _mt0) < 60.0:
@@ -2474,6 +2496,31 @@ def create_blueprint(host):
                         resp = send_file(final_path, mimetype=ct, conditional=True,
                                          max_age=86400)
                         resp.headers['Cache-Control'] = 'private, max-age=86400'
+                        return resp
+                    except Exception:
+                        break
+                time.sleep(0.1)
+            return _serve_media_partial(tmp_path, ct, request, url, ext)
+        if ext == '.m3u8':
+            # HLS 清单必须整份下完再返回，且要把片源地址改写成走本代理（见 _rewrite_m3u8）：
+            # 否则 hls.js 直连 video.twimg.com 现拉分片，绕过服务端 cookie 且不进本地缓存，
+            # 表现为「每次点开视频都重新从 X 拉流、首播与回看都慢」。改写后分片经 /media
+            # 带 cookie 拉取并落盘，看过的视频二次秒开、首播也走服务端代理更稳。
+            final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
+            _mt0 = time.time()
+            while (time.time() - _mt0) < 60.0:
+                with _media_dl_lock:
+                    _dl_failed = url in _media_dl_err
+                if _dl_failed:
+                    break
+                if os.path.exists(final_path):
+                    try:
+                        with open(final_path, 'rb') as _f:
+                            _raw = _f.read().decode('utf-8', 'replace')
+                        _body = _rewrite_m3u8(_raw)
+                        resp = Response(_body, mimetype='application/vnd.apple.mpegurl')
+                        resp.headers['Cache-Control'] = 'private, max-age=86400'
+                        resp.headers['Access-Control-Allow-Origin'] = '*'
                         return resp
                     except Exception:
                         break
