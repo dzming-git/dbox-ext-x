@@ -42,6 +42,12 @@ _spec = _ilu.spec_from_file_location('x_run', _run_path)
 xrun = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(xrun)
 
+# 缓存层（列表 / 资源本体两套）按绝对路径加载：backend 不是正式包，避免相对导入不确定性
+_cs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache_store.py')
+_cs_spec = _ilu.spec_from_file_location('x_cache_store', _cs_path)
+cache_store = _ilu.module_from_spec(_cs_spec)
+_cs_spec.loader.exec_module(cache_store)
+
 
 class _ProgressStore:
     """按资源身份持久化下载进度（SQLite）。
@@ -140,6 +146,31 @@ class _ProgressStore:
 
 def create_blueprint(host):
     bp = Blueprint('x', __name__, url_prefix=host.url_prefix)
+
+    # ---- 缓存层（列表 / 资源本体两套，见 cache_store.py 顶部说明）----
+    # 落在扩展私有 SQLite（host.db('cache')）：进程重启、面板重载都不丢。
+    _cache = cache_store.CacheStore(host.db('cache'))
+
+    def _force_arg():
+        """是否强制刷新（用户显式点了刷新/重搜）→ 跳过缓存读、直接重拉。"""
+        return str(request.args.get('force', '')).lower() in ('1', 'true', 'yes')
+
+    def _cached(kind, ns, params, fetch_fn, force=None):
+        """缓存优先取数。返回 (payload, fetched_at, from_cache, stale)：
+
+        · 命中且未过期 → 直接返回，一个网络包都不发
+        · 未命中/已过期/force → 真拉取并写回缓存
+        · 拉取失败但有过期旧缓存 → 降级返回旧数据并置 stale=True
+        """
+        if force is None:
+            force = _force_arg()
+        try:
+            return cache_store.serve_cached(_cache, kind, ns, params, fetch_fn, force=force)
+        except Exception:
+            payload, ts = _cache.get_any(kind, ns, cache_store._norm_key(params))
+            if payload is not None:
+                return (payload, ts, True, True)
+            raise
 
     # 进程级任务状态（存于 host.app_state，框架不干预内容）
     jobs = host.app_state.setdefault('jobs', {})
@@ -1628,50 +1659,51 @@ def create_blueprint(host):
 
         （之前误用 For You / HomeTimeline，会混入大量推荐与广告，已改用
         HomeLatestTimeline 关注流。）
+
+        缓存优先：列表（关注流）按 (count, cursor) 缓存，未过期/非 force 时直接返回，
+        不重打 X（用户更新慢，已拉到的列表能看很久）。拉取结果仍并入服务端 host.state，
+        使任意设备打开看到的是合并后的同一份。
         """
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
                             'message': '未配置 x.com 登录 Cookie'}), 400
-        try:
-            count = min(int(request.args.get('count', 20)), 50)
-            cursor = request.args.get('cursor') or None
+        count = min(int(request.args.get('count', 20)), 50)
+        cursor = request.args.get('cursor') or None
+
+        def _fetch():
             items, next_cursor = xrun.list_following_timeline(cookie, count, cursor)
+            # 服务端为唯一真相源：拉取结果先并入服务端缓存（union_by_id 去重、封顶 1500）。
+            # 首次加载（无 cursor）时返回「服务端合并后的完整列表」，使任何设备打开
+            # 刷新看到的都是同一份。union_by_id 只认 { id, order, ... }，故映射领域字段。
+            norm = []
+            for it in (items or []):
+                if not isinstance(it, dict):
+                    continue
+                rec = dict(it)
+                tid = it.get('tweet_id')
+                rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
+                rec['order'] = it.get('created_at')
+                norm.append(rec)
+            canonical = None
+            try:
+                merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
+                if isinstance(merged, dict) and isinstance(merged.get('value'), list):
+                    canonical = merged['value']
+                if next_cursor:
+                    host.state.put('feed:main:cursor', next_cursor, strategy='max')
+            except Exception:
+                canonical = None   # 状态服务不可用时退化为只返回本次结果
+            return {'items': canonical if (canonical is not None and not cursor) else items,
+                    'next_cursor': next_cursor,
+                    'canonical': canonical is not None and not cursor}
+
+        try:
+            data, ts, cached, stale = _cached('list', 'timeline', {'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
-
-        # 服务端为唯一真相源：拉取结果先并入服务端缓存（union_by_id 去重、封顶 1500），
-        # 首次加载（无 cursor）时返回「服务端合并后的完整列表」，使任何设备打开
-        # 刷新看到的都是同一份，而不是各自 localStorage 里分叉的那份。
-        # 翻页（带 cursor）时只回本次新拉取的一页，避免每次回传 400 条。
-        # union_by_id 只认规范记录 { id, order, ...载荷 }（通用状态层字段名无关），
-        # 故在入口把 X 领域字段映射成 id / order；领域字段原样保留，渲染照常读取。
-        # 键位与前端 DBoxState.feed('main') 对齐（feed:main:items / :cursor），
-        # 前后端共用同一份服务端真相，不另存一份 cache。
-        norm = []
-        for it in (items or []):
-            if not isinstance(it, dict):
-                continue
-            rec = dict(it)
-            tid = it.get('tweet_id')
-            rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
-            rec['order'] = it.get('created_at')
-            norm.append(rec)
-        canonical = None
-        try:
-            merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
-            if isinstance(merged, dict) and isinstance(merged.get('value'), list):
-                canonical = merged['value']
-            if next_cursor:
-                host.state.put('feed:main:cursor', next_cursor, strategy='max')
-        except Exception:
-            canonical = None   # 状态服务不可用时退化为只返回本次结果
-
-        return jsonify({'success': True,
-                        'items': canonical if (canonical is not None and not cursor) else items,
-                        'next_cursor': next_cursor,
-                        'canonical': canonical is not None and not cursor})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
 
     @bp.route('/check', methods=['GET'])
     def check():
@@ -1790,7 +1822,8 @@ def create_blueprint(host):
     @bp.route('/search', methods=['GET'])
     @host.login_required
     def search():
-        """按关键词/用户句柄搜索 X 推文（SearchTimeline）。"""
+        """按关键词/用户句柄搜索 X 推文（SearchTimeline）。缓存优先：同一 (q, product, 翻页)
+        未过期/非 force 时直接返回，不重爬（用户明确要求重搜才 force=1）。"""
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
@@ -1798,43 +1831,45 @@ def create_blueprint(host):
         if not (request.args.get('q') or '').strip():
             return jsonify({'success': False,
                             'message': '缺少搜索关键词'}), 400
-        try:
-            count = min(int(request.args.get('count', 20)), 50)
-            cursor = request.args.get('cursor') or None
-            product = (request.args.get('product') or 'Top').strip()
+        count = min(int(request.args.get('count', 20)), 50)
+        cursor = request.args.get('cursor') or None
+        product = (request.args.get('product') or 'Top').strip()
+        q = request.args.get('q').strip()
+
+        def _fetch():
             # 搜索接口必须带 X 的反爬令牌，否则一律 404；令牌按最终请求路径现算。
-            # 抓首页取令牌材料要用「网页浏览」那套头（不带 Bearer，否则 /home 会 401）
             _home_headers = xrun.build_headers(cookie, with_bearer=False)
 
             def _txid(method, path):
                 return get_transaction_id(_home_headers, method, path, ua=xrun.UA)
 
             def _do():
-                return xrun.search_tweets(
-                    cookie, request.args.get('q').strip(), count, cursor, product,
-                    txid_func=_txid)
+                return xrun.search_tweets(cookie, q, count, cursor, product, txid_func=_txid)
 
             try:
                 items, next_cursor = _do()
             except Exception as e1:
-                # 令牌材料可能因 X 发版而失效（缓存的 ClientTransaction 用了旧 site key /
-                # ondemand.s，X 拒收 → 404）。丢弃缓存重建一次再试，避免「发版后必须重启进程」。
+                # 令牌材料可能因 X 发版而失效（缓存的 ClientTransaction 用了旧 site key，
+                # X 拒收 → 404）。丢弃缓存重建一次再试，避免「发版后必须重启进程」。
                 if '404' in str(e1):
                     invalidate()
                     items, next_cursor = _do()
                 else:
                     raise
+            return {'items': items, 'next_cursor': next_cursor}
+
+        try:
+            data, ts, cached, stale = _cached('list', 'search',
+                                              {'q': q, 'product': product, 'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
-            # 404 基本都指向 X 的反爬校验（拿不到令牌或令牌不被接受），
-            # 给个能定位方向的提示，避免用户只看到一个干巴巴的状态码
+            # 404 基本都指向 X 的反爬校验（拿不到令牌或令牌不被接受）
             if '404' in str(e):
                 return jsonify({'success': False, 'message': (
                     '搜索失败: X 拒绝了请求（404）。通常是反爬令牌失效或 X 前端改版，'
                     '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
             return jsonify({'success': False,
                             'message': '搜索失败: ' + str(e)}), 502
-        return jsonify({'success': True, 'items': items,
-                        'next_cursor': next_cursor})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
 
     # ---- 多关键词批量爬取：后台异步任务（连接无关） ----
     # 把"方案 / 全部重搜"的逐词爬取从浏览器循环搬到服务端线程，直接写入同一份
@@ -1984,7 +2019,8 @@ def create_blueprint(host):
         """拉取某用户的推文时间线（UserTweets），并附带该用户资料。
 
         与搜索/时间线同源：dbox 的 X 拓展自己用 GraphQL 解析，不打开 x.com 链接。
-        user 可为 @句柄 或 内部 rest_id；cursor 用于分页。
+        user 可为 @句柄 或 内部 rest_id；cursor 用于分页。缓存优先：同一用户列表
+        未过期/非 force 直接返回，不重打 X（画师推文更新慢，能看很久）。
         """
         cookie = _x_cookie_header()
         if not cookie:
@@ -1993,9 +2029,10 @@ def create_blueprint(host):
         user = (request.args.get('user') or '').strip().lstrip('@')
         if not user:
             return jsonify({'success': False, 'message': '缺少用户名（user）'}), 400
-        try:
-            count = min(int(request.args.get('count', 20)), 50)
-            cursor = request.args.get('cursor') or None
+        count = min(int(request.args.get('count', 20)), 50)
+        cursor = request.args.get('cursor') or None
+
+        def _fetch():
             _home_headers = xrun.build_headers(cookie, with_bearer=False)
 
             def _txid(method, path):
@@ -2003,6 +2040,40 @@ def create_blueprint(host):
 
             items, next_cursor, profile = xrun.user_tweets(
                 cookie, user, count, cursor, txid_func=_txid)
+            # 跨设备共享缓存：拉取结果先并入服务端 UserState（union_by_id 去重、封顶 1500），
+            # key 用稳定的 user_id（rest_id）而非 screen_name。首次加载返回合并 canonical。
+            canonical = None
+            try:
+                user_id = str((profile or {}).get('rest_id')
+                              or (profile or {}).get('id') or '')
+                if user_id:
+                    norm = []
+                    for it in (items or []):
+                        if not isinstance(it, dict):
+                            continue
+                        rec = dict(it)
+                        tid = it.get('tweet_id')
+                        rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
+                        rec['order'] = it.get('created_at')
+                        norm.append(rec)
+                    merged = host.state.put('feed:user:' + user_id, norm,
+                                             strategy='union_by_id', cap=1500)
+                    if isinstance(merged, dict) and isinstance(merged.get('value'), list):
+                        canonical = merged['value']
+                    umeta = {k: (profile or {}).get(k) for k in (
+                        'rest_id', 'screen_name', 'name', 'avatar', 'bio', 'verified',
+                        'statuses_count', 'following_count', 'followers_count')}
+                    host.state.put('users:' + user_id, umeta, strategy='lww')
+            except Exception:
+                canonical = None
+            return {'user': profile,
+                    'items': canonical if (canonical is not None and not cursor) else items,
+                    'next_cursor': next_cursor,
+                    'canonical': canonical is not None and not cursor}
+
+        try:
+            data, ts, cached, stale = _cached('list', 'user_tweets',
+                                              {'user': user, 'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
             if '404' in str(e):
                 return jsonify({'success': False, 'message': (
@@ -2010,58 +2081,28 @@ def create_blueprint(host):
                     '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
             return jsonify({'success': False,
                             'message': '获取用户推文失败: ' + str(e)}), 502
-
-        # 跨设备共享缓存：拉取结果先并入服务端 UserState（union_by_id 去重、封顶 1500），
-        # key 用稳定的 user_id（rest_id）而非 screen_name——@句柄可被用户改名，改名后
-        # 旧 screen_name 目录会失效且残留脏数据；user_id 终身不变，天然去重。
-        # 与首页 /timeline 同一机制，使任意设备打开同一用户看到的都是合并后的同一份列表。
-        # 首次加载（无 cursor）返回合并后的完整 canonical；翻页仅回本页新拉取项。
-        canonical = None
-        try:
-            user_id = str((profile or {}).get('rest_id')
-                          or (profile or {}).get('id') or '')
-            if user_id:
-                norm = []
-                for it in (items or []):
-                    if not isinstance(it, dict):
-                        continue
-                    rec = dict(it)
-                    tid = it.get('tweet_id')
-                    rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
-                    rec['order'] = it.get('created_at')
-                    norm.append(rec)
-                merged = host.state.put('feed:user:' + user_id, norm,
-                                         strategy='union_by_id', cap=1500)
-                if isinstance(merged, dict) and isinstance(merged.get('value'), list):
-                    canonical = merged['value']
-                # 缓存用户画像（name/avatar/screen_name/计数），供跨设备秒开用户页
-                umeta = {k: (profile or {}).get(k) for k in (
-                    'rest_id', 'screen_name', 'name', 'avatar', 'bio', 'verified',
-                    'statuses_count', 'following_count', 'followers_count')}
-                host.state.put('users:' + user_id, umeta, strategy='lww')
-        except Exception:
-            canonical = None   # 状态服务不可用时退化为只返回本次结果
-
-        return jsonify({'success': True, 'user': profile,
-                        'items': canonical if (canonical is not None and not cursor) else items,
-                        'next_cursor': next_cursor,
-                        'canonical': canonical is not None and not cursor})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
 
     @bp.route('/tweet/<tweet_id>', methods=['GET'])
     @host.login_required
     def tweet_detail(tweet_id):
-        """拉取单条推文详情 + 评论区（对话线程）。"""
+        """拉取单条推文详情 + 评论区（对话线程）。缓存优先：资源本体（推文）发布后基本不变，
+        未过期/非 force 直接返回，不重打 X。cursor 用于评论区翻页（各自独立键）。"""
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
                             'message': '未配置 x.com 登录 Cookie'}), 400
+        cursor = request.args.get('cursor') or None
+
+        def _fetch():
+            return xrun.get_tweet_thread(tweet_id, cookie, cursor)
+
         try:
-            cursor = request.args.get('cursor') or None
-            res = xrun.get_tweet_thread(tweet_id, cookie, cursor)
+            data, ts, cached, stale = _cached('item', 'tweet', {'id': tweet_id, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取推文详情失败: ' + str(e)}), 502
-        return jsonify({'success': True, **res})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
 
     @bp.route('/history', methods=['GET', 'POST', 'DELETE'])
     @host.login_required
@@ -2085,25 +2126,28 @@ def create_blueprint(host):
     @bp.route('/bookmarks', methods=['GET'])
     @host.login_required
     def bookmarks():
-        """实时从 X 账号收藏夹拉取推文列表。"""
+        """实时从 X 账号收藏夹拉取推文列表。缓存优先：未过期/非 force 直接返回，不重打 X。"""
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
                             'message': '未配置 x.com 登录 Cookie'}), 400
+        count = min(int(request.args.get('count', 30)), 100)
+        cursor = request.args.get('cursor') or None
+
+        def _fetch():
+            return xrun.list_bookmarks(cookie, count, cursor)
+
         try:
-            count = min(int(request.args.get('count', 30)), 100)
-            cursor = request.args.get('cursor') or None
-            items, next_cursor = xrun.list_bookmarks(cookie, count, cursor)
+            data, ts, cached, stale = _cached('list', 'bookmarks', {'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 收藏失败: ' + str(e)}), 502
-        return jsonify({'success': True, 'items': items,
-                        'next_cursor': next_cursor})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
 
     @bp.route('/likes', methods=['GET'])
     @host.login_required
     def likes():
-        """实时从 X 账号「喜欢」列表拉取推文。"""
+        """实时从 X 账号「喜欢」列表拉取推文。缓存优先。"""
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
@@ -2112,15 +2156,45 @@ def create_blueprint(host):
         if not rest_id:
             return jsonify({'success': False,
                             'message': '无法从 Cookie 识别登录用户'}), 400
+        count = min(int(request.args.get('count', 30)), 100)
+        cursor = request.args.get('cursor') or None
+
+        def _fetch():
+            return xrun.list_likes(cookie, rest_id, count, cursor)
+
         try:
-            count = min(int(request.args.get('count', 30)), 100)
-            cursor = request.args.get('cursor') or None
-            items, next_cursor = xrun.list_likes(cookie, rest_id, count, cursor)
+            data, ts, cached, stale = _cached('list', 'likes', {'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 喜欢失败: ' + str(e)}), 502
-        return jsonify({'success': True, 'items': items,
-                        'next_cursor': next_cursor})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+
+    @bp.route('/cache/stats', methods=['GET'])
+    @host.login_required
+    def cache_stats():
+        """缓存概况：各来源的条数、最近/最早获取时间、当前 TTL。前端「缓存于 …」与设置页据此显示。"""
+        return jsonify({'success': True, 'ttls': _cache.ttls(), **_cache.stats()})
+
+    @bp.route('/cache/clear', methods=['POST', 'DELETE'])
+    @host.login_required
+    def cache_clear():
+        """清缓存：带 kind/ns/key 则精确清除，都不带则全部清空。"""
+        n = _cache.invalidate(request.args.get('kind') or None,
+                              request.args.get('ns') or None,
+                              request.args.get('key') or None)
+        return jsonify({'success': True, 'removed': n})
+
+    @bp.route('/cache/ttl', methods=['GET', 'POST'])
+    @host.login_required
+    def cache_ttl():
+        """查看 / 修改各来源 TTL（秒）。POST: {"list:timeline": 1800, "item:tweet": ...}"""
+        if request.method == 'POST':
+            data = request.get_json(force=True, silent=True) or {}
+            for k, v in (data.get('ttls') or data).items():
+                if isinstance(k, str) and ':' in k:
+                    kind, ns = k.split(':', 1)
+                    _cache.set_ttl(kind, ns, v)
+        return jsonify({'success': True, 'ttls': _cache.ttls()})
 
     @bp.route('/bookmarks/folder', methods=['GET'])
     @host.login_required
