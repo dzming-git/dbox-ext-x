@@ -6008,9 +6008,28 @@
   // 滚到底部附近时 srchAutoFill 纯本地续挂载下一批，不重建整页、不碰网络。
   const SRCH_RENDER_MIN = 40;   // 单次最少渲染条数（首次/续挂载批次）
   const SRCH_BUF = 1400;        // 视口下方预渲染缓冲(px)，覆盖图片加载引起的高度抖动
-  const _srchEstH = 340;        // 估算行高(px)，仅用于占位撑高，略偏不影响功能
-  let _srchRendered = 0;        // 已真实渲染到 DOM 的条数
+  const _srchEstH = 340;        // 估算行高(px)初值，仅用于占位撑高；有实测后由 _srchAvgH 校准
+  let _srchRendered = 0;        // 真正进 DOM 的卡片数（过滤/去重返回 null 的不计）
+  let _srchCursor = 0;          // 下一个「待尝试」的下标（无论是否真的渲染出来）
   let _srchFill = null;         // 底部占位元素（撑出未渲染部分的滚动高度）
+
+  // 游标与渲染数必须分开：_srchMakeCard 对「重复/被过滤」的条目返回 null（不进 DOM），
+  // 若把「已尝试」当成「已渲染」，续挂载会从错误下标切片 → 首批里被跳过的条目永久丢失，
+  // 且窗口数学（占位高度、续挂载时机）全部基于虚高的计数而失准。
+
+  // 用已渲染卡片的真实平均高度校准估算：固定 340 与真实偏差过大时，占位高度会严重跑偏
+  // （手机端纯文本卡常明显矮于 340 → 占位虚高 → 滚下去一整片空白）。
+  function _srchAvgH() {
+    if (_srchRendered > 0) {
+      try {
+        const fillH = _srchFill ? (_srchFill.offsetHeight || 0) : 0;
+        const contentH = Math.max(0, (srchList.scrollHeight || 0) - fillH);
+        const avg = contentH / _srchRendered;
+        if (avg > 20 && avg < 4000) return avg;
+      } catch (_) {}
+    }
+    return _srchEstH;
+  }
 
   // 按当前滚动位置算需要渲染到的索引：始终覆盖视口 + 缓冲，
   // 因此无论首打开还是「整体重渲染」都只建少量 DOM 且滚动位置不跳。
@@ -6018,14 +6037,27 @@
     const cont = viewSearch;
     if (!cont) return SRCH_RENDER_MIN;
     const vh = cont.clientHeight || 800;
-    const need = Math.ceil((cont.scrollTop + vh + SRCH_BUF) / _srchEstH);
+    const need = Math.ceil((cont.scrollTop + vh + SRCH_BUF) / _srchAvgH());
     return Math.max(SRCH_RENDER_MIN, need);
   }
-  function _srchSyncFill(total) {
-    if (_srchRendered < total) {
+  function _srchSyncFill() {
+    const total = (srchAllItems || []).length;
+    if (_srchCursor < total) {
       if (!_srchFill) { _srchFill = document.createElement('div'); _srchFill.className = 'srch-ph-fill'; srchList.appendChild(_srchFill); }
-      _srchFill.style.height = ((total - _srchRendered) * _srchEstH) + 'px';
+      _srchFill.style.height = Math.round((total - _srchCursor) * _srchAvgH()) + 'px';
     } else if (_srchFill) { _srchFill.remove(); _srchFill = null; }
+  }
+  // 已渲染内容的真实底部是否还没覆盖「视口 + 缓冲」——用真实 DOM 位置判断，
+  // 绝不能用「卡数 × 估算行高」：估算一旦偏大（手机端卡片偏矮），条件永远不成立，
+  // 底部占位就再也不会被替换成真卡（表现为「下面全是空白，刷新重搜都恢复不了」）。
+  function srchNeedRenderMore() {
+    const cont = viewSearch;
+    if (!cont || !_srchFill) return false;   // 无占位 = 全部渲染完
+    try {
+      const renderedBottom = _srchFill.getBoundingClientRect().top
+        - cont.getBoundingClientRect().top + cont.scrollTop;
+      return renderedBottom < cont.scrollTop + cont.clientHeight + SRCH_BUF;
+    } catch (_) { return false; }
   }
   // 检索推文文本是否包含任一当前活跃关键词（不区分大小写）。
   // 用于检测 X SearchTimeline 的已知缺陷：关键词命中回复时 API 有时返回对话主帖
@@ -6105,20 +6137,24 @@
     if (needFetch) { _srchFetching.add(String(id)); enqueueFetchCard(String(id), card, srchActiveKey === ALL_KEY ? (it.kw || null) : null); }
     return card;
   }
-  // 本地续挂载下一批（纯本地，不碰网络）：插到占位前，缩小占位高度
+  // 本地续挂载下一批（纯本地，不碰网络）：插到占位前，缩小占位高度。
+  // 用 _srchCursor（已尝试下标）推进，保证被过滤/去重的条目不会卡住窗口、也不会被跳过；
+  // 只有真正建出卡片的才计入 _srchRendered。返回 true 表示游标有前进（可继续补）。
   function srchRenderMore() {
     const arr = srchAllItems;
-    if (!arr || _srchRendered >= arr.length) return;
-    const next = arr.slice(_srchRendered, _srchRendered + SRCH_RENDER_MIN);
+    if (!arr || _srchCursor >= arr.length) return false;
+    const start = _srchCursor;
+    const end = Math.min(arr.length, _srchCursor + SRCH_RENDER_MIN);
     const seenText = new Set();
     const filtering = filterActive();
-    const anchor = _srchFill;
-    next.forEach((it) => {
-      const card = _srchMakeCard(it, seenText, filtering, 0);
-      if (card && anchor) srchList.insertBefore(card, anchor);
-    });
-    _srchRendered += next.length;
-    _srchSyncFill(arr.length);
+    for (let k = _srchCursor; k < end; k++) {
+      const card = _srchMakeCard(arr[k], seenText, filtering, _srchRendered);
+      _srchCursor++;
+      if (card && _srchFill) srchList.insertBefore(card, _srchFill);
+      if (card) _srchRendered++;
+    }
+    _srchSyncFill();
+    return _srchCursor > start;
   }
 
   // 渲染当前 product 的那一份缓存（热门/最新），不触发网络
@@ -6131,6 +6167,11 @@
     srchCursor = curCursorGet();
     srchList.innerHTML = '';
     _srchFill = null;
+    // 窗口化状态先归零：否则「本模式无数据」时仍留着上一个模式的 srchAllItems/游标，
+    // 一滚动 srchAutoFill 就会把上一模式的卡片续挂到「暂无缓存」提示下面（串味）。
+    srchAllItems = [];
+    _srchRendered = 0;
+    _srchCursor = 0;
     if (!arr.length) {
       if (srchActiveKey === ALL_KEY) {
         const loading = srchKwList.some((e) => {
@@ -6150,17 +6191,26 @@
     // 融合视图的顺序已排好（热门＝择优归并、最新＝时间倒序），单词视图沿用时间倒序
     const ordered = (srchActiveKey === ALL_KEY) ? arr.slice() : sortItemsByTime(arr);
     srchAllItems = ordered.slice();   // 存有序版本，续挂载/srchAutoFill 直接复用
-    let i = 0;
+    _srchRendered = 0;
+    _srchCursor = 0;
     const seenText = new Set();          // 正文去重集合（仅本轮渲染内有效）
     _fltHidden = 0;
     const filtering = filterActive();
     const limit = srchRenderLimit();
-    ordered.slice(0, limit).forEach((it) => {
-      const card = _srchMakeCard(it, seenText, filtering, i);
-      if (card) i++;
-    });
-    _srchRendered = Math.min(limit, ordered.length);
-    _srchSyncFill(ordered.length);
+    // 首批：游标逐个前推，被过滤/去重的条目不计数、也不再回头（避免重复渲染同一批）
+    for (let k = 0; k < limit && _srchCursor < ordered.length; k++) {
+      const card = _srchMakeCard(ordered[_srchCursor], seenText, filtering, _srchRendered);
+      _srchCursor++;
+      if (card) _srchRendered++;
+    }
+    _srchSyncFill();
+    // 过滤/去重可能让首批真正渲染出来的卡远少于 limit（例如只过了 3 张），
+    // 视口下方就仍是占位 → 继续按批补，直到覆盖视口或数据耗尽，
+    // 否则用户看到的就是「几条推文 + 一整片空白」。
+    let _guard = 0;
+    while (_guard++ < 200 && _srchCursor < ordered.length && srchNeedRenderMore()) {
+      if (!srchRenderMore()) break;
+    }
     srchLoadmore.style.display = 'none';
     updateFilterBadge();
   }
@@ -6455,8 +6505,9 @@
     // 只要「已渲染区域底部」还没覆盖到视口底部 + 缓冲，就补下一批——
     // 既支持滚到底自动续载，也支持 restoreSearchScroll 恢复位置到中后部时补出视口内容。
     const total = srchAllItems ? srchAllItems.length : 0;
-    const renderedBottom = _srchRendered * _srchEstH;
-    if (_srchRendered < total && renderedBottom < cont.scrollTop + cont.clientHeight + SRCH_BUF) {
+    // 用「已渲染内容的真实底部」判断，而不是 卡数 × 估算行高：
+    // 估算偏大时（手机端卡片偏矮）旧条件永远不成立 → 占位永不替换 → 下方整片空白。
+    if (_srchCursor < total && srchNeedRenderMore()) {
       srchRenderMore();
       return;
     }
