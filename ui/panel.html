@@ -5552,11 +5552,42 @@
     const el = $('xd-session-alert');
     if (el && el.style.display !== 'none' && el.innerHTML) checkXSession();
   }
+  // ---- 缓存时间展示 ----
+  // 后端每个列表/详情接口都带 fetched_at/cached/stale；「拿到过的都缓存、没过期不二拉」，
+  // 这里把「这份数据是什么时候拿的」明示出来，用户一眼能判断看到的是新是旧。
+  function timeAgo(ts) {
+    if (!ts) return '';
+    const s = Math.floor(Date.now() / 1000 - ts);
+    if (s < 60) return '刚刚';
+    if (s < 3600) return Math.floor(s / 60) + ' 分钟前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
+    return Math.floor(s / 86400) + ' 天前';
+  }
+  function cacheBadge(meta) {
+    if (!meta || !meta.fetched_at) return '';
+    if (meta.stale) return '已过期 · 缓存于 ' + timeAgo(meta.fetched_at) + '（网络失败，用旧缓存兜底）';
+    return '缓存于 ' + timeAgo(meta.fetched_at);
+  }
+  // 在各视图顶部挂一条常驻的「缓存于 X前」徽标（拿到过的列表不二拉时让用户知道数据新旧）
+  function showCacheBadge(hostSel, meta) {
+    try {
+      const host = document.querySelector(hostSel);
+      if (!host) return;
+      let el = host.querySelector(':scope > .cache-badge');
+      if (!el) { el = document.createElement('div'); el.className = 'cache-badge'; host.insertBefore(el, host.firstChild); }
+      const txt = cacheBadge(meta);
+      el.style.cssText = 'color:#8899a6;font-size:12px;padding:5px 12px 3px';
+      el.textContent = txt || '';
+    } catch (_) {}
+  }
+  let brCacheMeta = null;     // 关注流缓存元信息（最近一次 /timeline 响应）
+  let srchCacheMeta = null;   // 搜索缓存元信息（最近一次 /search 响应）
+
   async function refreshBrowseKeepPos() {
     if (brLoading) return;
     brLoading = true;
     try {
-      const r = await req(`${API}/timeline?count=50`);
+      const r = await req(`${API}/timeline?count=50&force=1`);
       const d = await r.json();
       if (!d.success) {
         if (!brList.querySelector('.bm-card'))
@@ -5564,6 +5595,9 @@
         else showBrowseStatus('刷新失败: ' + (d.message || '未知错误'), 'err');
         return;
       }
+      // 显式下拉刷新：直接重拉（force=1），并记下缓存时间展示「缓存于 X前」
+      brCacheMeta = { fetched_at: d.fetched_at, cached: d.cached, stale: d.stale };
+      showCacheBadge('#view-browse', brCacheMeta);
       const ins = prependNewTweets(d.items || []);
       brCursor = d.next_cursor || null;
       const nt = newestTimeOf(d.items || []);
@@ -5656,6 +5690,9 @@
         const url = `${API}/timeline?count=50${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
         const r = await req(url);
         const d = await r.json();
+        // 关注流首次/重置加载：记下缓存时间，展示「缓存于 X前」（未过期则来自缓存，不重打 X）
+        brCacheMeta = { fetched_at: d.fetched_at, cached: d.cached, stale: d.stale };
+        showCacheBadge('#view-browse', brCacheMeta);
         if (!d.success) {
           if (reset && !brList.querySelector('.bm-card'))
             brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
@@ -5994,12 +6031,16 @@
     }
   }
 
-  async function fetchSearch(q, product, cursor) {
+  async function fetchSearch(q, product, cursor, force) {
     let url = `${API}/search?q=${encodeURIComponent(q)}&count=50&product=${encodeURIComponent(product)}`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+    if (force) url += '&force=1';
     const r = await req(url);
     const d = await r.json();
     if (!d.success) throw new Error(d.message || '搜索失败');
+    // 记下缓存时间，展示「缓存于 X前」（未过期则来自缓存，不重打 X）
+    srchCacheMeta = { fetched_at: d.fetched_at, cached: d.cached, stale: d.stale };
+    showCacheBadge('#view-search', srchCacheMeta);
     return { items: d.items || [], next_cursor: d.next_cursor || null };
   }
 
@@ -6369,8 +6410,8 @@
     try {
       // 热门 + 最新 并行爬取，一次性缓存两份；之后切模式不再打扰 X
       const [topD, latestD] = await Promise.all([
-        fetchSearch(q, 'Top', null).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
-        fetchSearch(q, 'Latest', null).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
+        fetchSearch(q, 'Top', null, opts.force).catch((e) => ({ items: [], next_cursor: null, err: e.message })),
+        fetchSearch(q, 'Latest', null, opts.force).catch((e) => ({ items: [], next_cursor: null, err: e.message }))
       ]);
       // 完整内容随各关键词缓存一起落库（不再只存成员 id）：刷新/切设备后融合流
       // 直接用本地缓存渲染真实卡片，不再依赖会被覆盖/淘汰的共享 XTWEETS，避免满屏骨架。
@@ -6868,10 +6909,10 @@
       setSrchBottom('hidden');
     }
   }
-  // 单个关键词重新搜索：放弃它自己的缓存重爬，其他关键词毫发无损
+  // 单个关键词重新搜索：放弃它自己的缓存重爬（force=1），其他关键词毫发无损
   function refreshKeyword(kk) {
     if (!kk || srchRefreshingAll) return Promise.resolve();
-    return searchKeyword(kk);   // searchKeyword 本就是全量重取 Top+Latest，无需额外参数
+    return searchKeyword(kk, { force: true });   // 显式刷新 → 强制重拉该词
   }
   // 搜索批量任务的持久句柄（断线续爬）：resource_key 存 localStorage，刷新/关浏览器后可取回
   let srchTaskKey = null;
