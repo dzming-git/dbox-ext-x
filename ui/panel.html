@@ -342,18 +342,24 @@
   .kw-bar .quickdl button { padding: 0 15px; }
   .kw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .kw-chips:empty { display: none; }
-  .kw-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
-    border: 1px solid #e3e6eb; background: #fff; border-radius: 999px;
-    padding: 4px 5px 4px 11px; font-size: 12.5px; color: #536471; cursor: default;
+  .kw-chip { display: inline-flex; flex-direction: column; align-items: stretch; gap: 2px;
+    max-width: 100%; border: 1px solid #e3e6eb; background: #fff; border-radius: 14px;
+    padding: 5px 6px 5px 11px; font-size: 12.5px; color: #536471; cursor: default;
     transition: background .15s, border-color .15s; }
   .kw-chip:hover { border-color: #c4cfd9; background: #f7f9fa; }
   .kw-chip.active { background: #1d9bf0; border-color: #1d9bf0; color: #fff; }
   .kw-chip.active:hover { background: #1a8cd8; }
   .kw-chip.err { border-color: #f4212e; color: #f4212e; }
   .kw-chip.err.active { background: #f4212e; color: #fff; }
+  .kw-main { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
   .kw-txt { max-width: 170px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; cursor: pointer; }
   .kw-count { font-size: 11px; opacity: .7; }
+  /* 第二行：该搜索词的缓存时间（融合视图则展示各词时间跨度）；保持低调、不与关键词抢眼 */
+  .kw-sub { font-size: 10.5px; line-height: 1.25; color: #8899a6;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 1px; }
+  .kw-chip.active .kw-sub { color: rgba(255,255,255,.82); }
+  .kw-chip.err .kw-sub { color: #f4212e; }
   .kw-spin { display: inline-block; width: 12px; text-align: center; font-size: 11px; }
   .kw-spin.on { animation: kwspin .9s linear infinite; }
   @keyframes kwspin { to { transform: rotate(360deg); } }
@@ -6759,6 +6765,28 @@
     if (h < 24) return h + ' 小时前';
     return Math.floor(h / 24) + ' 天前';
   }
+  // 关键词 chip 第二行：该词的缓存时间（融合视图则展示各词时间跨度），保持低调不抢眼
+  function kwChipSub(c) {
+    if (!c || !c.ts) return '尚未获取';
+    if (c.loading) return '搜索中…';
+    if (c.err) return '获取失败';
+    const n = (srchProduct === 'Top' ? (c.top || []) : (c.latest || [])).length;
+    return '缓存于 ' + kwTimeAgo(c.ts) + (n ? ' · ' + n + ' 条' : '');
+  }
+  // 「全部」融合视图第二行：跨所有关键词的缓存时间跨度（同一批抓取则合并为一条）
+  function kwAllSubText() {
+    const n = srchKwList.length;
+    if (!n) return '';
+    let minTs = Infinity, maxTs = 0, has = false;
+    srchKwList.forEach((e) => {
+      const cc = srchCache.get(e.key);
+      if (cc && cc.ts) { has = true; if (cc.ts < minTs) minTs = cc.ts; if (cc.ts > maxTs) maxTs = cc.ts; }
+    });
+    if (!has) return '融合 ' + n + ' 个词 · 待获取';
+    if (maxTs - minTs < 60000) return '融合 ' + n + ' 个词 · 缓存于 ' + kwTimeAgo(maxTs);
+    return '融合 ' + n + ' 个词 · 最新 ' + kwTimeAgo(maxTs) + ' / 最旧 ' + kwTimeAgo(minTs);
+  }
+
   const KW_COLLAPSE_THRESHOLD = 8;   // 超过此数默认折叠，避免一整排 chip 占用过多空间
   let srchChipsExpanded = false;     // 用户手动展开后保持（后续重渲染不回退）
   function renderKwChips() {
@@ -6768,15 +6796,18 @@
     if (srchKwList.length) {
       const allChip = document.createElement('span');
       allChip.className = 'kw-chip kw-all' + (srchActiveKey === ALL_KEY ? ' active' : '');
+      const allMain = document.createElement('span');
+      allMain.className = 'kw-main';
       const allTxt = document.createElement('span');
       allTxt.className = 'kw-txt';
       allTxt.textContent = '全部';
       allTxt.title = '把所有关键词的结果合成一条流（热门＝各词轮流 + 新鲜度加权，最新＝按时间）';
       allTxt.addEventListener('click', () => activateKw(ALL_KEY));
-      const allCnt = document.createElement('span');
-      allCnt.className = 'kw-count';
-      allCnt.textContent = srchMerged.length ? String(srchMerged.length) : '—';
-      allChip.append(allTxt, allCnt);
+      allMain.appendChild(allTxt);
+      const allSub = document.createElement('span');
+      allSub.className = 'kw-sub';
+      allSub.textContent = kwAllSubText();
+      allChip.append(allMain, allSub);
       srchChips.appendChild(allChip);
     }
     // 折叠：词过多时只露前若干个 + 「展开 N 个」；激活的词一定可见（否则用户找不到当前在看的词）
@@ -6795,6 +6826,8 @@
       chip.className = 'kw-chip' + (e.key === srchActiveKey ? ' active' : '')
         + (c && c.err ? ' err' : '') + (c && c.loading ? ' loading' : '');
       chip.dataset.key = e.key;
+      const main = document.createElement('span');
+      main.className = 'kw-main';
       const spin = document.createElement('span');
       spin.className = 'kw-spin' + (c && c.loading ? ' on' : '');
       spin.textContent = (c && c.loading) ? '⟳' : '';
@@ -6803,14 +6836,6 @@
       txt.textContent = e.q;
       txt.title = c && c.err ? ('上次获取失败：' + c.err) : ('最后更新 ' + kwTimeAgo(c && c.ts));
       txt.addEventListener('click', () => activateKw(e.key));
-      const cnt = document.createElement('span');
-      cnt.className = 'kw-count';
-      if (c && c.loading) cnt.textContent = '';
-      else if (c && c.err) cnt.textContent = '失败';
-      else {
-        const n = c ? ((srchProduct === 'Top' ? (c.top || []) : (c.latest || [])).length) : 0;
-        cnt.textContent = n ? String(n) : '—';
-      }
       const re = document.createElement('button');
       re.className = 'kw-btn kw-re';
       re.innerHTML = icon('xi-refresh');
@@ -6821,7 +6846,11 @@
       del.innerHTML = icon('xi-close');
       del.title = '移除关键词「' + e.q + '」（缓存保留，再加回来可恢复）';
       del.addEventListener('click', (ev) => { ev.stopPropagation(); removeKeyword(e.key); });
-      chip.append(spin, txt, cnt, re, del);
+      main.append(spin, txt, re, del);
+      const sub = document.createElement('span');
+      sub.className = 'kw-sub';
+      sub.textContent = kwChipSub(c);
+      chip.append(main, sub);
       srchChips.appendChild(chip);
     });
     // 折叠/展开切换按钮（仅词较多时才有意义）
