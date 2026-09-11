@@ -589,6 +589,15 @@
     object-fit: fill; max-height: none; max-width: none;
   }
   .bm-card .bm-vclose, .quoted .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
+  /* 小窗口点播（多资源网格里的格子）：原生控件会被浏览器收进「更多」二级菜单、
+     全屏按钮点不到，故隐藏原生控件改用自带的最小控件条（播放/暂停 + 全屏）。 */
+  .bm-media .bm-vctl { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between; gap: 4px;
+    padding: 10px 6px 5px; background: linear-gradient(transparent, rgba(0,0,0,.6)); }
+  .bm-media .bm-vctl-btn { width: 30px; height: 30px; flex: none; border: none; border-radius: 50%;
+    background: rgba(0,0,0,.55); color: #fff; font-size: 15px; display: flex; align-items: center;
+    justify-content: center; padding: 0; cursor: pointer; }
+  .bm-media .bm-vctl-btn:hover { background: rgba(0,0,0,.75); }
   .bm-card .actions { display: flex; gap: 6px; margin-top: 4px; }
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
   .bm-card .actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -877,6 +886,17 @@
   </symbol>
   <symbol id="xi-alert" viewBox="0 0 24 24">
     <path d="M12 4.4 21.2 20H2.8z"/><path d="M12 10v4.2"/><path d="M12 17.2h.01"/>
+  </symbol>
+  <!-- 播放器最小控件（小窗口下原生控件会被收进「更多」菜单，故自带一套） -->
+  <symbol id="xi-play" viewBox="0 0 24 24">
+    <path d="M8.4 5.6 18.2 12 8.4 18.4z"/>
+  </symbol>
+  <symbol id="xi-pause" viewBox="0 0 24 24">
+    <path d="M9.4 5.6v12.8"/><path d="M14.6 5.6v12.8"/>
+  </symbol>
+  <symbol id="xi-fullscreen" viewBox="0 0 24 24">
+    <path d="M4 9.2V4.6h4.6"/><path d="M20 9.2V4.6h-4.6"/>
+    <path d="M4 14.8v4.6h4.6"/><path d="M20 14.8v4.6h-4.6"/>
   </symbol>
 </svg>
 <div class="wrap">
@@ -2186,6 +2206,44 @@
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
     mediaEl.appendChild(close);
+    // 多资源推文（网格）里的格子天然很小，原生 <video controls> 在窄容器里会把全屏等
+    // 按钮收进「更多」二级菜单，用户根本点不到全屏。这里隐藏原生控件，改用自带的最小
+    // 控件条（播放/暂停 + 全屏），保证「看不清时能一键全屏」这条路径始终可达。
+    // 单资源视频（非网格）维持原生控件不变——那条路径本来就够用，不必动。
+    if (inGridEl) {
+      v.controls = false;
+      const goFs = () => {   // iOS Safari 只有 webkitEnterFullscreen，须优先走它
+        try {
+          if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();
+          else if (v.requestFullscreen) v.requestFullscreen();
+          else if (v.webkitRequestFullscreen) v.webkitRequestFullscreen();
+        } catch (e) {}
+      };
+      const ctl = document.createElement('div');
+      ctl.className = 'bm-vctl';
+      const playBtn = document.createElement('button');
+      playBtn.className = 'bm-vctl-btn';
+      playBtn.title = '播放 / 暂停';
+      const fsBtn = document.createElement('button');
+      fsBtn.className = 'bm-vctl-btn';
+      fsBtn.innerHTML = icon('xi-fullscreen');
+      fsBtn.title = '全屏播放';
+      const syncIcon = () => {
+        playBtn.innerHTML = v.paused ? icon('xi-play', 'is-fill') : icon('xi-pause');
+      };
+      syncIcon();
+      v.addEventListener('play', syncIcon);
+      v.addEventListener('pause', syncIcon);
+      playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (v.paused) v.play().catch(() => {}); else v.pause();
+      });
+      fsBtn.addEventListener('click', (e) => { e.stopPropagation(); goFs(); });
+      // 小窗口里点画面直接进全屏：视频本就自动播放，此时用户的意图就是「看大一点」
+      v.addEventListener('click', (e) => { e.stopPropagation(); goFs(); });
+      ctl.append(playBtn, fsBtn);
+      mediaEl.appendChild(ctl);
+    }
     // 加载中转圈：覆盖视频区，避免「白框干等」无任何反馈
     const loading = document.createElement('div');
     loading.className = 'vid-loading';
