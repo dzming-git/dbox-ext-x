@@ -156,21 +156,31 @@ def create_blueprint(host):
         return str(request.args.get('force', '')).lower() in ('1', 'true', 'yes')
 
     def _cached(kind, ns, params, fetch_fn, force=None):
-        """缓存优先取数。返回 (payload, fetched_at, from_cache, stale)：
+        """缓存优先取数（LRU 模式）。返回 (payload, fetched_at, from_cache, stale)：
 
-        · 命中且未过期 → 直接返回，一个网络包都不发
-        · 未命中/已过期/force → 真拉取并写回缓存
+        · 命中（无论多久之前）→ 直接返回，一个网络包都不发
+        · 未命中 / force=True（用户手动刷新）→ 真拉取并写回缓存
         · 拉取失败但有过期旧缓存 → 降级返回旧数据并置 stale=True
+        写回后统一治理容量预算（内容 + 媒体共享一份，按全局 LRU 淘汰）。
         """
         if force is None:
             force = _force_arg()
         try:
-            return cache_store.serve_cached(_cache, kind, ns, params, fetch_fn, force=force)
+            res = cache_store.serve_cached(_cache, kind, ns, params, fetch_fn, force=force)
         except Exception:
             payload, ts = _cache.get_any(kind, ns, cache_store._norm_key(params))
             if payload is not None:
+                try:
+                    _enforce_unified_cap()
+                except Exception:
+                    pass
                 return (payload, ts, True, True)
             raise
+        try:
+            _enforce_unified_cap()
+        except Exception:
+            pass
+        return res
 
     # 进程级任务状态（存于 host.app_state，框架不干预内容）
     jobs = host.app_state.setdefault('jobs', {})
@@ -295,9 +305,15 @@ def create_blueprint(host):
     def _cache_key(url):
         return hashlib.md5(url.encode('utf-8')).hexdigest()
 
-    def _cache_max_bytes():
-        """缓存上限（字节）：优先读取 cached 微服务统一治理的 _caps.json（中心「缓存管理」页设置），
-        读取失败退回 512MB 默认。这样后台设置的容量上限对 X 即时生效。"""
+    def _unified_budget_bytes():
+        """统一缓存预算（字节）：内容（文字/列表/资料）与媒体（头像/图/视频字节）
+        共用这一份预算，按全局 LRU 淘汰。优先读取中心「缓存管理」页（按字节存储）
+        设置的 _caps.json 的 x/media（沿用该键作为统一预算），读取失败退回 1GB。
+
+        注意：中心缓存页以「字节」为单位读写 _caps（其界面显示/输入为 MB，
+        提交时 ×1024² 转字节），故此处直接按字节读取，不得再 ×1024²，
+        否则会把 2GB 膨胀成 2PB。
+        """
         try:
             import json as _json
             _caps_file = os.path.join(
@@ -305,13 +321,35 @@ def create_blueprint(host):
                 'cache', '_caps.json')
             with open(_caps_file, 'r', encoding='utf-8') as f:
                 caps = _json.load(f)
-            return int(caps.get('x/media', 512)) * 1024 * 1024
+            return int(caps.get('x/media', 1024 * 1024 * 1024))
         except Exception:
-            return 512 * 1024 * 1024
+            return 1024 * 1024 * 1024
 
-    def _cache_evict():
-        _CACHE_PART.cap = _cache_max_bytes()
-        _CACHE_PART.enforce_cap()
+    def _enforce_unified_cap():
+        """统一 LRU 容量治理：内容 + 媒体共享 _unified_budget_bytes() 一份预算。
+
+        媒体是字节大头，优先让媒体承担淘汰：把媒体分区容量上限设为
+        「统一预算 - 内容占用」，超出即由框架 LRU 淘汰最久未访问的媒体；
+        内容（文字/列表）因此受保护。仅当内容自身已超预算（极少见）时
+        才回头淘汰内容 LRU。
+        """
+        try:
+            budget = _unified_budget_bytes()
+            content_bytes = _cache.content_bytes()
+            media_allowed = budget - content_bytes
+            if media_allowed < 0:
+                while content_bytes > budget and _cache.evict_oldest(50):
+                    content_bytes = _cache.content_bytes()
+                media_allowed = 0
+            try:
+                _CACHE_PART.cap = max(0, media_allowed)
+                _CACHE_PART.enforce_cap()
+            except Exception:
+                pass
+        except Exception:
+            pass
+    # 启动时按当前内容占用设定媒体容量上限，避免媒体在首批内容写入前撑爆预算
+    _enforce_unified_cap()
 
     def _cache_get(url):
         """命中返回 (path, ext)；并刷新访问顺序。未命中返回 None。"""
@@ -321,9 +359,14 @@ def create_blueprint(host):
         """把已落盘的临时文件原子改名登记进托管分区；返回最终路径或 None。
 
         流式代理先写 .part，完整读完后原子改名登记；中途失败只留临时文件，
-        不会被当成有效缓存。分区内部负责容量上限兜底淘汰。
+        不会被当成有效缓存。分区内部负责容量上限兜底淘汰；登记后统一治理预算。
         """
-        return _CACHE_PART.put_file(url, tmp_path, ext, keep_on_fail=keep_on_fail)
+        path = _CACHE_PART.put_file(url, tmp_path, ext, keep_on_fail=keep_on_fail)
+        try:
+            _enforce_unified_cap()
+        except Exception:
+            pass
+        return path
 
     # ---------- 媒体边下边播（未缓存完也能拖动进度条） ----------
     # 同一 url 只起一个后台下载线程写 .part；响应从 .part 渐进读取并支持 Range，
@@ -1334,7 +1377,7 @@ def create_blueprint(host):
             pass
         # 上限调小后可能已超限：立即按新上限回收一次
         try:
-            _cache_evict()
+            _enforce_unified_cap()
         except Exception:
             pass
         return cfg
@@ -1640,7 +1683,7 @@ def create_blueprint(host):
         return jsonify({'success': True, 'settings': _settings_load(),
                         'jobs': jobs,
                         'cache': {'files': _st['count'], 'bytes': _st['bytes'],
-                                  'max_bytes': _cache_max_bytes()}})
+                                  'max_bytes': _unified_budget_bytes()}})
 
     @bp.route('/settings', methods=['PUT', 'POST'])
     @host.login_required
@@ -1726,7 +1769,7 @@ def create_blueprint(host):
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
         return jsonify({'success': True, **data, 'cached': cached,
                         'fetched_at': ts, 'stale': stale,
-                        'ttl': _cache.ttl_of('list', 'timeline')})
+                        'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/check', methods=['GET'])
     def check():
@@ -1893,7 +1936,7 @@ def create_blueprint(host):
             return jsonify({'success': False,
                             'message': '搜索失败: ' + str(e)}), 502
         return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale,
-                        'ttl': _cache.ttl_of('list', 'search')})
+                        'budget_bytes': _unified_budget_bytes()})
 
     # ---- 多关键词批量爬取：后台异步任务（连接无关） ----
     # 把"方案 / 全部重搜"的逐词爬取从浏览器循环搬到服务端线程，直接写入同一份
@@ -2105,7 +2148,8 @@ def create_blueprint(host):
                     '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
             return jsonify({'success': False,
                             'message': '获取用户推文失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts,
+                        'stale': stale, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/tweet/<tweet_id>', methods=['GET'])
     @host.login_required
@@ -2126,7 +2170,8 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取推文详情失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts,
+                        'stale': stale, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/history', methods=['GET', 'POST', 'DELETE'])
     @host.login_required
@@ -2166,7 +2211,8 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 收藏失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts,
+                        'stale': stale, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/likes', methods=['GET'])
     @host.login_required
@@ -2191,13 +2237,18 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 喜欢失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts,
+                        'stale': stale, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/cache/stats', methods=['GET'])
     @host.login_required
     def cache_stats():
-        """缓存概况：各来源的条数、最近/最早获取时间、当前 TTL。前端「缓存于 …」与设置页据此显示。"""
-        return jsonify({'success': True, 'ttls': _cache.ttls(), **_cache.stats()})
+        """缓存概况：内容（SQLite LRU）与媒体（磁盘 LRU）各自占用 + 统一预算。"""
+        st = _CACHE_PART.stat()
+        return jsonify({'success': True,
+                        'content': _cache.stats(_unified_budget_bytes()),
+                        'media': {'files': st['count'], 'bytes': st['bytes'],
+                                  'budget_bytes': _unified_budget_bytes()}})
 
     @bp.route('/cache/clear', methods=['POST', 'DELETE'])
     @host.login_required
@@ -2211,14 +2262,8 @@ def create_blueprint(host):
     @bp.route('/cache/ttl', methods=['GET', 'POST'])
     @host.login_required
     def cache_ttl():
-        """查看 / 修改各来源 TTL（秒）。POST: {"list:timeline": 1800, "item:tweet": ...}"""
-        if request.method == 'POST':
-            data = request.get_json(force=True, silent=True) or {}
-            for k, v in (data.get('ttls') or data).items():
-                if isinstance(k, str) and ':' in k:
-                    kind, ns = k.split(':', 1)
-                    _cache.set_ttl(kind, ns, v)
-        return jsonify({'success': True, 'ttls': _cache.ttls()})
+        """LRU 模式下已无 TTL 概念；保留接口仅用于查询统一预算，便于兼容旧调用。"""
+        return jsonify({'success': True, 'ttls': {}, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/bookmarks/folder', methods=['GET'])
     @host.login_required
@@ -2560,6 +2605,41 @@ def create_blueprint(host):
                 pass
             time.sleep(0.1)
         return _serve_media_partial(tmp_path, ct, request, url, ext)
+
+    @bp.route('/media/cache', methods=['GET'])
+    @host.login_required
+    def media_cache_list():
+        """缓存页统一清单：内容(SQLite LRU) + 媒体(磁盘 LRU) + 统一字节预算。
+        前端「缓存管理」页据此列出统一缓存占用（文字/列表/资料与头像/图/视频一并可见）。"""
+        st = _CACHE_PART.stat()
+        media_files = []
+        try:
+            for fn in os.listdir(_CACHE_LRU_DIR):
+                if fn.startswith('.'):
+                    continue
+                full = os.path.join(_CACHE_LRU_DIR, fn)
+                if not os.path.isfile(full):
+                    continue
+                ext = os.path.splitext(fn)[1].lower()
+                try:
+                    sz = os.path.getsize(full)
+                except OSError:
+                    sz = 0
+                media_files.append({
+                    'file': fn, 'size': sz,
+                    'type': 'video' if ext in ('.mp4', '.m3u8', '.mov', '.webm', '.m4v') else 'image',
+                })
+        except Exception:
+            pass
+        cs = _cache.stats(_unified_budget_bytes())
+        return jsonify({
+            'success': True,
+            'media': {'files': media_files, 'count': st['count'], 'bytes': st['bytes'],
+                      'cap': st['cap']},
+            'content': {'total': cs['total'], 'bytes': cs['bytes'],
+                        'groups': cs.get('groups', [])},
+            'budget_bytes': _unified_budget_bytes(),
+        })
 
     @bp.route('/media/cache', methods=['DELETE'])
     @host.login_required
