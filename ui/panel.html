@@ -2192,8 +2192,10 @@
     loading.innerHTML = '<div class="spin"></div>';
     mediaEl.appendChild(loading);
     const clearLoading = () => { if (loading && loading.parentNode) loading.remove(); };
+    let _loadTimer = null;   // 加载超时兜底：元数据迟迟不来时不能把用户困在转圈里
     // 加载失败提示（可重试）：hls 源/组件异常时给出明确反馈，而不是干白框
     const showVidErr = (msg) => {
+      if (_loadTimer) { clearTimeout(_loadTimer); _loadTimer = null; }
       clearLoading();
       if (mediaEl.querySelector('.vid-err')) return;
       const errEl = document.createElement('div');
@@ -2208,6 +2210,7 @@
     // 统一在 loadedmetadata 时贴合视频真实尺寸（消除黑边）并淡入，消除黑框闪烁
     const onMeta = () => {
       if (v.videoWidth && v.videoHeight) {
+        if (_loadTimer) { clearTimeout(_loadTimer); _loadTimer = null; }
         clearLoading();
         // 网格内原地播放：保持封面盒尺寸不变，不让容器按视频比例被拉高（否则就是
         // 「点开后窗口变大」）。非网格（单图/单视频）才贴合真实比例以消除黑边。
@@ -2222,17 +2225,32 @@
       }
     };
     v.addEventListener('loadedmetadata', onMeta);
+    // 超时兜底：代理/分片异常时元数据可能永远不来，不能让转圈无限持续
+    // （此前表现就是「黑屏转圈非常久都不播放」，且无任何错误提示）。
+    _loadTimer = setTimeout(() => {
+      if (_inlineVid && _inlineVid.v === v && (!v.videoWidth || v.readyState < 1)) {
+        showVidErr('视频加载超时，请点击重试');
+      }
+    }, 25000);
     // 注意：不在这里调 v.play()——此时 src 尚未设置（下面才赋），调用必失败并被吞掉。
     // 各分支（HLS / mp4）在源就绪后各自触发 play。
     if (m3u8 && window.Hls && window.Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
       hls.loadSource(m3u8); hls.attachMedia(v);
       hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
-      // 致命错误自愈：网络错误重连、媒体错误恢复，仍失败才提示用户（避免干白框）。
+      // 致命错误自愈：网络错误有限重连、媒体错误有限恢复，**必须限次**——
+      // 此前无条件 startLoad() 会让 hls.js 在分片始终拿不到时无限重试，
+      // loadedmetadata 永不触发，用户被永久困在「黑屏转圈」里且看不到任何错误。
+      let _hlsNetErrs = 0, _hlsMediaErrs = 0;
       hls.on(Hls.Events.ERROR, (evt, data) => {
         if (!data.fatal) return;
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { hls.startLoad(); return; }
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          _hlsNetErrs++;
+          if (_hlsNetErrs <= 3) { hls.startLoad(); return; }
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          _hlsMediaErrs++;
+          if (_hlsMediaErrs <= 2) { hls.recoverMediaError(); return; }
+        }
         showVidErr('视频加载失败，请点击重试'); hls.destroy();
       });
       const sync = () => {  // 全屏强制最高清晰度
