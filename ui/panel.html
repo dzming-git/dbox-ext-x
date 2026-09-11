@@ -5,8 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>X</title>
 <!-- HLS 播放支持：X 视频为 m3u8 流，原生 <video> 无法直接播放，需 hls.js。
-     若 CDN 不可达（离线环境），会静默失败，下方逻辑自动退化为“打开详情预览”。 -->
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js" onerror="window.__HLS_FAILED=true"></script>
+     hls.js 由本插件后端同源本地托管（/static/hls.min.js），不依赖外部 CDN——
+     外部 CDN 在内网/离线环境常不可达，会导致 m3u8 视频点开只剩白框、刷新偶发才好。 -->
+<script src="__EXT_API_PREFIX__static/hls.min.js" onerror="window.__HLS_FAILED=true"></script>
 <!-- 框架下发的统一状态 SDK：跨设备同步「浏览缓存 / 已读边界 / 当前标签页」。
      本地优先读取（首屏不等待网络）、脏键防抖上报、卸载时 keepalive 落盘。 -->
 <script src="/api/ext-sdk/state.js"></script>
@@ -202,6 +203,17 @@
   .dt-media .dt-video .bm-play { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; font-size: 18px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
   .dt-media .dt-video.playing .bm-play { display: none; }
   .dt-media .dt-video .bm-vclose { position: absolute; top: 8px; right: 8px; z-index: 3; width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
+  /* 原地点播加载中转圈：覆盖视频区，避免「白框干等」无任何反馈 */
+  .bm-media .vid-loading { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; background: #0f1419; z-index: 1; }
+  .bm-media .vid-loading .spin { width: 28px; height: 28px; border: 3px solid rgba(255,255,255,.25);
+    border-top-color: #fff; border-radius: 50%; animation: kwspin .8s linear infinite; }
+  /* 加载失败提示（可重试）：hls 源/组件异常时明确告知，而非干白框 */
+  .bm-media .vid-err { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; flex-direction: column; gap: 8px; background: #0f1419; color: #f66;
+    font-size: 13px; z-index: 2; text-align: center; padding: 12px; }
+  .bm-media .vid-err button { border: 1px solid #f66; background: none; color: #f66; border-radius: 6px;
+    padding: 4px 12px; cursor: pointer; font-size: 12px; }
   .dt-counts { display: flex; gap: 16px; padding: 10px 0; border-top: 1px solid #eef0f2; border-bottom: 1px solid #eef0f2; margin-bottom: 12px; color: #536471; font-size: 13px; }
   .dt-counts b { color: #0f1419; }
   .dt-actions { display: flex; gap: 8px; }
@@ -2184,9 +2196,29 @@
     mediaEl.innerHTML = '';
     mediaEl.appendChild(v);
     mediaEl.appendChild(close);
+    // 加载中转圈：覆盖视频区，避免「白框干等」无任何反馈
+    const loading = document.createElement('div');
+    loading.className = 'vid-loading';
+    loading.innerHTML = '<div class="spin"></div>';
+    mediaEl.appendChild(loading);
+    const clearLoading = () => { if (loading && loading.parentNode) loading.remove(); };
+    // 加载失败提示（可重试）：hls 源/组件异常时给出明确反馈，而不是干白框
+    const showVidErr = (msg) => {
+      clearLoading();
+      if (mediaEl.querySelector('.vid-err')) return;
+      const errEl = document.createElement('div');
+      errEl.className = 'vid-err';
+      errEl.innerHTML = '<div>' + msg + '</div>';
+      const btn = document.createElement('button');
+      btn.textContent = '重试';
+      btn.addEventListener('click', (e) => { e.stopPropagation(); stopInlineVideo(_inlineVid); playInlineVideo(mediaEl, mp4, m3u8); });
+      errEl.appendChild(btn);
+      mediaEl.appendChild(errEl);
+    };
     // 统一在 loadedmetadata 时贴合视频真实尺寸（消除黑边）并淡入，消除黑框闪烁
     const onMeta = () => {
       if (v.videoWidth && v.videoHeight) {
+        clearLoading();
         fitVideoToNaturalSize(v, mediaEl);
         v.style.opacity = '1';
         // 竖屏/放大后的视频可能比可视区更高，若展开后顶部或底部落到视口外，
@@ -2204,6 +2236,13 @@
       const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
       hls.loadSource(m3u8); hls.attachMedia(v);
       hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+      // 致命错误自愈：网络错误重连、媒体错误恢复，仍失败才提示用户（避免干白框）。
+      hls.on(Hls.Events.ERROR, (evt, data) => {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { hls.startLoad(); return; }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
+        showVidErr('视频加载失败，请点击重试'); hls.destroy();
+      });
       const sync = () => {  // 全屏强制最高清晰度
         if (hls.levels && hls.levels.length) {
           hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
@@ -2224,6 +2263,7 @@
       // 这里监听 error 事件，自动重试一次（覆盖瞬时网络抖动），仍失败则给用户明确提示。
       let _mp4Errs = 0;
       const _onMp4Error = () => {
+        clearLoading();
         _mp4Errs++;
         if (_mp4Errs <= 1) {
           // 首次错误：清空 src 后重新赋值触发重新加载（覆盖瞬时抖动/代理首次未命中）
@@ -2248,6 +2288,12 @@
       _inlineVid = { el: mediaEl, v, hls: null, close, grid: inGridEl };
     } else {
       mediaEl.innerHTML = mediaEl._thumbHtml; mediaEl.classList.remove('playing');  // 无可用源：还原缩略图
+      if (m3u8) {  // 本应是 m3u8 但 hls.js 未加载：明确提示，而非静默还原缩略图
+        const errEl = document.createElement('div');
+        errEl.className = 'vid-err';
+        errEl.innerHTML = '<div>视频组件未加载，刷新页面后重试</div>';
+        mediaEl.appendChild(errEl);
+      }
     }
   }
 

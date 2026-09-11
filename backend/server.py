@@ -2457,6 +2457,28 @@ def create_blueprint(host):
         return jsonify({'success': True, 'items': items, 'next_cursor': next_cursor})
 
 
+    @bp.route('/static/<path:f>', methods=['GET'])
+    def static_asset(f):
+        # 本地托管插件前端依赖（hls.js 等），避免依赖外部 CDN：
+        # 部分网络/离线环境下 CDN 不可达 → hls.js 加载失败、X 的 m3u8 视频点开只剩白框，
+        # 偶发刷新（CDN 恰好可达）才正常。改为同源本地托管后稳定可用。
+        from flask import send_file
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+        p = os.path.normpath(os.path.join(base, f))
+        if p != base and not p.startswith(base + os.sep):
+            return jsonify({'success': False, 'message': '非法路径'}), 400
+        if not os.path.isfile(p):
+            return jsonify({'success': False, 'message': '未找到'}), 404
+        if f.endswith('.js'):
+            ct = 'application/javascript'
+        elif f.endswith('.css'):
+            ct = 'text/css'
+        else:
+            ct = mimetypes.guess_type(p)[0] or 'application/octet-stream'
+        resp = send_file(p, mimetype=ct, conditional=True, max_age=86400)
+        resp.headers['Cache-Control'] = 'public, max-age=86400'
+        return resp
+
     @bp.route('/media', methods=['GET'])
     def media():  # 不要求 login_required：浏览器 <img>/<video> 原生加载不能带 Authorization 头
         """代理下载 X 媒体（twimg 图片 / mp4 视频），并写入本地 LRU 缓存。
