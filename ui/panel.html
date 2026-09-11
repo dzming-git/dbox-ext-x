@@ -5570,16 +5570,24 @@
     // 告知用户，是否刷新由用户决定（下拉 / 顶部刷新按钮），不主动二拉。
     return '缓存于 ' + timeAgo(meta.fetched_at) + ' · LRU 缓存，下拉/刷新获取最新';
   }
-  // 在各视图顶部挂一条常驻的「缓存于 X前」徽标（拿到过的列表不二拉时让用户知道数据新旧）
+  // 缓存新鲜度提示：改为「短暂淡出的纯文本」，不再用 sticky 常驻横幅（滚动时贴顶遮挡内容、体验差）。
+  // 信息依旧保留（让用户知道数据新旧、是否该下拉刷新），但只闪现几秒后自动消失，不占用、不遮挡。
   function showCacheBadge(hostSel, meta) {
     try {
       const host = document.querySelector(hostSel);
       if (!host) return;
+      const txt = cacheBadge(meta);
+      if (!txt) return;
       let el = host.querySelector(':scope > .cache-badge');
       if (!el) { el = document.createElement('div'); el.className = 'cache-badge'; host.insertBefore(el, host.firstChild); }
-      const txt = cacheBadge(meta);
-      el.style.cssText = 'position:sticky;top:0;z-index:6;color:#8899a6;font-size:12px;padding:6px 12px 5px;background:#fff;border-bottom:1px solid #eef0f2;';
-      el.textContent = txt || '';
+      el.style.cssText = 'color:#8899a6;font-size:12px;padding:4px 12px 2px;line-height:1.5;'
+        + 'opacity:1;transition:opacity .5s ease;';
+      el.textContent = txt;
+      clearTimeout(el._t);
+      el._t = setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => { if (el && el.parentNode) el.style.display = 'none'; }, 600);
+      }, 3500);
     } catch (_) {}
   }
   let brCacheMeta = null;     // 关注流缓存元信息（最近一次 /timeline 响应）
