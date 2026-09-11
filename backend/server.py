@@ -1724,7 +1724,9 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+        return jsonify({'success': True, **data, 'cached': cached,
+                        'fetched_at': ts, 'stale': stale,
+                        'ttl': _cache.ttl_of('list', 'timeline')})
 
     @bp.route('/check', methods=['GET'])
     def check():
@@ -1890,7 +1892,8 @@ def create_blueprint(host):
                     '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
             return jsonify({'success': False,
                             'message': '搜索失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale})
+        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale,
+                        'ttl': _cache.ttl_of('list', 'search')})
 
     # ---- 多关键词批量爬取：后台异步任务（连接无关） ----
     # 把"方案 / 全部重搜"的逐词爬取从浏览器循环搬到服务端线程，直接写入同一份
