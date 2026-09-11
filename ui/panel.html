@@ -2781,7 +2781,7 @@
     }
     if (v === 'browse') {
       loadStarSet();
-      openBrowse();   // 渲染缓存+恢复位置+后台静默刷新（不打断查看位置）
+      openBrowse();   // 渲染缓存+恢复位置（缓存优先，不主动重新拉取 X）
       checkXSession(); // 每次进入首页都自检一次 X 登录态
     } else if (v === 'history') {
       loadHistory();
@@ -4658,7 +4658,7 @@
   }
 
   // ---- 浏览位置记忆：交给框架 feed()，记住上次看到的推文，重进时定位回去 ----
-  let brOpenMode = false;   // 「打开即秒开」模式：渲染缓存+恢复位置+后台静默刷新，不打断查看位置
+  let brOpenMode = false;   // 「打开即秒开」模式：渲染缓存+恢复位置（缓存优先，不主动重新拉取 X）
   let posSaveTimer = null;
   // 交给框架 feed()：捕获「条目 id + 卡内偏移」而非 scrollTop（不同设备屏宽/卡片高度
   // 不同，像素偏移跨设备无意义）；锚点写入受主控租约门控并携带租约版本由服务端硬栅栏
@@ -5356,7 +5356,7 @@
     }
   }
 
-  // 打开即秒开：先渲染上次缓存、恢复到上次查看位置，随后后台静默拉取最新（见 loadBrowse 的 open 模式）。
+  // 打开即秒开：先渲染上次缓存、恢复到上次查看位置（缓存优先，不主动重新拉取 X；见 loadBrowse 的 open 模式）。
   function openBrowse() {
     brOpenMode = true;
     loadBrowse(true);
@@ -5566,12 +5566,9 @@
   function cacheBadge(meta) {
     if (!meta || !meta.fetched_at) return '';
     if (meta.stale) return '已过期 · 缓存于 ' + timeAgo(meta.fetched_at) + '（网络失败，用旧缓存兜底）';
-    var s = '缓存于 ' + timeAgo(meta.fetched_at);
-    if (meta.ttl) {
-      var remain = Math.max(0, Math.round((meta.ttl - (Date.now() / 1000 - meta.fetched_at)) / 60));
-      s += ' · 还剩 ' + remain + ' 分钟（刷新获取最新）';
-    }
-    return s;
+    // LRU 缓存：没有 TTL 自动过期，命中即返回。数据新鲜度完全由这份「缓存于 X 前」
+    // 告知用户，是否刷新由用户决定（下拉 / 顶部刷新按钮），不主动二拉。
+    return '缓存于 ' + timeAgo(meta.fetched_at) + ' · LRU 缓存，下拉/刷新获取最新';
   }
   // 在各视图顶部挂一条常驻的「缓存于 X前」徽标（拿到过的列表不二拉时让用户知道数据新旧）
   function showCacheBadge(hostSel, meta) {
@@ -7563,24 +7560,9 @@
   // 由上方 #view-browse / #view-search 的无限滚动监听器负责，无需独立手势，也避免无动画的突兀感。
 
 
-  // P2-11 定时刷新关注流：每 3 分钟静默拉一次最新推文，插入到顶部并保持当前查看位置，
-  // 不弹任何提示横幅，直接复用 prependNewTweets（新推文已置顶，用户上滑即见）。
-  async function pollNewTweets() {
-    // 告警条可见时顺带复检：网络/代理恢复后让它自己消失（仅此时才发 /check 请求）
-    recheckSessionIfAlerted();
-    if (brLoading) return;
-    try {
-      const r = await req(`${API}/timeline?count=20`);
-      const d = await r.json();
-      if (!d.success) return;
-      prependNewTweets(d.items || []);
-    } catch (_) {}
-  }
-  setInterval(pollNewTweets, 180000);  // 每 3 分钟
-  // 切到浏览 tab 时立即查一次
-  tabsEl.addEventListener('click', (e) => {
-    if (e.target?.dataset?.view === 'browse') setTimeout(pollNewTweets, 500);
-  });
+  // 关注流的「拉取最新」只由用户显式触发：下拉刷新 / 顶部刷新按钮（均带 force=1）。
+  // 不再有任何定时或切到本 tab 时的静默自动拉取——命中缓存即返回，绝不主动二拉 X。
+  // （此前 P2-11 的每 3 分钟 setInterval 静默拉取已移除，以符合「缓存优先、不主动重打」策略。）
 
   /* ---- 推文详情页（DBox 内预览推文 + 评论区） ---- */
   const dtEl = $('detail');
@@ -8325,12 +8307,16 @@
       const r = await req(`${API}/media/cache`);
       const d = await r.json();
       if (!d.success) { mcList.innerHTML = `<div class="bm-empty err">${esc2(d.message || '加载失败')}</div>`; return; }
-      const items = d.items || [];
-      const total = d.total_bytes || 0;
-      mcStats.innerHTML = `共 <b>${items.length}</b> 个文件，占用 <b>${fmtSize(total)}</b>（上限 512MB）`;
-      if (!items.length) { mcList.innerHTML = '<div class="bm-empty">点开的图片/视频会缓存到本地，可回看。</div>'; return; }
+      const media = d.media || {};
+      const content = d.content || {};
+      const budget = d.budget_bytes || 0;
+      const mFiles = media.files || [];
+      mcStats.innerHTML = `内容 <b>${fmtSize(content.bytes || 0)}</b>（${content.total || 0} 条） · `
+        + `媒体 <b>${fmtSize(media.bytes || 0)}</b>（${media.count || 0} 个） · `
+        + `统一 LRU 预算 <b>${fmtSize(budget)}</b>`;
+      if (!mFiles.length) { mcList.innerHTML = '<div class="bm-empty">点开的图片/视频会缓存到本地，可回看。</div>'; return; }
       mcList.innerHTML = '';
-      items.slice(0, 100).forEach((it) => {
+      mFiles.slice(0, 200).forEach((it) => {
         const el = document.createElement('div');
         el.className = 'mc-item';
         el.innerHTML = `<span class="type">${it.type === 'video' ? '🎬' : '🖼'}</span>
