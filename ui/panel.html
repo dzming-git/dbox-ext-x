@@ -5566,7 +5566,12 @@
   function cacheBadge(meta) {
     if (!meta || !meta.fetched_at) return '';
     if (meta.stale) return '已过期 · 缓存于 ' + timeAgo(meta.fetched_at) + '（网络失败，用旧缓存兜底）';
-    return '缓存于 ' + timeAgo(meta.fetched_at);
+    var s = '缓存于 ' + timeAgo(meta.fetched_at);
+    if (meta.ttl) {
+      var remain = Math.max(0, Math.round((meta.ttl - (Date.now() / 1000 - meta.fetched_at)) / 60));
+      s += ' · 还剩 ' + remain + ' 分钟（刷新获取最新）';
+    }
+    return s;
   }
   // 在各视图顶部挂一条常驻的「缓存于 X前」徽标（拿到过的列表不二拉时让用户知道数据新旧）
   function showCacheBadge(hostSel, meta) {
@@ -5576,7 +5581,7 @@
       let el = host.querySelector(':scope > .cache-badge');
       if (!el) { el = document.createElement('div'); el.className = 'cache-badge'; host.insertBefore(el, host.firstChild); }
       const txt = cacheBadge(meta);
-      el.style.cssText = 'color:#8899a6;font-size:12px;padding:5px 12px 3px';
+      el.style.cssText = 'position:sticky;top:0;z-index:6;color:#8899a6;font-size:12px;padding:6px 12px 5px;background:#fff;border-bottom:1px solid #eef0f2;';
       el.textContent = txt || '';
     } catch (_) {}
   }
