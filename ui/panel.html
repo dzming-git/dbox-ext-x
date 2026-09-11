@@ -2155,27 +2155,17 @@
     if (mediaEl.classList.contains('playing')) return;
     if (_inlineVid) stopInlineVideo(_inlineVid);   // 同时只播一个
     if (mediaEl._thumbHtml === undefined) mediaEl._thumbHtml = mediaEl.innerHTML;
-    // 多图网格里点播：让该视频占满整行（全宽），否则它会被困在 1/2~1/4 的小格子里，
-    // fitVideoToNaturalSize 把宽度上限钉死在格子宽 → 横向视频被压成细条（用户反馈的
-    // 「视频框变成非常小的一个窗口」）。占满整行后 cellW 即整行宽，高度用整屏兜底。
-    // 同时清空网格行高、让其余媒体自动回流，避免与占满行的视频重叠。
+    // 多资源网格里点播【严格原地播放】：不把该格撑成整行、不改网格、不改变高度——
+    // 只把这一格自己的封面盒（下面会把宽高都冻结为封面尺寸）换成播放器，视频按
+    // object-fit:contain 在该盒内呈现，四周不重排、邻格不动、窗口不变大。
+    // 此前做法是「占满整行 + 放大到屏幕 85%」，实测在手机端表现为「一点开窗口突然
+    // 变大、整条推文跟着重排跳动」，比困在小格子里更难受，故改回原地。
     const inGridEl = mediaEl.closest('.media.justified, .quoted .media.justified');
-    if (inGridEl) {
-      inGridEl._jSaved = {
-        cols: inGridEl.style.gridTemplateColumns,
-        rows: inGridEl.style.gridTemplateRows,
-        items: Array.from(inGridEl.querySelectorAll('.bm-media')).map((it) => it.style.cssText),
-      };
-      inGridEl.style.gridTemplateRows = '';
-      Array.from(inGridEl.querySelectorAll('.bm-media')).forEach((it) => { it.style.gridRow = ''; it.style.height = ''; });
-      mediaEl.style.gridColumn = '1 / -1';
-      mediaEl.dataset.playFull = '1';
-    }
     // 冻结容器高度：单图/单视频（m1）的 .bm-media 高度是「由内容撑开」的，
     // 一旦 innerHTML 清空就塌陷，video 的 height:100% 失去基准 → 先黑成一条，
     // 等 loadedmetadata 拿到内在尺寸后才撑开，即「加载前框变小、加载后框变大」。
-    // 把实测高度钉住，可让点播前后尺寸一致（停止时还原）。多图占满行后格子无高度，
-    // 用整行宽 × 16:9 估算一个占位高，避免元数据就绪前塌成 0。
+    // 把实测高度钉住，可让点播前后尺寸一致（停止时还原）。首帧尚未布局而测不到高度时，
+    // 用格子宽 × 16:9 估算一个占位高，避免元数据就绪前塌成 0。
     const _rect = mediaEl.getBoundingClientRect();
     let _vh = Math.round(_rect.height) || 0;
     if (!_vh) {
@@ -2219,7 +2209,9 @@
     const onMeta = () => {
       if (v.videoWidth && v.videoHeight) {
         clearLoading();
-        fitVideoToNaturalSize(v, mediaEl);
+        // 网格内原地播放：保持封面盒尺寸不变，不让容器按视频比例被拉高（否则就是
+        // 「点开后窗口变大」）。非网格（单图/单视频）才贴合真实比例以消除黑边。
+        if (!inGridEl) fitVideoToNaturalSize(v, mediaEl);
         v.style.opacity = '1';
         // 竖屏/放大后的视频可能比可视区更高，若展开后顶部或底部落到视口外，
         // 轻量滚到居中，保证原生播放控件始终可见可点（只在确实溢出时才滚，不打扰正常浏览）。
