@@ -4062,6 +4062,9 @@
   // 用占位重建整个列表 DOM（离屏占满高度，真实卡由 renderWindow 挂窗口），避免一次创建上千张卡
   function renderRowsDOM() {
     if (!brList) return;
+    _cardCache.clear();           // 重新建占位意味着行集合/内容可能已变：丢弃旧卡 DOM，
+                                  // 否则窗口挂载会复用「上次缓存的元素」——其内容是旧版本，
+                                  // 而点击该卡是按最新 id 现拉详情，导致「列表显示的推文 ≠ 点开看到的推文」。
     _rowOff = null;               // 行集合已变，偏移表失效
     _rowByKey = new Map();        // 按当前 _rows 重建身份映射（与即将生成的占位 phKey 一致）
     _rows.forEach((r) => _rowByKey.set(_rowKey(r), r));
@@ -8282,7 +8285,10 @@
     if (seed) {
       // 先用列表数据即时渲染，再拉取完整详情+评论区
       dtBody.innerHTML = '';
-      dtBody.appendChild(renderTweetDetailCard(mergeTweet(seed)));
+      // 直接用点击的那条 item 渲染即时详情：它与列表卡片是同一份对象，保证
+      // 「点开瞬间看到的」和「列表里点的」完全一致；不再过 mergeTweet——那会走
+      // 另一份 TWEET_STORE 缓存，可能与列表的 XTWEETS 对象分叉，造成「对应混乱」。
+      dtBody.appendChild(renderTweetDetailCard(seed));
       dtReplies.innerHTML = '<div class="bm-empty">正在加载评论区…</div>';
     }
     try {
