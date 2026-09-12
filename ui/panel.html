@@ -216,6 +216,9 @@
     padding: 4px 12px; cursor: pointer; font-size: 12px; }
   .dt-counts { display: flex; gap: 16px; padding: 10px 0; border-top: 1px solid #eef0f2; border-bottom: 1px solid #eef0f2; margin-bottom: 12px; color: #536471; font-size: 13px; }
   .dt-counts b { color: #0f1419; }
+  /* 单条推文详情的缓存时间：与首页/搜索同一口径，弱化呈现不抢正文 */
+  .dt-cache-age { font-size: 11.5px; color: #8899a6; margin: -4px 0 10px; }
+  .dt-cache-age:empty { display: none; }
   .dt-actions { display: flex; gap: 8px; }
   .dt-actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 9px; font-size: 13px; cursor: pointer; color: #536471; transition: background .15s; }
   .dt-actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -7816,6 +7819,38 @@
   // 一份 localStorage 缓存。同一条推文的「完整内容 + 评论分页 + 游标」只存在于一处，
   // 详情与所有视图（首页/搜索/收藏/历史）天然一致。刷新页面、从任意入口再打开同一条
   // 推文都命中 XTWEETS 秒开、零请求；只有首次打开或点「↻ 重新获取」才走网络。
+  // 单条推文详情同样是一个独立缓存单元（后端 /tweet/<id> 的 LRU 缓存），也要能标注缓存
+  // 时间。这里只存「推文 id → 上次获取时间」的轻量映射（内容本身在共享的 XTWEETS，
+  // 不重复存），上限 800 条，超出淘汰最旧的。时间单位与 timeAgo 一致：**秒**。
+  const TW_TS_KEY = 'x:tw:ts:v1';
+  let twTs = (function () {
+    try { return JSON.parse(localStorage.getItem(TW_TS_KEY)) || {}; } catch (e) { return {}; }
+  })();
+  function twTsSave() {
+    try {
+      const ks = Object.keys(twTs);
+      if (ks.length > 800) {
+        ks.sort((a, b) => (twTs[a] || 0) - (twTs[b] || 0));
+        ks.slice(0, ks.length - 800).forEach((k) => { delete twTs[k]; });
+      }
+      localStorage.setItem(TW_TS_KEY, JSON.stringify(twTs));
+    } catch (e) {}
+  }
+  function twTsGet(id) { return twTs[String(id)] || 0; }
+  function twTsPut(id, tsSec) { twTs[String(id)] = Math.floor(tsSec || Date.now() / 1000); twTsSave(); }
+  // 详情页缓存时间文案：与首页/搜索同一套口径（LRU 缓存，不自动过期）
+  function dtCacheAgeText(id, stale) {
+    const ts = twTsGet(id);
+    if (!ts) return '';
+    if (stale) return '已过期 · 缓存于 ' + timeAgo(ts) + '（网络失败，用旧缓存兜底）';
+    return '缓存于 ' + timeAgo(ts) + ' · LRU 缓存，点「重新获取」拿最新';
+  }
+  function paintDtCacheAge(id, stale) {
+    if (!dtBody) return;
+    const el = dtBody.querySelector('.dt-cache-age');
+    if (el) el.textContent = dtCacheAgeText(id, stale);
+  }
+
   function dtCacheGet(id) {
     const t = tweetCacheGet(id);
     if (!t) return null;
@@ -7894,6 +7929,7 @@
         ${t.quote_count != null ? `<span><svg class="ico-svg"><use href="#xi-quote"/></svg><b>${t.quote_count}</b></span>` : ''}
         ${t.view_count != null ? `<span><svg class="ico-svg"><use href="#xi-eye"/></svg><b>${t.view_count}</b></span>` : ''}
       </div>
+      <div class="dt-cache-age"></div>
       <div class="dt-actions">
         <button class="star ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${starLabel(isFav)}</button>
         <button class="refetch" data-tid="${esc2(t.tweet_id)}">${icon('xi-refresh')}重新获取</button>
@@ -8185,6 +8221,7 @@
       } else {
         dtCurTweet = hit.tweet;
         paintDetail(hit.tweet, hit.replies, hit.cursor);
+        paintDtCacheAge(tweetId);   // 命中缓存也标注这条推文上次是什么时候取的
         if (dtScroll) dtScroll.scrollTop = 0;
         return;
       }
@@ -8207,11 +8244,14 @@
         return;
       }
       const replies = d.replies || [];
+      // 记下这条推文详情的获取时间（后端 /tweet/<id> 是独立缓存单元，fetched_at 为秒）
+      twTsPut(tweetId, d.fetched_at);
       if (d.tweet) {
         // 详情是最完整的那一份：并入总库，顺带把列表里的同一条推文补全
         dtCurTweet = mergeTweet(d.tweet);
         persistTweetToFeed(d.tweet);   // 回流到唯一持久化缓存：返回首页/刷新/换设备都见全文
         paintDetail(dtCurTweet, replies, d.next_cursor);
+        paintDtCacheAge(dtCurTweet.tweet_id, d.stale);
         dtCachePut(dtCurTweet, replies, d.next_cursor);   // 下次再打开直接命中
         recordHistory(dtCurTweet);  // P1-7：记录浏览历史（fire-and-forget）
       } else {
