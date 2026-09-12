@@ -3126,6 +3126,14 @@
   function meCacheSave() { try { localStorage.setItem(ME_CACHE_KEY, JSON.stringify(meCache)); } catch (e) {} }
   function meListGet(sub) { var c = meCache[sub]; return (c && c.items) ? c : null; }
   function meListPut(sub, items, next_cursor) { meCache[sub] = { ts: Date.now(), items: items || [], next_cursor: next_cursor || null }; meCacheSave(); }
+  // 书签/喜欢已改为「XSTATE 成员表 + XTWEETS 共享内容」（不再整份塞进 localStorage），
+  // 但「上次同步时间」仍要按子页记录，否则个人页看不到缓存时间——follow/followers 走
+  // meListPut，书签/喜欢必须走这里（此前漏了，表现为这两个页签永远不显示缓存时间）。
+  function meMarkSynced(sub) {
+    if (!meCache[sub] || typeof meCache[sub] !== 'object') meCache[sub] = { items: [] };
+    meCache[sub].ts = Date.now();
+    meCacheSave();
+  }
   function meProfileGet() { var c = meCache.profile; return (c && c.user) ? c : null; }
   function meProfilePut(user) { meCache.profile = { ts: Date.now(), user: user }; meCacheSave(); }
   function meCacheAgeText(sub) {
@@ -3278,7 +3286,11 @@
     try {
       while (page < MAX_PAGES) {
         page++;
-        const url = `${API}/bookmarks?count=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        // 只有第一页带 force=1：用户显式刷新时真正重打 X。后续页走后端缓存即可——
+        // 书签是「新的在前」的追加型列表，把 20 页全部强制重爬既慢又容易触发限流，
+        // 而旧页内容本来就不会变。
+        let url = `${API}/bookmarks?count=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        if (force && page === 1) url += '&force=1';
         const r = await req(url);
         const d = await r.json();
         if (!d.success) {
@@ -3286,6 +3298,9 @@
           break; // 中途某页失败，保留已拉到的
         }
         const pageItems = d.items || [];
+        // 增量收敛：翻页途中整页都是已有内容 → 后面必然都是旧数据，停止回扫。
+        // 此前每次刷新都要把最多 20 页（1000 条）全量重扫一遍，粒度太粗。
+        if (page > 1 && pageItems.length && pageItems.every((it) => tweetCacheGet(it.tweet_id || it.id))) break;
         pageItems.forEach((it) => all.push(it));
         cursor = d.next_cursor || null;
         // 本页无新增推文或没有下一页了，停止翻页
@@ -3295,11 +3310,17 @@
       // 过总库：与首页/搜索/历史里的同一条推文共用一份记录，不另存一份
       const merged = mergeTweets(all);
       tweetCachePut(merged);   // 内容进全局单缓存（一处内容，所有视图共享）
+      // 只存成员 id（不重复存内容）；完整内容在 XTWEETS。
+      // 增量收敛后 all 只含本次新拉到的部分，必须与既有成员表合并后再写回，
+      // 否则本次没翻到的历史条目会被整段覆盖丢失。
+      let prev = []; try { prev = XSTATE ? (XSTATE.get('bm:list') || []) : []; } catch (_) {}
+      const uni = mergeMembership(toMembership(merged), prev).slice(0, 600);
+      if (XSTATE) try { XSTATE.set('bm:list', uni, { strategy: 'lww' }); } catch (_) {}
+      // 渲染以合并后的成员表为准，保证历史条目仍然在列
       meXBook.innerHTML = '';
-      merged.forEach((it) => meXBook.appendChild(renderBmCard(it, false)));
-      // 只存成员 id（不重复存内容）；完整内容在 XTWEETS
-      if (XSTATE) try { XSTATE.set('bm:list', toMembership(merged).slice(0, 600), { strategy: 'lww' }); } catch (_) {}
-      if (meCacheAge) meCacheAge.textContent = '已从 X 同步 ' + merged.length + ' 条';
+      uni.forEach((e) => { const t = tweetCacheGet(e.tweet_id); if (t) meXBook.appendChild(renderBmCard(t, false)); });
+      meMarkSynced('xbook');
+      if (meCacheAge) meCacheAge.textContent = '共 ' + uni.length + ' 条 · ' + meCacheAgeText('xbook');
     } catch (e) {
       if (!all.length) meXBook.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -3353,7 +3374,10 @@
     try {
       while (page < MAX_PAGES) {
         page++;
-        const url = `${API}/likes?count=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        // 同书签：只有第一页带 force=1（真正重打 X），后续页走后端缓存；
+        // 且翻到整页都是已知内容即停止，避免每次刷新都全量回扫 20 页。
+        let url = `${API}/likes?count=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        if (force && page === 1) url += '&force=1';
         const r = await req(url);
         const d = await r.json();
         if (!d.success) {
@@ -3361,6 +3385,7 @@
           break;
         }
         const pageItems = d.items || [];
+        if (page > 1 && pageItems.length && pageItems.every((it) => tweetCacheGet(it.tweet_id || it.id))) break;
         pageItems.forEach((it) => all.push(it));
         cursor = d.next_cursor || null;
         if (!cursor || !pageItems.length) break;
@@ -3368,10 +3393,13 @@
       if (!all.length) { meLikes.innerHTML = '<div class="bm-empty">你还没有在 X 上点过喜欢的推文。</div>'; return; }
       const merged = mergeTweets(all);
       tweetCachePut(merged);
+      let prev = []; try { prev = XSTATE ? (XSTATE.get('like:list') || []) : []; } catch (_) {}
+      const uni = mergeMembership(toMembership(merged), prev).slice(0, 600);
+      if (XSTATE) try { XSTATE.set('like:list', uni, { strategy: 'lww' }); } catch (_) {}
       meLikes.innerHTML = '';
-      merged.forEach((it) => meLikes.appendChild(renderBmCard(it, false)));
-      if (XSTATE) try { XSTATE.set('like:list', toMembership(merged).slice(0, 600), { strategy: 'lww' }); } catch (_) {}
-      if (meCacheAge) meCacheAge.textContent = '已从 X 同步喜欢 ' + merged.length + ' 条';
+      uni.forEach((e) => { const t = tweetCacheGet(e.tweet_id); if (t) meLikes.appendChild(renderBmCard(t, false)); });
+      meMarkSynced('likes');
+      if (meCacheAge) meCacheAge.textContent = '共 ' + uni.length + ' 条 · ' + meCacheAgeText('likes');
     } catch (e) {
       if (!all.length) meLikes.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -4729,6 +4757,19 @@
   // 把推文数组收敛成「成员 id + 排序」的轻量列表（各视图只存这个，不重复存内容）
   function toMembership(list) {
     return (list || []).map((it) => ({ tweet_id: it.tweet_id || it.id, created_at: it.created_at }));
+  }
+  // 增量同步用：把本次新拉到的成员表与既有成员表按 id 合并去重（新条目在前）。
+  // 增量收敛后本次只拉到「新增的部分」，若直接覆盖写回，本次没翻到的历史条目会整段丢失。
+  function mergeMembership(newList, prevList) {
+    const seen = new Set();
+    const out = [];
+    (newList || []).concat(prevList || []).forEach((e) => {
+      const id = String((e && (e.tweet_id || e.id)) || '');
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push({ tweet_id: id, created_at: e.created_at });
+    });
+    return out;
   }
 
   function saveBrowseCache(items, append) {
