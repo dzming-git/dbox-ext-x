@@ -216,9 +216,24 @@
     padding: 4px 12px; cursor: pointer; font-size: 12px; }
   .dt-counts { display: flex; gap: 16px; padding: 10px 0; border-top: 1px solid #eef0f2; border-bottom: 1px solid #eef0f2; margin-bottom: 12px; color: #536471; font-size: 13px; }
   .dt-counts b { color: #0f1419; }
-  /* 单条推文详情的缓存时间：与首页/搜索同一口径，弱化呈现不抢正文 */
-  .dt-cache-age { font-size: 11.5px; color: #8899a6; margin: -4px 0 10px; }
+  /* ---- 缓存时间 + 手动刷新：全插件统一组件 ----
+     统一前：三套时间格式化（秒/毫秒混用）、四种文案、字号 10.5/11.5/12px 三档、
+     有的常驻有的几秒后淡出、刷新按钮四种忙碌态。现统一为：
+     一行 .cache-age（12px / #8899a6 / 常驻）+ 一枚 .xrefresh 刷新按钮。 */
+  .cache-age { font-size: 12px; color: #8899a6; line-height: 1.5; }
+  .cache-age:empty { display: none; }
+  /* 详情页的缓存行跟在计数行下，需要一点间距 */
+  .dt-cache-age { font-size: 12px; color: #8899a6; margin: -4px 0 10px; }
   .dt-cache-age:empty { display: none; }
+  /* 统一的手动刷新按钮：图标 + 文案 + 忙碌态（.busy），用 CSS 变量适配深浅色 */
+  .xrefresh { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+    padding: 6px 12px; border: 1px solid var(--border, #e3e6eb); border-radius: 999px;
+    background: transparent; color: inherit; font-size: 12.5px; cursor: pointer;
+    white-space: nowrap; transition: background .15s, border-color .15s, color .15s; }
+  .xrefresh:hover:not(:disabled) { border-color: var(--accent, #1d9bf0); color: var(--accent, #1d9bf0); }
+  .xrefresh:disabled { opacity: .55; cursor: default; }
+  .xrefresh .ico-svg { width: 14px; height: 14px; }
+  .xrefresh.busy .ico-svg { animation: kwspin .8s linear infinite; }
   .dt-actions { display: flex; gap: 8px; }
   .dt-actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 9px; font-size: 13px; cursor: pointer; color: #536471; transition: background .15s; }
   .dt-actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -398,10 +413,7 @@
   .bm-card .kw-src + .time { margin-left: 6px; }
   .kw-bar-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
   .kw-hint { flex: 1; font-size: 11.5px; color: #8b98a5; line-height: 1.3; }
-  #srch-refresh-all { flex: 0 0 auto; border: 1px solid #e3e6eb; background: #fff;
-    color: #536471; border-radius: 9px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
-  #srch-refresh-all:hover:not(:disabled) { border-color: #1d9bf0; color: #1d9bf0; }
-  #srch-refresh-all:disabled { opacity: .5; cursor: default; }
+  /* 「全部重搜」外观与其它视图的刷新按钮统一：复用 .xrefresh（含 hover/disabled/忙碌态） */
   /* 搜索过滤配置浮层 */
   .flt-modal { position: fixed; inset: 0; z-index: 60; background: rgba(15,20,25,.45);
     display: flex; align-items: center; justify-content: center; padding: 16px; }
@@ -762,10 +774,11 @@
   .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
   .me-tab { flex: 1 1 auto; min-width: 84px; padding: 8px 10px; border: 1px solid var(--border, #2f3336); border-radius: 18px; background: transparent; color: inherit; cursor: pointer; font-size: 13px; }
   .me-tab.active { background: var(--accent, #1d9bf0); border-color: var(--accent, #1d9bf0); color: #fff; }
-  .me-refresh { margin-left: auto; padding: 6px 12px; border: 1px solid var(--border, #2f3336); border-radius: 18px; background: transparent; color: inherit; cursor: pointer; font-size: 13px; white-space: nowrap; }
-  .me-refresh:hover { background: var(--accent, #1d9bf0); border-color: var(--accent, #1d9bf0); color: #fff; }
-  .me-refresh-row { margin-bottom: 8px; min-height: 16px; }
-  .me-cache-age { font-size: 12px; color: #8899a6; }
+  /* 统一的「缓存时间 + 刷新」行：左边缓存时间、右边刷新按钮，个人页与用户页同款 */
+  .cache-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; padding: 0 12px; min-height: 28px; }
+  /* 注入到列表视图顶部的缓存行（首页/搜索），需要与内容留出边距 */
+  .cache-age-top { padding: 4px 12px 2px; }
+  /* 缓存时间文本统一用 .cache-age（个人页/用户页/首页/搜索/详情同一枚） */
   .user-card { border: 1px solid var(--border, #2f3336); border-radius: 12px; padding: 12px; margin-bottom: 10px; cursor: pointer; }
   .user-card .head { display: flex; gap: 10px; align-items: center; }
   .user-card .avatar { width: 44px; height: 44px; border-radius: 50%; }
@@ -970,9 +983,11 @@
       <button class="me-tab" data-me="likes"><svg class="ico-svg"><use href="#xi-heart"/></svg>喜欢</button>
       <button class="me-tab" data-me="follow"><svg class="ico-svg"><use href="#xi-users"/></svg>关注</button>
       <button class="me-tab" data-me="followers"><svg class="ico-svg"><use href="#xi-user"/></svg>粉丝</button>
-      <button id="me-refresh" class="me-refresh" title="重新从 X 拉取（书签/喜欢/关注基本不变，手动触发）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>刷新</button>
     </div>
-    <div class="me-refresh-row"><span id="me-cache-age" class="me-cache-age"></span></div>
+    <div class="cache-row">
+      <span class="cache-age" id="me-cache-age"></span>
+      <button id="me-refresh" class="xrefresh" title="重新从 X 拉取（书签/喜欢/关注基本不变，手动触发）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>刷新</button>
+    </div>
     <div class="bm-list" id="me-xbook"><div class="bm-empty">点击下方「书签」加载你在 X 上收藏的推文。</div></div>
     <div class="bm-list" id="me-likes" style="display:none"><div class="bm-empty">点击下方「喜欢」加载你在 X 上点过喜欢的推文。</div></div>
     <div class="bm-list" id="me-follow" style="display:none"><div class="bm-empty">加载你关注的人…</div></div>
@@ -1200,7 +1215,7 @@
       <div class="kw-chips" id="srch-chips"></div>
       <div class="kw-bar-foot">
         <span class="kw-hint">点关键词切换查看；关键词上的按钮可单独重搜 / 移除（缓存保留）</span>
-        <button id="srch-refresh-all" title="重新抓取全部关键词（后台进行，可关闭页面）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>全部重搜</button>
+        <button id="srch-refresh-all" class="xrefresh" title="重新抓取全部关键词（后台进行，可关闭页面）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>全部重搜</button>
       </div>
     </div>
     <div class="bm-toolbar">
@@ -1334,6 +1349,10 @@
         <span class="detail-title">用户</span>
       </div>
       <div class="detail-scroll" id="user-scroll">
+        <div class="cache-row" id="user-cache-row">
+          <span class="cache-age" id="user-cache-age"></span>
+          <button id="user-refresh" class="xrefresh" title="重新从 X 拉取该用户的推文"><svg class="ico-svg"><use href="#xi-refresh"/></svg>刷新</button>
+        </div>
         <div id="user-body"><div class="bm-empty">加载中…</div></div>
         <div class="bm-list" id="user-list"></div>
         <div class="bm-loadmore" id="user-loadmore" style="display:none"><button id="user-more">加载更多</button></div>
@@ -3139,14 +3158,11 @@
   }
   function meProfileGet() { var c = meCache.profile; return (c && c.user) ? c : null; }
   function meProfilePut(user) { meCache.profile = { ts: Date.now(), user: user }; meCacheSave(); }
-  function meCacheAgeText(sub) {
+  function meCacheAgeText(sub, count) {
     var c = sub === 'profile' ? meCache.profile : meCache[sub];
     if (!c || !c.ts) return '';
-    var s = Math.max(0, (Date.now() - c.ts) / 1000);
-    if (s < 60) return '刚刚缓存';
-    if (s < 3600) return Math.floor(s / 60) + ' 分钟前缓存';
-    if (s < 86400) return Math.floor(s / 3600) + ' 小时前缓存';
-    return Math.floor(s / 86400) + ' 天前缓存';
+    // meCache 的 ts 是毫秒 → 换算成秒后交给统一的 cacheText，文案与其它视图一致
+    return cacheText(Math.floor(c.ts / 1000), false, count);
   }
   function updateMeCacheAge() { if (meCacheAge) meCacheAge.textContent = meCacheAgeText(meSub); }
 
@@ -3266,8 +3282,9 @@
         card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
         e.stopPropagation();
         reloadCardMedia(card);
-        b.textContent = '获取中…';
-        setTimeout(() => { b.innerHTML = icon('xi-refresh') + '重新获取'; }, 1500);
+        // 统一忙碌态：此前只改文案、不禁用按钮，且靠 setTimeout 复原
+        setRefreshBusy(b, true, '获取中…');
+        setTimeout(() => setRefreshBusy(b, false, '重新获取'), 1200);
         }));
         return card;
         }
@@ -3323,7 +3340,7 @@
       meXBook.innerHTML = '';
       uni.forEach((e) => { const t = tweetCacheGet(e.tweet_id); if (t) meXBook.appendChild(renderBmCard(t, false)); });
       meMarkSynced('xbook');
-      if (meCacheAge) meCacheAge.textContent = '共 ' + uni.length + ' 条 · ' + meCacheAgeText('xbook');
+      if (meCacheAge) meCacheAge.textContent = meCacheAgeText('xbook', uni.length);
     } catch (e) {
       if (!all.length) meXBook.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -3402,7 +3419,7 @@
       meLikes.innerHTML = '';
       uni.forEach((e) => { const t = tweetCacheGet(e.tweet_id); if (t) meLikes.appendChild(renderBmCard(t, false)); });
       meMarkSynced('likes');
-      if (meCacheAge) meCacheAge.textContent = '共 ' + uni.length + ' 条 · ' + meCacheAgeText('likes');
+      if (meCacheAge) meCacheAge.textContent = meCacheAgeText('likes', uni.length);
     } catch (e) {
       if (!all.length) meLikes.innerHTML = `<div class="bm-empty err">请求异常: ${esc2(e.message)}</div>`;
     }
@@ -3502,11 +3519,15 @@
   });
   if (meRefreshBtn) meRefreshBtn.addEventListener('click', refreshMe);
   function refreshMe() {
+    // 统一忙碌态：此前个人页刷新完全没有忙碌反馈（只在缓存时间那行写字）
+    setRefreshBusy(meRefreshBtn, true, '刷新中…');
+    const done = () => setRefreshBusy(meRefreshBtn, false, '刷新');
     loadMeProfile(true);
-    if (meSub === 'xbook') loadXBookmarks(true);
-    else if (meSub === 'likes') loadXLikes(true);
-    else if (meSub === 'follow') loadFollowing(true);
-    else if (meSub === 'followers') loadFollowers(true);
+    if (meSub === 'xbook') loadXBookmarks(true).finally(done);
+    else if (meSub === 'likes') loadXLikes(true).finally(done);
+    else if (meSub === 'follow') loadFollowing(true).finally(done);
+    else if (meSub === 'followers') loadFollowers(true).finally(done);
+    else done();
     if (meCacheAge) meCacheAge.textContent = '正在从 X 重新拉取…';
   }
 
@@ -4524,11 +4545,10 @@
     card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
       const tid = b.dataset.tid;
-      b.textContent = '获取中…';
-      b.disabled = true;
+      // 统一忙碌态：此前复原文案用「↻ 重新获取」（纯文本），与原按钮的图标+文案不一致
+      setRefreshBusy(b, true, '获取中…');
       fetchTweetAndUpdateCard(tid, card).finally(() => {
-        b.disabled = false;
-        setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1200);
+        setTimeout(() => setRefreshBusy(b, false, '重新获取'), 600);
       });
     }));
     return card;
@@ -5763,6 +5783,11 @@
   // ---- 缓存时间展示 ----
   // 后端每个列表/详情接口都带 fetched_at/cached/stale；「拿到过的都缓存、没过期不二拉」，
   // 这里把「这份数据是什么时候拿的」明示出来，用户一眼能判断看到的是新是旧。
+  /* ---- 缓存时间统一口径 ----
+     全插件【只有这一处】做「多久之前」的格式化，入参统一为 **秒**：
+     后端 fetched_at 是秒，而本地 Date.now() 是毫秒，调用方必须 /1000 再传入。
+     此前 timeAgo(秒) / kwTimeAgo(毫秒) / meCacheAgeText(内部毫秒) 三套并存、
+     文案还分「X 分钟前」与「X 分钟前缓存」两种，是各处时间显示不一致的根源。 */
   function timeAgo(ts) {
     if (!ts) return '';
     const s = Math.floor(Date.now() / 1000 - ts);
@@ -5771,31 +5796,42 @@
     if (s < 86400) return Math.floor(s / 3600) + ' 小时前';
     return Math.floor(s / 86400) + ' 天前';
   }
-  function cacheBadge(meta) {
-    if (!meta || !meta.fetched_at) return '';
-    if (meta.stale) return '已过期 · 缓存于 ' + timeAgo(meta.fetched_at) + '（网络失败，用旧缓存兜底）';
-    // LRU 缓存：没有 TTL 自动过期，命中即返回。数据新鲜度完全由这份「缓存于 X 前」
-    // 告知用户，是否刷新由用户决定（下拉 / 顶部刷新按钮），不主动二拉。
-    return '缓存于 ' + timeAgo(meta.fetched_at) + ' · LRU 缓存，下拉/刷新获取最新';
+  // 全插件【唯一】的缓存状态文案：首页 / 搜索 / 个人页 / 推文详情 / 用户页统一用它，
+  // 不再各自拼「下拉/刷新获取最新」「点『重新获取』拿最新」「X 前缓存」等不同尾巴。
+  //   sec   上次获取时间（秒）
+  //   stale 网络失败、正在用旧缓存兜底
+  //   count 可选条数，用于列表页「共 N 条 · …」
+  function cacheText(sec, stale, count) {
+    if (!sec) return '';
+    const head = (count ? '共 ' + count + ' 条 · ' : '') + '缓存于 ' + timeAgo(sec);
+    if (stale) return '已过期 · ' + head + '（网络失败，用旧缓存兜底）';
+    return head + ' · LRU 缓存，刷新获取最新';
   }
-  // 缓存新鲜度提示：改为「短暂淡出的纯文本」，不再用 sticky 常驻横幅（滚动时贴顶遮挡内容、体验差）。
-  // 信息依旧保留（让用户知道数据新旧、是否该下拉刷新），但只闪现几秒后自动消失，不占用、不遮挡。
-  function showCacheBadge(hostSel, meta) {
+  function cacheBadge(meta, count) {
+    if (!meta || !meta.fetched_at) return '';
+    return cacheText(meta.fetched_at, meta.stale, count);
+  }
+  // 统一的刷新按钮忙碌态。统一前四种做法并存：侧边栏 tb-refresh 用 .spinning 动画、
+  // 「全部重搜」用 disabled + 百分比文案、个人页「刷新」完全没有忙碌态、卡片「重新获取」
+  // 用 setTimeout 手改文案再复原。现统一为：禁用 + 图标转圈（.busy）+ 可选文案。
+  function setRefreshBusy(btn, busy, label) {
+    if (!btn) return;
+    btn.disabled = !!busy;
+    btn.classList.toggle('busy', !!busy);
+    if (label) btn.innerHTML = icon('xi-refresh') + '<span>' + esc2(label) + '</span>';
+  }
+  // 缓存新鲜度提示：**常驻**一行小字（贴内容顶部、非 sticky，不遮挡）。
+  // 统一前这里是「闪现 3.5 秒后淡出」，而个人页/详情/关键词 chip 都是常驻——同一概念
+  // 两种生命周期，用户在不同页面看到的行为不一致，故统一为常驻。
+  function showCacheBadge(hostSel, meta, count) {
     try {
       const host = document.querySelector(hostSel);
       if (!host) return;
-      const txt = cacheBadge(meta);
+      const txt = cacheBadge(meta, count);
       if (!txt) return;
-      let el = host.querySelector(':scope > .cache-badge');
-      if (!el) { el = document.createElement('div'); el.className = 'cache-badge'; host.insertBefore(el, host.firstChild); }
-      el.style.cssText = 'color:#8899a6;font-size:12px;padding:4px 12px 2px;line-height:1.5;'
-        + 'opacity:1;transition:opacity .5s ease;';
+      let el = host.querySelector(':scope > .cache-age');
+      if (!el) { el = document.createElement('div'); el.className = 'cache-age cache-age-top'; host.insertBefore(el, host.firstChild); }
       el.textContent = txt;
-      clearTimeout(el._t);
-      el._t = setTimeout(() => {
-        el.style.opacity = '0';
-        setTimeout(() => { if (el && el.parentNode) el.style.display = 'none'; }, 600);
-      }, 3500);
     } catch (_) {}
   }
   let brCacheMeta = null;     // 关注流缓存元信息（最近一次 /timeline 响应）
@@ -6958,14 +6994,9 @@
   function cacheSearch() { saveKwCache(srchActiveKey); }   // 历史调用点保留的薄封装
 
   /* ---- 关键词 chip 渲染 ---- */
+  // 关键词缓存的 ts 是毫秒（Date.now()），统一换算成秒交给唯一的 timeAgo
   function kwTimeAgo(ts) {
-    if (!ts) return '尚未获取';
-    const m = Math.floor(Math.max(0, Date.now() - ts) / 60000);
-    if (m < 1) return '刚刚';
-    if (m < 60) return m + ' 分钟前';
-    const h = Math.floor(m / 60);
-    if (h < 24) return h + ' 小时前';
-    return Math.floor(h / 24) + ' 天前';
+    return ts ? timeAgo(Math.floor(ts / 1000)) : '尚未获取';
   }
   // 关键词 chip 第二行：该词的缓存时间（融合视图则展示各词时间跨度），保持低调不抢眼
   function kwChipSub(c) {
@@ -7840,10 +7871,7 @@
   function twTsPut(id, tsSec) { twTs[String(id)] = Math.floor(tsSec || Date.now() / 1000); twTsSave(); }
   // 详情页缓存时间文案：与首页/搜索同一套口径（LRU 缓存，不自动过期）
   function dtCacheAgeText(id, stale) {
-    const ts = twTsGet(id);
-    if (!ts) return '';
-    if (stale) return '已过期 · 缓存于 ' + timeAgo(ts) + '（网络失败，用旧缓存兜底）';
-    return '缓存于 ' + timeAgo(ts) + ' · LRU 缓存，点「重新获取」拿最新';
+    return cacheText(twTsGet(id), stale);
   }
   function paintDtCacheAge(id, stale) {
     if (!dtBody) return;
@@ -8004,13 +8032,16 @@
     card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
       reloadCardMedia(card);
-      b.textContent = '获取中…';
+      setRefreshBusy(b, true, '获取中…');
       const tid = t.tweet_id || b.dataset.tid;
       if (tid) {
-        openTweetDetail(String(tid), null, true, (t.author || {}).screen_name).catch(() => {});
+        // 详情重拉后卡片会被重绘，按钮随之替换；这里只保证异常时也能复原
+        openTweetDetail(String(tid), null, true, (t.author || {}).screen_name)
+          .catch(() => {})
+          .finally(() => setRefreshBusy(b, false, '重新获取'));
         return;
       }
-      setTimeout(() => { b.textContent = '↻ 重新获取'; }, 1500);
+      setTimeout(() => setRefreshBusy(b, false, '重新获取'), 1200);
     }));
     return card;
   }
@@ -8075,6 +8106,8 @@
       userMoreEl = $('user-more');
       $('user-back').addEventListener('click', () => closeDrillViaApp('user'));
       userMoreEl.addEventListener('click', () => loadUserTweets(false));
+      const _uRefresh = $('user-refresh');
+      if (_uRefresh) _uRefresh.addEventListener('click', () => loadUserTweets(true, true));
     }
     userCurName = screenName;
     userCursor = null;
@@ -8096,9 +8129,11 @@
     await loadUserTweets(true);
   }
 
-  async function loadUserTweets(reset) {
+  async function loadUserTweets(reset, force) {
     if (userLoading || !userEl) return;
     userLoading = true;
+    const _uBtn = $('user-refresh');
+    setRefreshBusy(_uBtn, true, '刷新中…');
     if (reset && !userCachedShown) {
       userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
       userListEl.innerHTML = '';
@@ -8109,14 +8144,20 @@
     }
     try {
       const url = `${API}/user_tweets?user=${encodeURIComponent(userCurName)}&count=20` +
-        (userCursor ? `&cursor=${encodeURIComponent(userCursor)}` : '');
+        (userCursor ? `&cursor=${encodeURIComponent(userCursor)}` : '') +
+        (force && reset ? '&force=1' : '');
       const r = await req(url);
       const d = await r.json();
       if (!d.success) {
         if (reset) userBodyEl.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '')}</div>`;
         userLoading = false;
+        setRefreshBusy(_uBtn, false, '刷新');
         return;
       }
+      // 用户页同样是独立缓存单元（后端 /user_tweets 走 _cached 并返回 fetched_at），
+      // 与其它视图一样标注缓存时间。
+      const _uAge = $('user-cache-age');
+      if (_uAge) _uAge.textContent = cacheText(d.fetched_at, d.stale, (d.items || []).length);
       renderUserProfile(d.user);
       const items = d.items || [];
       for (const it of items) {
@@ -8135,6 +8176,7 @@
       if (reset) userBodyEl.innerHTML = `<div class="bm-empty err">加载异常: ${esc2(e.message || e)}</div>`;
     } finally {
       userLoading = false;
+      setRefreshBusy(_uBtn, false, '刷新');
     }
   }
 
