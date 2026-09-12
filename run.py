@@ -2630,6 +2630,7 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None):
     replies = []
     next_cursor = None
     seen = set()
+    all_objs = []   # 按响应顺序收集全部推文（焦点 + 回复），去重后据此挑焦点
     for inst in tl:
         # 普通条目（焦点推文 / cursor）
         for e in (inst.get('entries') or []):
@@ -2640,10 +2641,7 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None):
             obj = _extract_tweet_obj(r)
             if obj and obj['tweet_id'] and obj['tweet_id'] not in seen:
                 seen.add(obj['tweet_id'])
-                if focal is None:
-                    focal = obj
-                else:
-                    replies.append(obj)
+                all_objs.append(obj)
             if c.get('entryType') == 'TimelineTimelineCursor' and \
                     c.get('cursorType') == 'Bottom':
                 next_cursor = c.get('value')
@@ -2658,13 +2656,13 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None):
                     obj = _extract_tweet_obj(r)
                     if obj and obj['tweet_id'] and obj['tweet_id'] not in seen:
                         seen.add(obj['tweet_id'])
-                        replies.append(obj)
-    # 若焦点推文不在第一顺位（罕见），用 tweet_id 匹配回填
-    if focal is None:
-        for i, rp in enumerate(replies):
-            if rp['tweet_id'] == tweet_id:
-                focal = replies.pop(i)
-                break
+                        all_objs.append(obj)
+    # 焦点推文必须以请求 tweet_id 为准：X 对「回复 / 会话」的 TweetDetail 会把
+    # 会话根或父推文排在第一条，若直接取首条会打开「别的帖子」（首页点开错位）。
+    # 旧逻辑只在 focal is None 时才回退匹配，漏掉了「首条是别的推文」的情况。
+    focal = next((o for o in all_objs if o['tweet_id'] == tweet_id), None)
+    if focal is not None:
+        replies = [o for o in all_objs if o['tweet_id'] != focal['tweet_id']]
 
     # ---- 截断文本修复：用 oEmbed API 兜底补全 ----
     # X 的 GraphQL TweetDetail 对部分推文返回截断的 legacy.full_text（末尾带 …），
