@@ -4434,7 +4434,9 @@
   function quotedHtml(q) {
     const a = (q && q.author) || {};
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
-    const tid = (q && q.tweet_id) || '';
+    // 嵌套引用推文未经后端 _merge_tweet 归一，通常只有 id 没有 tweet_id，
+    // 必须回退到 id，否则 data-tid 为空 → 点引用打开空/错乱详情。
+    const tid = (q && (q.tweet_id != null ? q.tweet_id : q.id)) || '';
     const qurl = (q && q.url) || '';
     return `
       <div class="quoted" data-tid="${esc2(tid)}" data-url="${esc2(qurl)}">
@@ -4468,7 +4470,8 @@
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
     const mediaHtml = cardMediaInner(medias);
-    const tid = item.tweet_id || '';
+    // 防御：后端 _merge_tweet 已保证顶层 tweet_id，但万一缺字段也回退 id，避免空 tid
+    const tid = (item.tweet_id != null ? item.tweet_id : item.id) || '';
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
     const card = document.createElement('div');
     card.className = 'bm-card';
