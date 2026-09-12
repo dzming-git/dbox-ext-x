@@ -5604,6 +5604,12 @@
     opts = opts || {};
     const cont = viewBrowse;
     if (!cont) return 0;
+    // 插入前记录滚动位置与内容总高：插入后按「顶部插入高度」补偿 scrollTop，使视口看到的
+    // 内容与插入前一致（位置不跳）。这是比「靠锚点卡 id 反推」更稳的保位置做法，且不依赖
+    // brUserScrolled——下拉刷新 / 中途刷新插入新推文时，用户已滚动会把 brUserScrolled 置真，
+    // 若只靠 anchorTo 会因早退而丢位置（表现为「刷新后不知道上次看到哪了」）。
+    const prevTop = cont.scrollTop;
+    const prevH = cont.scrollHeight;
     // 插入前「视口顶部卡片」的卡内偏移（可为负：用户正看该卡中下部）。reanchor 必须保留，
     // 否则恢复时 scrollTop=卡片顶部，视觉跳到上一篇开头（曾反馈的抖动/漂移）。
     let beforeTopOffset = 0, beforeTopTid = null;
@@ -5618,7 +5624,7 @@
     }
     tweetCachePut(items);
     // 只收「比当前列表更新」的推文（去重 + 过滤残缺），合并进全量数据；
-    // 时间顺序由 buildRows 统一按 created_at 重排，无需手动 topTime 闸门（位置由 anchorTo 保）。
+    // 时间顺序由 buildRows 统一按 created_at 重排，无需手动 topTime 闸门（位置由下方补偿保）。
     const newOnes = (items || []).filter(_browseValid).filter((it) => {
       const id = String(it.tweet_id || it.id);
       if (brSeenIds.has(id)) { _cardCache.delete('card:' + id); return false; }  // 已存在：内容可能更完整，弃旧卡缓存
@@ -5626,16 +5632,25 @@
     });
     if (!newOnes.length) return 0;
     _browseItems = newOnes.concat(_browseItems);   // 合并进全量数据（时间排序由 buildRows 处理）
-    refreshDayModel();   // 重建行模型 + 窗口渲染（占位保留真实滚动高度，位置不跳）
+    refreshDayModel();   // 重建行模型 + 窗口渲染（占位保留真实滚动高度）
+    // 顶部插入后按「插入高度」补偿 scrollTop：视口内容不跳（toTop 则直接置顶）。
+    const newH = cont.scrollHeight;
+    if (opts.toTop) {
+      holdBrRestoring(200); cont.scrollTop = 0;
+    } else {
+      const delta = Math.max(0, newH - prevH);
+      if (delta > 0) { holdBrRestoring(500); cont.scrollTop = prevTop + delta; renderWindow(); }
+    }
     let _reanchorThrottle = null;
     const reanchor = () => {
-      if (brUserScrolled) return;
-      if (opts.toTop) { holdBrRestoring(200); cont.scrollTop = 0; return; }
+      // 插入新推文是显式内容变更，不论用户是否已滚动都应保位置，不再因
+      // brUserScrolled 早退（否则中途刷新会丢位置）。toTop 已在上面处理。
+      if (opts.toTop) return;
       const anchor = opts.anchorTid || beforeTopTid;
       if (!anchor) return;
       if (_reanchorThrottle) return;
       _reanchorThrottle = setTimeout(() => { _reanchorThrottle = null; }, 150);
-      anchorTo(anchor, beforeTopOffset);   // 统一入口：按 id 定位并保留卡内偏移
+      anchorTo(anchor, beforeTopOffset);   // 统一入口：按 id 定位并保留卡内偏移（精确校正）
     };
     reanchor();
     requestAnimationFrame(reanchor);
