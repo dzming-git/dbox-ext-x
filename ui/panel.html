@@ -598,6 +598,18 @@
     background: rgba(0,0,0,.55); color: #fff; font-size: 15px; display: flex; align-items: center;
     justify-content: center; padding: 0; cursor: pointer; }
   .bm-media .bm-vctl-btn:hover { background: rgba(0,0,0,.75); }
+  /* 单击画面播放/暂停时的一次性图标闪现反馈（业界通例：Instagram/YouTube 同款），
+     不常驻、不挡画面；单击只做播放/暂停，全屏永远走显式按钮。 */
+  .bm-media .bm-vflash { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px;
+    border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; font-size: 20px;
+    display: flex; align-items: center; justify-content: center; opacity: 0;
+    pointer-events: none; z-index: 2; }
+  .bm-media .bm-vflash.show { animation: vflash .55s ease forwards; }
+  @keyframes vflash {
+    0% { opacity: 0; transform: scale(.8); }
+    25% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0; transform: scale(1.1); }
+  }
   .bm-card .actions { display: flex; gap: 6px; margin-top: 4px; }
   .bm-card .actions button { flex: 1; border: 1px solid #e3e6eb; background: #fff; border-radius: 8px; padding: 6px; font-size: 12px; cursor: pointer; color: #536471; transition: background .15s, color .15s, border-color .15s; }
   .bm-card .actions .dl { background: #1d9bf0; color: #fff; border-color: #1d9bf0; }
@@ -897,6 +909,14 @@
   <symbol id="xi-fullscreen" viewBox="0 0 24 24">
     <path d="M4 9.2V4.6h4.6"/><path d="M20 9.2V4.6h-4.6"/>
     <path d="M4 14.8v4.6h4.6"/><path d="M20 14.8v4.6h-4.6"/>
+  </symbol>
+  <symbol id="xi-volume" viewBox="0 0 24 24">
+    <path d="M4.4 9.4h3.2L12 5.6v12.8l-4.4-3.8H4.4z"/>
+    <path d="M15.6 9.4a3.8 3.8 0 0 1 0 5.2"/><path d="M18.2 6.9a7.2 7.2 0 0 1 0 10.2"/>
+  </symbol>
+  <symbol id="xi-mute" viewBox="0 0 24 24">
+    <path d="M4.4 9.4h3.2L12 5.6v12.8l-4.4-3.8H4.4z"/>
+    <path d="M16.2 9.8l4.2 4.4"/><path d="M20.4 9.8l-4.2 4.4"/>
   </symbol>
 </svg>
 <div class="wrap">
@@ -2200,6 +2220,16 @@
     // 背景用浅灰 + 透明：避免「满宽黑框闪一下」再缩成正常尺寸的观感；metadata 就绪后 fit 并淡入。
     // 注意：上面的 _vh（let）已算好冻结/估算高度，这里直接复用，不能再 const 声明一次（否则重复声明报错）。
     v.style.cssText = `width:100%;height:${_vh > 0 ? _vh + 'px' : '100%'};object-fit:contain;background:#f3f5f7;opacity:0;display:block;transition:opacity .12s`;
+    // 起播：浏览器普遍拦截「带声音的自动播放」（移动端是常态），被拒时静音重试，
+    // 保证至少能播出来，而不是静默停在转圈/黑屏（此前 play() 被拒后直接被吞掉）。
+    const tryPlay = () => {
+      try {
+        const p = v.play();
+        if (p && p.catch) {
+          p.catch(() => { try { v.muted = true; v.play().catch(() => {}); } catch (e) {} });
+        }
+      } catch (e) {}
+    };
     const close = document.createElement('button');
     close.className = 'bm-vclose'; close.innerHTML = icon('xi-close');
     close.addEventListener('click', (e) => { e.stopPropagation(); stopInlineVideo(_inlineVid); });
@@ -2208,7 +2238,12 @@
     mediaEl.appendChild(close);
     // 多资源推文（网格）里的格子天然很小，原生 <video controls> 在窄容器里会把全屏等
     // 按钮收进「更多」二级菜单，用户根本点不到全屏。这里隐藏原生控件，改用自带的最小
-    // 控件条（播放/暂停 + 全屏），保证「看不清时能一键全屏」这条路径始终可达。
+    // 控件条（声音 + 全屏），保证「看不清时能一键全屏」这条路径始终可达。
+    //
+    // 交互严格遵循业界通例（Instagram 2026-03 把 Reels 单击正式定为播放/暂停，而非静音）：
+    //   单击画面 = 播放/暂停（**绝不能**是「点一下就全屏」，那违背肌肉记忆）
+    //   全屏     = 显式按钮（YouTube/Instagram/TikTok 一致）
+    //   声音     = 显式喇叭按钮（视频常以静音起播，需给明确的取消静音入口）
     // 单资源视频（非网格）维持原生控件不变——那条路径本来就够用，不必动。
     if (inGridEl) {
       v.controls = false;
@@ -2221,28 +2256,37 @@
       };
       const ctl = document.createElement('div');
       ctl.className = 'bm-vctl';
-      const playBtn = document.createElement('button');
-      playBtn.className = 'bm-vctl-btn';
-      playBtn.title = '播放 / 暂停';
+      const muteBtn = document.createElement('button');
+      muteBtn.className = 'bm-vctl-btn';
       const fsBtn = document.createElement('button');
       fsBtn.className = 'bm-vctl-btn';
       fsBtn.innerHTML = icon('xi-fullscreen');
       fsBtn.title = '全屏播放';
-      const syncIcon = () => {
-        playBtn.innerHTML = v.paused ? icon('xi-play', 'is-fill') : icon('xi-pause');
+      const syncMute = () => {
+        muteBtn.innerHTML = icon(v.muted ? 'xi-mute' : 'xi-volume');
+        muteBtn.title = v.muted ? '取消静音' : '静音';
       };
-      syncIcon();
-      v.addEventListener('play', syncIcon);
-      v.addEventListener('pause', syncIcon);
-      playBtn.addEventListener('click', (e) => {
+      syncMute();
+      v.addEventListener('volumechange', syncMute);
+      muteBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (v.paused) v.play().catch(() => {}); else v.pause();
+        v.muted = !v.muted;
+        syncMute();
+        if (!v.muted && v.paused) tryPlay();
       });
       fsBtn.addEventListener('click', (e) => { e.stopPropagation(); goFs(); });
-      // 小窗口里点画面直接进全屏：视频本就自动播放，此时用户的意图就是「看大一点」
-      v.addEventListener('click', (e) => { e.stopPropagation(); goFs(); });
-      ctl.append(playBtn, fsBtn);
-      mediaEl.appendChild(ctl);
+      // 单击画面 = 播放/暂停，并给一次图标闪现反馈（不常驻、不挡画面）
+      const flash = document.createElement('div');
+      flash.className = 'bm-vflash';
+      v.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const willPlay = v.paused;
+        if (willPlay) tryPlay(); else v.pause();
+        flash.innerHTML = willPlay ? icon('xi-pause') : icon('xi-play', 'is-fill');
+        flash.classList.remove('show'); void flash.offsetWidth; flash.classList.add('show');
+      });
+      ctl.append(muteBtn, fsBtn);
+      mediaEl.append(ctl, flash);
     }
     // 加载中转圈：覆盖视频区，避免「白框干等」无任何反馈
     const loading = document.createElement('div');
@@ -2295,7 +2339,7 @@
     if (m3u8 && window.Hls && window.Hls.isSupported()) {
       const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
       hls.loadSource(m3u8); hls.attachMedia(v);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
+      hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
       // 致命错误自愈：网络错误有限重连、媒体错误有限恢复，**必须限次**——
       // 此前无条件 startLoad() 会让 hls.js 在分片始终拿不到时无限重试，
       // loadedmetadata 永不触发，用户被永久困在「黑屏转圈」里且看不到任何错误。
@@ -2325,7 +2369,7 @@
     } else if (mp4) {
       v.src = mp4;
       // mp4 的 loadedmetadata 已在上面统一监听（onMeta），这里只补 play
-      v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
+      v.addEventListener('loadedmetadata', tryPlay);
       // mp4 直链加载失败时（代理超时/403/网络断开/CORS），<video> 会静默进入死锁：
       // 黑屏 + 0:00 + 播放按钮点了没反应（error 事件不冒泡、原生控件无错误提示）。
       // 这里监听 error 事件，自动重试一次（覆盖瞬时网络抖动），仍失败则给用户明确提示。
