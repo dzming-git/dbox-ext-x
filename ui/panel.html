@@ -222,9 +222,9 @@
      一行 .cache-age（12px / #8899a6 / 常驻）+ 一枚 .xrefresh 刷新按钮。 */
   .cache-age { font-size: 12px; color: #8899a6; line-height: 1.5; }
   .cache-age:empty { display: none; }
-  /* 详情页的缓存行跟在计数行下，需要一点间距 */
-  .dt-cache-age { font-size: 12px; color: #8899a6; margin: -4px 0 10px; }
-  .dt-cache-age:empty { display: none; }
+  /* 详情页的缓存行（在卡片内部，不需要 .cache-row 的左右留白） */
+  .dt-cache-row { padding: 0; margin: -2px 0 10px; }
+  .dt-cache-age { font-size: 12px; color: #8899a6; }
   /* 统一的手动刷新按钮：图标 + 文案 + 忙碌态（.busy），用 CSS 变量适配深浅色 */
   .xrefresh { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
     padding: 6px 12px; border: 1px solid var(--border, #e3e6eb); border-radius: 999px;
@@ -7871,7 +7871,12 @@
   function twTsPut(id, tsSec) { twTs[String(id)] = Math.floor(tsSec || Date.now() / 1000); twTsSave(); }
   // 详情页缓存时间文案：与首页/搜索同一套口径（LRU 缓存，不自动过期）
   function dtCacheAgeText(id, stale) {
-    return cacheText(twTsGet(id), stale);
+    const ts = twTsGet(id);
+    // 这条推文从未单独向 X 拉过详情时没有时间戳（内容来自列表/总库的本地缓存）。
+    // 此前这里返回空串、又被 :empty 隐藏，用户看到的就是「什么都没显示」，
+    // 必须给出明确说明并引导刷新，而不是留白。
+    if (!ts) return '来自本地缓存 · 点刷新从 X 获取最新';
+    return cacheText(ts, stale);
   }
   function paintDtCacheAge(id, stale) {
     if (!dtBody) return;
@@ -7957,10 +7962,12 @@
         ${t.quote_count != null ? `<span><svg class="ico-svg"><use href="#xi-quote"/></svg><b>${t.quote_count}</b></span>` : ''}
         ${t.view_count != null ? `<span><svg class="ico-svg"><use href="#xi-eye"/></svg><b>${t.view_count}</b></span>` : ''}
       </div>
-      <div class="dt-cache-age"></div>
+      <div class="cache-row dt-cache-row">
+        <span class="cache-age dt-cache-age"></span>
+        <button class="xrefresh dt-refresh" title="重新从 X 拉取这条推文（正文 + 媒体 + 评论）"><svg class="ico-svg"><use href="#xi-refresh"/></svg>刷新</button>
+      </div>
       <div class="dt-actions">
         <button class="star ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${starLabel(isFav)}</button>
-        <button class="refetch" data-tid="${esc2(t.tweet_id)}">${icon('xi-refresh')}重新获取</button>
         <button class="dl" data-url="${esc2(t.url || '')}">${icon('xi-download')}下载</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
       </div>`;
@@ -8029,20 +8036,20 @@
     // 注意：不再 dtCacheDrop 删除缓存——删缓存的 lww 推送会在服务端先把这条顶掉，
     // 若随后很快刷新、补回的推送还压在防抖里没发出，pull 会拿服务端缺这条的快照覆盖
     // 本地，推文就"消失"。改为 force 强拉网络并覆盖写回（upsert），服务端始终含这条。
-    card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
+    // 详情的手动刷新：与其它视图同一枚 .xrefresh + setRefreshBusy。
+    // 原「重新获取」按钮已从 .dt-actions 移除——同一张卡上不该有两个刷新入口。
+    const dtRb = card.querySelector('.dt-refresh');
+    if (dtRb) dtRb.addEventListener('click', (e) => {
       e.stopPropagation();
+      const tid = t.tweet_id;
+      if (!tid) return;
+      setRefreshBusy(dtRb, true, '获取中…');
       reloadCardMedia(card);
-      setRefreshBusy(b, true, '获取中…');
-      const tid = t.tweet_id || b.dataset.tid;
-      if (tid) {
-        // 详情重拉后卡片会被重绘，按钮随之替换；这里只保证异常时也能复原
-        openTweetDetail(String(tid), null, true, (t.author || {}).screen_name)
-          .catch(() => {})
-          .finally(() => setRefreshBusy(b, false, '重新获取'));
-        return;
-      }
-      setTimeout(() => setRefreshBusy(b, false, '重新获取'), 1200);
-    }));
+      // 详情重拉后卡片会被重绘、按钮随之替换；这里只保证异常时也能复原忙碌态
+      openTweetDetail(String(tid), null, true, (t.author || {}).screen_name)
+        .catch(() => {})
+        .finally(() => setRefreshBusy(dtRb, false, '刷新'));
+    });
     return card;
   }
 
