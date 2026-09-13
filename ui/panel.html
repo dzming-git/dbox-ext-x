@@ -753,18 +753,18 @@
   .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由右侧圆弧时间轴(D)表达 */
   /* 桌面端：默认收起为边缘悬浮的圆形图标；点它展开，指针离开收起 */
   @media (min-width: 761px) {
-    .br-arc.collapsed { width: 48px; height: auto; pointer-events: none; }
+    .br-arc.collapsed { width: 48px; height: auto; pointer-events: none; top: auto; bottom: 16px; transform: none; }
     .br-arc.collapsed .arc-item:not(.sel) { pointer-events: none; }
     /* 收起态：选中天化身边缘悬浮圆形图标，半露在屏幕右侧外，不遮挡内容图片 */
     .br-arc.collapsed .arc-item.sel {
-      right: -14px;                 /* 推到边缘外，只露大半在屏内 */
-      width: 44px; height: 44px;
+      right: -18px;                 /* 推到边缘外更多，露一小角即可，减少遮挡与误触 */
+      width: 38px; height: 38px;
       padding: 0; margin: 0;
       border-radius: 50%;           /* 圆形；想要方角改 12px 即可 */
       display: flex; align-items: center; justify-content: center;
       flex-direction: column; gap: 0;
       font-size: 0; line-height: 1;
-      box-shadow: 0 0 12px rgba(29,155,240,.6);
+      box-shadow: 0 0 8px rgba(29,155,240,.45);
       overflow: hidden;
       /* 收起态**只留这一颗小圆图标可点**，且点它是「展开」不是跳日。
          ⚠️ 必须显式写：.arc-item 自身带 pointer-events:auto，会盖过父级的 none，
@@ -773,7 +773,7 @@
       cursor: pointer;
     }
     .br-arc.collapsed .arc-item.sel .arc-y { display: none; }   /* 圆里只显「日」 */
-    .br-arc.collapsed .arc-item.sel .arc-d { font-size: 16px; font-weight: 700; }
+    .br-arc.collapsed .arc-item.sel .arc-d { font-size: 15px; font-weight: 700; }
   }
   /* 我的 X（个人页） */
   .me-profile { margin-bottom: 10px; }
