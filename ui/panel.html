@@ -175,17 +175,43 @@
   .dt-text { font-size: 16px; line-height: 1.6; color: #0f1419; white-space: pre-wrap; word-break: break-word; margin-bottom: 12px; }
   /* 详情页媒体：2 列网格（与 X 官方一致），单图自动跨两列全宽。
      多图并排显示，不再纵向堆叠。 */
-  .dt-media { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
-  .dt-media > :only-child { grid-column: 1 / -1; }
-  .dt-media img { width: 100%; display: block; max-height: 70vh; object-fit: contain; background: #e9eef2; }
-  .dt-media video { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 12px; display: block; background: #000; }
-  /* 详情页视频：与浏览卡片同构（封面 + ▶，点按原地点播走 hls.js）。
-     .bm-media / .bm-play / .bm-vclose 的样式都定义在 .bm-card 作用域下，详情页
-     够不着，必须自带一份，否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
-  .dt-media .dt-video { position: relative; cursor: pointer; border-radius: 12px; overflow: hidden; background: #000; }
-  .dt-media .dt-video > video { width: 100%; max-height: 70vh; display: block; background: #000; }
-  /* 封面缩略图（<img>）：与上面的 video 同规则，保证点播前后尺寸一致、不跳动 */
-  .dt-media .dt-video > img { width: 100%; height: auto; max-height: 70vh; display: block; object-fit: contain; background: #000; }
+  /* 详情媒体容器：现在装的是与卡片**同构**的 .media 子网格（cardMediaInner 产出），
+     故自身不再做两列 grid——否则会把整个 .media 塞进其中一列。 */
+  .dt-media { display: block; margin-bottom: 12px; }
+  .dt-media > .media { display: grid; gap: 4px; align-items: stretch; border-radius: 12px; overflow: hidden; }
+  .dt-media > .media.m1 { grid-template-columns: 1fr; }
+  .dt-media > .media.m1 .bm-media {
+    display: flex; align-items: center; justify-content: center;
+    max-height: 70vh; background: #f3f5f7; border-radius: 12px; overflow: hidden;
+  }
+  .dt-media > .media.m1 .bm-media img,
+  .dt-media > .media.m1 .bm-media video {
+    max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block;
+  }
+  /* 多图：与卡片一致的 justified 比例行式布局（JS 算行高，CSS 只给兜底两列） */
+  .dt-media > .media.justified { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px 8px; }
+  .dt-media > .media.justified .bm-media {
+    display: flex; align-items: center; justify-content: center;
+    max-height: 60vh; aspect-ratio: 3 / 4; background: #f3f5f7;
+    border-radius: 8px; overflow: hidden !important; position: relative; min-height: 0;
+  }
+  .dt-media > .media.justified .bm-media img,
+  .dt-media > .media.justified .bm-media video {
+    max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; display: block;
+  }
+  .dt-media .bm-media { position: relative; cursor: pointer; overflow: hidden; background: #f3f5f7; }
+  /* ▶ / 关闭按钮：这些样式定义在 .bm-card 作用域下，详情够不着，必须自带一份，
+     否则 ▶ 与关闭按钮会掉进普通文档流、位置错乱。 */
+  .dt-media .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px;
+    border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
+  .dt-media .bm-vclose { position: absolute; top: 6px; right: 6px; z-index: 3; width: 26px; height: 26px;
+    border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px;
+    line-height: 1; cursor: pointer; }
+  /* 播放中：解除高度上限，让播放器按内在比例完整呈现（须排在 m1/justified 之后才生效） */
+  .dt-media .bm-media.playing { background: #f3f5f7; max-height: none; }
+  /* 详情媒体已改用与卡片同构的 cardMediaInner()，不再产出 .dt-video；
+     相关容器/封面样式与 ▶、关闭按钮样式已统一到上面的 .dt-media .bm-* 规则。 */
 
   /* 用户详情页：资料头 + 推文列表（推文复用 .bm-card） */
   .user-profile { background: #fff; border: 1px solid #e3e6eb; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
@@ -202,9 +228,7 @@
   /* 头像/名字可点进用户页：仅当用户本身在列表里时也成立；这里给资料头里的元素加手型 */
   .avatar[data-user], .name[data-user], .dt-avatar[data-user], .dt-name[data-user],
   .q-avatar[data-user], .q-name[data-user] { cursor: pointer; }
-  .dt-media .dt-video .bm-play { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; font-size: 18px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
-  .dt-media .dt-video.playing .bm-play { display: none; }
-  .dt-media .dt-video .bm-vclose { position: absolute; top: 8px; right: 8px; z-index: 3; width: 28px; height: 28px; border: none; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1; cursor: pointer; }
+  .dt-media .bm-media.playing .bm-play { display: none; }
   /* 原地点播加载中转圈：覆盖视频区，避免「白框干等」无任何反馈 */
   .bm-media .vid-loading { position: absolute; inset: 0; display: flex; align-items: center;
     justify-content: center; background: #0f1419; z-index: 1; }
@@ -498,7 +522,7 @@
   /* 视频安全网：即使封面未加载 / 尺寸缺失，也保证最小可见高度（防塌成一行） */
   .bm-card .media.m1 .bm-media[data-type="video"] { min-height: 120px; }
   /* 详情页视频同样需要安全网（此前漏了此规则，导致无封面时塌成 ~16px 黑条） */
-  .dt-media .bm-media[data-type="video"], .dt-media .dt-video { min-height: 120px; }
+  .dt-media .bm-media[data-type="video"] { min-height: 120px; }
   /* 视频封面必须撑满容器宽度：X 部分视频的 cover 是缩略图尺寸（如 80x45），
      width:auto 会按原始小尺寸显示 → 图很小。视频封面统一 width:100% 撑满。 */
   /* 视频封面、img/video 统一：max-width/max-height:100% + auto + contain
@@ -7889,32 +7913,11 @@
   // 渲染推文详情的完整卡片
   function renderTweetDetailCard(t) {
     const a = t.author || {};
-    const mediaHtml = (t.media || []).map((m) => {
-      if (m.type === 'video') {
-        // 媒体对象有两个生产者，字段并不统一，两种都要认：
-        //   时间线 GraphQL：url = m3u8，mp4 = 直链
-        //   详情 _normalize_media：url = mp4，且没有 mp4 键
-        // 优先 m3u8（hls.js 分片小、可边下边播），否则退回直链 mp4。
-        // 此前只认「非 m3u8 的 url」：m3u8 媒体被渲染成空，直链 mp4 又要等代理
-        // 把整个文件下完才出第一个字节，首次播放表现为一直转圈。
-        const isM3u8 = !!(m.url && String(m.url).includes('.m3u8'));
-        const mp4 = (m.mp4 && !String(m.mp4).includes('.m3u8'))
-          ? mediaUrl(m.mp4, 'video')
-          : ((!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '');
-        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
-        if (!mp4 && !m3u8) return '';
-        const poster = mediaUrl(m.cover || '', 'image');
-        // 同卡片缩略图：用 <img> 承载封面以获得真实比例，避免 <video> 固有的
-        // 300×150 小框（无 src 时 poster 不改变元素尺寸）
-        // 同样带上封面真实宽高以预留空间（消除加载过程中的布局跳动）
-        // 缺失时兜底 320x180（≈16:9），同卡片缩略图
-        const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
-        return `<div class="bm-media dt-video" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}">`
-          + (poster ? `<img src="${esc2(poster)}" alt=""${dim} loading="lazy" onerror="_onVideoCoverErr(this)"/>` : '')
-          + `<span class="bm-play">▶</span></div>`;
-      }
-      return m.url ? `<img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />` : '';
-    }).join('');
+    // 媒体渲染与浏览/搜索/收藏卡片**共用同一份** cardMediaInner()，详情不再自成一套。
+    // 此前详情自己拼了一套：固定两列 grid + 视频用 .dt-video + 图片是裸 <img>，
+    // 与列表的 justified 比例行式布局不一致 → 同一条推文「预览和详情长得不一样」；
+    // 且裸 <img> 没有 .bm-media 包裹、没有 data-idx，图片在详情页点不开灯箱。
+    const mediaHtml = cardMediaInner(t.media);
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
     const isFav = starSet.has(String(t.tweet_id));
     const card = document.createElement('div');
@@ -7949,13 +7952,9 @@
         <button class="dl" data-url="${esc2(t.url || '')}">${icon('xi-download')}存入 DBox</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
       </div>`;
-    // 视频：点按原地点播，复用浏览卡片那套 hls.js 播放逻辑（封面 + ▶）
-    card.querySelectorAll('.dt-video').forEach((el) => {
-      el.addEventListener('click', (e) => {
-        e.stopPropagation();
-        playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);
-      });
-    });
+    // 媒体交互（图片灯箱 / 视频原地点播 / justified 行式布局）统一交给 wireMediaBlock，
+    // 与卡片完全一致——详情不再单独绑 .dt-video（共用渲染后已没有该类名）。
+    wireMediaBlock(card.querySelector('.dt-media > .media'), t.media || []);
     // 「查看完整帖子」：本条是评论（回复）时，跳到被回复的原贴详情。
     // 搜索常直接搜到评论本身，用户点开后需要回到上下文里的完整帖子；
     // openTweetDetail 会压入历史，看完可后退返回这条评论。
