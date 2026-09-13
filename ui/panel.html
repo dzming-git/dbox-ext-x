@@ -304,7 +304,7 @@
   .tab .ico-svg { width: 21px; height: 21px; vertical-align: middle; }
   /* 按钮内的图标：与文字基线对齐，右侧留一点间隙 */
   .bm-toolbar button .ico-svg, .bm-btn .ico-svg { width: 15px; height: 15px; margin-right: 4px; }
-  /* 推文卡片操作按钮（收藏/重新获取/下载等）：略大于纯 1em，视觉重量与文字更均衡 */
+  /* 推文卡片操作按钮（收藏/刷新/下载等）：略大于纯 1em，视觉重量与文字更均衡 */
   .actions button .ico-svg, .dt-actions button .ico-svg { width: 14px; height: 14px; margin-right: 4px; }
   /* 统计行（评论/转推/喜欢/引用/浏览）与认证标记 */
   .dt-counts .ico-svg { width: 14px; height: 14px; margin-right: 3px; }
@@ -3207,7 +3207,7 @@
   function mediaUrl(url, type, opts) {
     if (!url || !/twimg\.com|pbs\.twimg/.test(url)) return url || '';
     let s = `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}&v=${MEDIA_CACHE_BUST}`;
-    // force：绕过服务端坏缓存、强制重新从上游取图（以推文为单位重新获取时用）。
+    // force：绕过服务端坏缓存、强制重新从上游取图（以推文为单位刷新时用）。
     if (opts && opts.force) s += `&force=1&_=${Date.now()}`;
     return s;
   }
@@ -3215,7 +3215,7 @@
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
-    // 媒体渲染统一交给 cardMediaInner：浏览/搜索/用户列表/收藏夹/「重新获取」
+    // 媒体渲染统一交给 cardMediaInner：浏览/搜索/用户列表/收藏夹/「刷新」
     // 全部共用同一份逻辑，避免散落多处的副本相互偏离（此前用户列表就因没走
     // cardMediaInner 而漏掉 .media.m1 包裹，导致视频 CSS 规则全部失效）。
     const mediaHtml = cardMediaInner(medias);
@@ -3238,10 +3238,10 @@
         <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starLabel(starSet.has(String(tid)))}</button>
         ${inFolder
           ? `<button class="open" data-url="${esc2(item.url || '')}">${icon('xi-external')}打开原推文</button>
-             <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}重新获取</button>
+             <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}刷新</button>
              <button class="del" data-tid="${esc2(tid)}">移出收藏夹</button>`
           : `<button class="open" data-url="${esc2(item.url || '')}">${icon('xi-external')}打开原推文</button>
-             <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}重新获取</button>`}
+             <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}刷新</button>`}
       </div>`;
     // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
     // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
@@ -3282,13 +3282,15 @@
     }));
     // dbox 收藏（跨设备星标）统一走 toggleStar / starSet，见各卡片 .star 按钮。
     // （旧「收藏夹」本地功能已移除，renderBmCard 不再使用 inFolder 分支。）
-        // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存）
+        // 刷新：与浏览卡片 / 详情页同一套——以推文为单位重拉完整内容（正文+媒体）。
+        // 此前这里只调 reloadCardMedia 刷媒体，且靠 setTimeout(1200) 假装完成（请求没结束
+        // 按钮就复原了），与浏览卡「重拉全文」也不一致。统一走 fetchTweetAndUpdateCard，
+        // 并传 renderBmCard 重建（不能用默认的 renderBrowseCard，会丢掉本视图的操作按钮）。
         card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        reloadCardMedia(card);
-        // 统一忙碌态：此前只改文案、不禁用按钮，且靠 setTimeout 复原
-        setRefreshBusy(b, true, '获取中…');
-        setTimeout(() => setRefreshBusy(b, false, '重新获取'), 1200);
+          e.stopPropagation();
+          setRefreshBusy(b, true, '获取中…');
+          fetchTweetAndUpdateCard(b.dataset.tid, card, renderBmCard)
+            .finally(() => setRefreshBusy(b, false, '刷新'));
         }));
         return card;
         }
@@ -4116,7 +4118,7 @@
     }
   }
 
-  // 以推文（卡片）为单位，强制重新获取该卡所有媒体：给每个媒体 URL 追加
+  // 以推文（卡片）为单位，强制刷新该卡所有媒体：给每个媒体 URL 追加
   // force=1，让代理忽略本地 LRU、重新从上游拉取并覆盖坏缓存。
   function _forceReloadSrc(src) {
     if (!src) return src;
@@ -4142,9 +4144,11 @@
     });
   }
 
-  // 以推文为单位重新拉取完整内容（正文+媒体）并原地更新卡片：用于卡片
-  // 「重新获取」按钮，确保详情页补全过的内容也能回流到列表，而不是只刷媒体。
-  async function fetchTweetAndUpdateCard(tid, card) {
+  // 以推文为单位重新拉取完整内容（正文+媒体）并原地更新卡片：用于各视图卡片的
+  // 「刷新」按钮，确保详情页补全过的内容也能回流到列表，而不是只刷媒体。
+  // renderFn：重建卡片用的渲染器，默认浏览卡片；收藏/书签等视图必须传自己的渲染器
+  // （renderBmCard），否则重建后会丢掉该视图特有的操作按钮。
+  async function fetchTweetAndUpdateCard(tid, card, renderFn) {
     if (!tid || !card) return;
     try {
       const r = await req(`${API}/tweet/${encodeURIComponent(tid)}`);
@@ -4153,7 +4157,7 @@
       const item = mergeTweet(d.tweet);
       persistTweetToFeed(d.tweet);   // 写回唯一持久化缓存：刷新/换设备不再回到旧内容
       if (card.parentNode) {
-        const nc = renderBrowseCard(item);
+        const nc = (renderFn || renderBrowseCard)(item);
         card.replaceWith(nc);
         layoutJustifiedIn(nc);   // 插入 DOM 后补排多图布局（创建时游离态会被跳过）
       }
@@ -4496,7 +4500,7 @@
       ${item.quoted ? quotedHtml(item.quoted) : ''}
       <div class="actions">
         <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starLabel(starSet.has(String(tid)))}</button>
-        <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}重新获取</button>
+        <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}刷新</button>
         <button class="dl" data-tid="${esc2(tid)}">${icon('xi-download')}下载</button>
       </div>`;
     // 点击图片/视频缩略图 → lightbox 大图/播放视频（不是打开帖子）。
@@ -4550,15 +4554,15 @@
         .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已下载' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
         .catch(() => { b.textContent = '下载失败'; downloadedTweetIds.delete(t); b.disabled = false; });
     }));
-    // 重新获取：以推文为单位重新拉取完整内容（正文+媒体），确保列表里旧的
+    // 刷新：以推文为单位重新拉取完整内容（正文+媒体），确保列表里旧的
     // 截断/缺图内容能被详情页补全过的全文覆盖，而不是只刷新媒体。
     card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
       e.stopPropagation();
       const tid = b.dataset.tid;
-      // 统一忙碌态：此前复原文案用「↻ 重新获取」（纯文本），与原按钮的图标+文案不一致
+      // 统一忙碌态（与详情页/其它视图同一枚 setRefreshBusy）
       setRefreshBusy(b, true, '获取中…');
       fetchTweetAndUpdateCard(tid, card).finally(() => {
-        setTimeout(() => setRefreshBusy(b, false, '重新获取'), 600);
+        setTimeout(() => setRefreshBusy(b, false, '刷新'), 600);
       });
     }));
     return card;
@@ -5766,7 +5770,7 @@
     return Math.floor(s / 86400) + ' 天前';
   }
   // 全插件【唯一】的缓存状态文案：首页 / 搜索 / 个人页 / 推文详情 / 用户页统一用它，
-  // 不再各自拼「下拉/刷新获取最新」「点『重新获取』拿最新」「X 前缓存」等不同尾巴。
+  // 不再各自拼「下拉/刷新获取最新」「点『刷新』拿最新」「X 前缓存」等不同尾巴。
   //   sec   上次获取时间（秒）
   //   stale 网络失败、正在用旧缓存兜底
   //   count 可选条数，用于列表页「共 N 条 · …」
@@ -5781,7 +5785,7 @@
     return cacheText(meta.fetched_at, meta.stale, count);
   }
   // 统一的刷新按钮忙碌态。统一前四种做法并存：侧边栏 tb-refresh 用 .spinning 动画、
-  // 「全部重搜」用 disabled + 百分比文案、个人页「刷新」完全没有忙碌态、卡片「重新获取」
+  // 「全部重搜」用 disabled + 百分比文案、个人页「刷新」完全没有忙碌态、卡片「刷新」
   // 用 setTimeout 手改文案再复原。现统一为：禁用 + 图标转圈（.busy）+ 可选文案。
   function setRefreshBusy(btn, busy, label) {
     if (!btn) return;
@@ -7818,7 +7822,7 @@
   // 详情页缓存：直接复用全局单缓存 XTWEETS（见上方 feed('tweets')），不再另起
   // 一份 localStorage 缓存。同一条推文的「完整内容 + 评论分页 + 游标」只存在于一处，
   // 详情与所有视图（首页/搜索/收藏/历史）天然一致。刷新页面、从任意入口再打开同一条
-  // 推文都命中 XTWEETS 秒开、零请求；只有首次打开或点「↻ 重新获取」才走网络。
+  // 推文都命中 XTWEETS 秒开、零请求；只有首次打开或点「↻ 刷新」才走网络。
   // 单条推文详情同样是一个独立缓存单元（后端 /tweet/<id> 的 LRU 缓存），也要能标注缓存
   // 时间。这里只存「推文 id → 上次获取时间」的轻量映射（内容本身在共享的 XTWEETS，
   // 不重复存），上限 800 条，超出淘汰最旧的。时间单位与 timeAgo 一致：**秒**。
@@ -8000,7 +8004,7 @@
     card.querySelectorAll('.openx').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url; if (u) window.open(u, '_blank', 'noopener');
     }));
-    // 重新获取：以推文为单位强制刷新该卡所有媒体（绕过坏缓存），并重新拉取这条
+    // 刷新：以推文为单位强制刷新该卡所有媒体（绕过坏缓存），并重新拉取这条
     // 推文的内容——详情页默认走详情缓存（秒开、不发请求），这里是强制更新的出口。
     // 注意：不再 dtCacheDrop 删除缓存——删缓存的 lww 推送会在服务端先把这条顶掉，
     // 若随后很快刷新、补回的推送还压在防抖里没发出，pull 会拿服务端缺这条的快照覆盖
@@ -8226,7 +8230,7 @@
     }
     // 命中详情缓存 → 直接秒开，零请求（刷新页面或从别的入口再打开同一条推文
     // 都走这条路；这种情况下内容已经在本地，再拉一遍 X 没有意义）
-    // force=true 用于「重新获取」：不删缓存、只强制重拉网络并覆盖写回，
+    // force=true 用于「刷新」：不删缓存、只强制重拉网络并覆盖写回，
     // 避免删缓存的 lww 推送在服务端先把这条顶掉、刷新时又被 pull 覆盖回来导致消失。
     // 额外防御：即使命中缓存，若条目残缺（服务端 dtCacheDrop 遗留的脏数据），也降级
     // 为强制重拉——网络拿回完整数据后 persistTweetToFeed+dtCachePut 会覆盖写回服务端，
