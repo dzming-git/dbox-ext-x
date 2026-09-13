@@ -5315,15 +5315,15 @@
   let _arcSide = 'right';  // 停靠侧，由设置项 ui_arc_side 驱动
   function dpBtn() { return $('br-datebtn'); }
   function dpPop() { return $('br-datepop'); }
-  function _pad2(x) { return String(x).padStart(2, '0'); }
-  function dayKeyOf(d) { return d.getFullYear() + '-' + _pad2(d.getMonth() + 1) + '-' + _pad2(d.getDate()); }
-  function todayKey() { return dayKeyOf(new Date()); }
+  function _dpPad2(x) { return String(x).padStart(2, '0'); }
+  function dpDayKey(d) { return d.getFullYear() + '-' + _dpPad2(d.getMonth() + 1) + '-' + _dpPad2(d.getDate()); }
+  function dpToday() { return dpDayKey(new Date()); }
   // 胶囊文案：今天 / 昨天 优先，其次「M月D日」
   function dpDayText(k) {
     if (!k) return '选择日期';
-    if (k === todayKey()) return '今天';
+    if (k === dpToday()) return '今天';
     const y = new Date(); y.setDate(y.getDate() - 1);
-    if (k === dayKeyOf(y)) return '昨天';
+    if (k === dpDayKey(y)) return '昨天';
     const p = String(k).split('-');
     return (+p[1]) + '月' + (+p[2]) + '日';
   }
@@ -5334,7 +5334,7 @@
     if (btn) btn.setAttribute('aria-expanded', _dpOpen ? 'true' : 'false');
     if (_dpOpen) {
       const k = _knobDays[_knobIdx];
-      _dpMonth = k ? String(k).slice(0, 7) : todayKey().slice(0, 7);
+      _dpMonth = k ? String(k).slice(0, 7) : dpToday().slice(0, 7);
       renderDatePop();
     }
   }
@@ -5378,7 +5378,7 @@
       if (prev) prev.addEventListener('click', (e) => { e.stopPropagation(); dpShiftMonth(-1); });
       if (next) next.addEventListener('click', (e) => { e.stopPropagation(); dpShiftMonth(1); });
       const qt = $('dp-today'), ql = $('dp-latest');
-      if (qt) qt.addEventListener('click', (e) => { e.stopPropagation(); dpPick(todayKey()); });
+      if (qt) qt.addEventListener('click', (e) => { e.stopPropagation(); dpPick(dpToday()); });
       if (ql) ql.addEventListener('click', (e) => {
         e.stopPropagation();
         if (!_knobDays.length) return;
@@ -5405,9 +5405,9 @@
     setDatePop(false);
   }
   function dpShiftMonth(d) {
-    const p = (_dpMonth || todayKey().slice(0, 7)).split('-');
+    const p = (_dpMonth || dpToday().slice(0, 7)).split('-');
     const dt = new Date(+p[0], (+p[1]) - 1 + d, 1);
-    _dpMonth = dt.getFullYear() + '-' + _pad2(dt.getMonth() + 1);
+    _dpMonth = dt.getFullYear() + '-' + _dpPad2(dt.getMonth() + 1);
     renderDatePop();
   }
   function renderDateBtn() {
@@ -5420,17 +5420,17 @@
   function renderDatePop() {
     const grid = $('dp-grid'), title = $('dp-title');
     if (!grid || !title) return;
-    const p = (_dpMonth || todayKey().slice(0, 7)).split('-');
+    const p = (_dpMonth || dpToday().slice(0, 7)).split('-');
     const y = +p[0], m = +p[1];
     title.textContent = y + '年' + m + '月';
     const firstDow = new Date(y, m - 1, 1).getDay();
     const days = new Date(y, m, 0).getDate();
     const hasSet = new Set(_knobDays);
-    const selKey = _knobDays[_knobIdx], tk = todayKey();
+    const selKey = _knobDays[_knobIdx], tk = dpToday();
     let html = '';
     for (let i = 0; i < firstDow; i++) html += '<span class="dp-cell pad"></span>';
     for (let d = 1; d <= days; d++) {
-      const k = y + '-' + _pad2(m) + '-' + _pad2(d);
+      const k = y + '-' + _dpPad2(m) + '-' + _dpPad2(d);
       const has = hasSet.has(k);
       const cls = 'dp-cell' + (has ? ' has' : '') + (k === selKey ? ' sel' : '') + (k === tk ? ' today' : '');
       html += '<button type="button" class="' + cls + '"' + (has ? ' data-k="' + k + '"' : ' disabled') +
