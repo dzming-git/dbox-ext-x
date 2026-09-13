@@ -694,62 +694,69 @@
      取代原先的 3D 圆柱弧线：弧线语义不明（底角光秃一个数字，像未读徽标不像日期控件）、
      缩放淡出导致远端日期既难读又难点、且滚轮/拖动/点击三种跳日方式并存 → 误触与歧义的根源。
      现在：胶囊常驻显示「当前所在哪一天」兼作位置指示，点开是熟悉的月历卡片择日。 */
+  /* ⚠️ 配色必须走面板浅色主题变量（见文件顶部 :root：--text #1f2329 / --muted #536471 /
+     --border #e3e6eb / --accent #1d9bf0，页面底色 #f7f8fa）。此前把 X 暗色的深色底
+     rgba(21,32,43,...) 硬编码进来、文字又用 var(--text) 取到近黑 → 深底黑字，完全不可读。 */
   .br-date-btn { position: absolute; bottom: 14px; z-index: 9;
     display: inline-flex; align-items: center; gap: 6px;
     height: 32px; padding: 0 10px 0 9px; border-radius: 16px;
-    background: rgba(21,32,43,.82); border: 1px solid var(--border, #38444d);
-    color: var(--text, #e7e9ea); font-size: 12.5px; font-weight: 600; line-height: 1;
+    background: var(--bg, #fff); border: 1px solid var(--border, #e3e6eb);
+    color: var(--text, #1f2329); font-size: 12.5px; font-weight: 600; line-height: 1;
     cursor: pointer; white-space: nowrap;
-    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-    box-shadow: 0 2px 10px rgba(0,0,0,.3);
+    box-shadow: 0 2px 10px rgba(0,0,0,.10);
     -webkit-tap-highlight-color: transparent;
     transition: background .16s ease, border-color .16s ease, color .16s ease, transform .12s ease; }
-  .br-date-btn:hover { background: rgba(29,155,240,.16); border-color: rgba(29,155,240,.55); color: #fff; }
+  .br-date-btn:hover { border-color: var(--accent, #1d9bf0); color: var(--accent, #1d9bf0); }
   .br-date-btn:active { transform: scale(.96); }
   .br-date-btn.side-right { right: 14px; }
   .br-date-btn.side-left { left: 14px; }
-  .br-date-btn .d-ico { width: 14px; height: 14px; flex: none; opacity: .9; }
-  .br-date-btn .d-chev { width: 12px; height: 12px; flex: none; opacity: .6; transition: transform .18s ease; }
-  .br-date-btn[aria-expanded="true"] { background: rgba(29,155,240,.2); border-color: rgba(29,155,240,.7); color: #fff; }
+  .br-date-btn .d-ico { width: 14px; height: 14px; flex: none; opacity: .8; }
+  .br-date-btn .d-chev { width: 12px; height: 12px; flex: none; opacity: .55; transition: transform .18s ease; }
+  /* 展开态：胶囊转成主题色的浅底 + 主题色文字（浅色主题下不用深底白字） */
+  .br-date-btn[aria-expanded="true"] { background: rgba(29,155,240,.10);
+    border-color: var(--accent, #1d9bf0); color: var(--accent, #1d9bf0); }
   .br-date-btn[aria-expanded="true"] .d-chev { transform: rotate(180deg); }
   /* 日历卡片：贴着胶囊上方弹出，归属侧随停靠侧 */
   .br-date-pop { position: absolute; bottom: 52px; z-index: 10; width: 248px; padding: 10px;
-    border-radius: 14px; background: rgba(21,32,43,.97); border: 1px solid var(--border, #38444d);
-    box-shadow: 0 14px 38px rgba(0,0,0,.5);
-    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    border-radius: 14px; background: var(--bg, #fff); border: 1px solid var(--border, #e3e6eb);
+    box-shadow: 0 12px 30px rgba(0,0,0,.14);
     opacity: 0; transform: translateY(6px) scale(.97); pointer-events: none;
     transition: opacity .16s ease, transform .16s ease; }
   .br-date-pop.side-right { right: 14px; transform-origin: bottom right; }
   .br-date-pop.side-left { left: 14px; transform-origin: bottom left; }
   .br-date-pop.open { opacity: 1; transform: none; pointer-events: auto; }
   .dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-  .dp-title { font-size: 13px; font-weight: 700; color: var(--text, #e7e9ea); }
+  .dp-title { font-size: 13px; font-weight: 700; color: var(--text, #1f2329); }
   .dp-nav { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
     border-radius: 8px; border: 1px solid transparent; background: transparent;
-    color: #8899a6; font-size: 15px; line-height: 1; cursor: pointer;
+    color: var(--muted, #536471); font-size: 15px; line-height: 1; cursor: pointer;
     transition: background .14s ease, color .14s ease; }
-  .dp-nav:hover { background: rgba(255,255,255,.08); color: #e7e9ea; }
+  .dp-nav:hover { background: rgba(0,0,0,.05); color: var(--text, #1f2329); }
   .dp-dow, .dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-  .dp-dow span { text-align: center; font-size: 10.5px; color: #8899a6; padding: 2px 0 4px; }
+  .dp-dow span { text-align: center; font-size: 10.5px; color: var(--muted, #536471); padding: 2px 0 4px; }
   .dp-cell { position: relative; height: 30px; padding: 0; border: none; background: transparent;
-    border-radius: 8px; color: #8899a6; font-size: 12.5px; cursor: default;
+    border-radius: 8px; color: var(--muted, #536471); font-size: 12.5px; cursor: default;
     display: inline-flex; align-items: center; justify-content: center;
     transition: background .14s ease, color .14s ease; }
   .dp-cell.pad { visibility: hidden; }
-  /* 有内容的天：可点、加粗、底部一个小点表示「这天有」 */
-  .dp-cell.has { color: var(--text, #e7e9ea); font-weight: 600; cursor: pointer; }
+  /* 没有内容的天：淡出到 38%，与可点的天明确区分 */
+  .dp-cell:not(.has) { opacity: .38; }
+  /* 有内容的天：深色文字 + 加粗 + 底部小点表示「这天有」 */
+  .dp-cell.has { color: var(--text, #1f2329); font-weight: 600; cursor: pointer; }
   .dp-cell.has::after { content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
-    width: 3px; height: 3px; border-radius: 50%; background: var(--accent, #1d9bf0); opacity: .75; }
-  .dp-cell.has:hover { background: rgba(29,155,240,.18); color: #fff; }
+    width: 3px; height: 3px; border-radius: 50%; background: var(--accent, #1d9bf0); opacity: .8; }
+  .dp-cell.has:hover { background: rgba(29,155,240,.10); color: var(--accent, #1d9bf0); }
   .dp-cell.today { box-shadow: inset 0 0 0 1px var(--accent, #1d9bf0); }
+  /* 选中天：主题色实底 + 白字（浅深主题下对比度都够） */
   .dp-cell.sel { background: var(--accent, #1d9bf0); color: #fff; font-weight: 700; }
   .dp-cell.sel::after { display: none; }
   .dp-foot { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px;
-    border-top: 1px solid var(--border, #2f3336); }
-  .dp-quick { flex: 1; height: 26px; border-radius: 8px; border: 1px solid var(--border, #38444d);
-    background: transparent; color: #8899a6; font-size: 12px; cursor: pointer;
+    border-top: 1px solid var(--border, #e3e6eb); }
+  .dp-quick { flex: 1; height: 26px; border-radius: 8px; border: 1px solid var(--border, #e3e6eb);
+    background: transparent; color: var(--muted, #536471); font-size: 12px; cursor: pointer;
     transition: background .14s ease, color .14s ease, border-color .14s ease; }
-  .dp-quick:hover { background: rgba(29,155,240,.16); color: #fff; border-color: rgba(29,155,240,.5); }
+  .dp-quick:hover { background: rgba(29,155,240,.08); color: var(--accent, #1d9bf0);
+    border-color: var(--accent, #1d9bf0); }
   @media (max-width: 760px) {
     .br-date-btn { bottom: 12px; height: 30px; font-size: 12px; }
     .br-date-pop { bottom: 48px; width: 236px; }
