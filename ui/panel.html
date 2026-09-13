@@ -690,108 +690,71 @@
     border: 1px dashed var(--border, #e3e6eb); border-radius: 10px; cursor: pointer;
     text-align: center; }
   .day-collapsed:hover { color: #1d9bf0; }
-  /* D：3D 圆柱滚轮时间轴（drum picker 范式：选中天在最近内容侧、绕圆柱后仰+缩小+淡出；滚轮/拖动切换；手机端可呼出）
-     停靠左侧还是右侧由设置项 ui_arc_side 决定（.side-right / .side-left，默认右）。 */
-  .br-arc { position: absolute; top: 50%; transform: translateY(-50%);
-    width: 96px; height: 470px; z-index: 7; touch-action: none; perspective: 720px;
-    user-select: none; -webkit-user-select: none; overflow: visible; cursor: ns-resize;
-    transition: height .2s ease; }
-  .br-arc.side-right { right: 0; }
-  .br-arc.side-left { left: 0; }
-  .br-arc .arc-item { position: absolute; top: 50%;
-    transform-origin: 50% 50%; padding: 4px 13px; border-radius: 16px;
-    font-size: 13px; line-height: 1.15; white-space: nowrap; color: #cfd9e0;
-    background: rgba(21,32,43,.8); border: 1px solid rgba(255,255,255,.12);
-    box-shadow: 0 2px 9px rgba(0,0,0,.35); cursor: pointer; pointer-events: auto;
-    /* 长按不弹选择框/不触发系统震动（兜底，配合 pointer-events 一起用） */
-    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
-    backface-visibility: hidden; will-change: transform, opacity;
-    transition: transform .26s cubic-bezier(.22,.61,.36,1), opacity .26s ease,
-      color .14s ease, background .14s ease, border-color .14s ease, box-shadow .14s ease,
-      border-radius .26s ease, width .26s ease, height .26s ease, padding .26s ease; }
-  /* 日期标签贴住停靠的那一侧：靠右停靠则右对齐，靠左停靠则左对齐 */
-  .br-arc.side-right .arc-item { right: 6px; }
-  .br-arc.side-left .arc-item { left: 6px; }
-  .br-arc .arc-item.sel { color: #fff; background: #1d9bf0; border-color: #1d9bf0;
-    font-weight: 700; font-size: 15px; box-shadow: 0 0 18px rgba(29,155,240,.7);
-    /* 年份单独一行、日期一行（而非并排写）：并排会把选中项撑到约 145px，横向压住时间线内容 */
-    display: flex; flex-direction: column; gap: 1px; padding: 3px 12px; line-height: 1.12; }
-  .br-arc.side-right .arc-item.sel { align-items: flex-end; }   /* 两行都贴住停靠侧 */
-  .br-arc.side-left .arc-item.sel { align-items: flex-start; }
-  .br-arc .arc-item .arc-y { font-size: 10px; font-weight: 600; opacity: .82; letter-spacing: .06em; }
-  .br-arc .arc-item .arc-d { font-size: 15px; font-weight: 700; }
-  /* 翻过年份交界时让年份动一下：否则连着滚过 12/31→1/1 只看见月份归零，毫无提示 */
-  @keyframes arc-year-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: .82; transform: none; } }
-  .br-arc .arc-item.sel.year-changed .arc-y { animation: arc-year-in .34s cubic-bezier(.22,.61,.36,1); }
-  /* 手机端呼出按钮：小巧半透明，hover/active 才加重，不抢空间 */
-  .br-arc-fab { position: absolute; top: 50%; transform: translateY(-50%);
-    width: 34px; height: 34px; border-radius: 50%; z-index: 7; display: none;
-    align-items: center; justify-content: center; cursor: pointer; border: 1px solid rgba(29,155,240,.4);
-    padding: 0; background: rgba(29,155,240,.16); color: #1d9bf0; opacity: .7;
-    -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  /* D 跳到某天：「常驻日期胶囊 + 标准月历卡片」。
+     取代原先的 3D 圆柱弧线：弧线语义不明（底角光秃一个数字，像未读徽标不像日期控件）、
+     缩放淡出导致远端日期既难读又难点、且滚轮/拖动/点击三种跳日方式并存 → 误触与歧义的根源。
+     现在：胶囊常驻显示「当前所在哪一天」兼作位置指示，点开是熟悉的月历卡片择日。 */
+  .br-date-btn { position: absolute; bottom: 14px; z-index: 9;
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 32px; padding: 0 10px 0 9px; border-radius: 16px;
+    background: rgba(21,32,43,.82); border: 1px solid var(--border, #38444d);
+    color: var(--text, #e7e9ea); font-size: 12.5px; font-weight: 600; line-height: 1;
+    cursor: pointer; white-space: nowrap;
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    box-shadow: 0 2px 10px rgba(0,0,0,.3);
     -webkit-tap-highlight-color: transparent;
-    transition: background .15s ease, transform .15s ease, opacity .2s ease; }
-  .br-arc-fab:hover, .br-arc-fab:active { background: rgba(29,155,240,.3); opacity: 1; }
-  .br-arc-fab:active { transform: translateY(-50%) scale(.9); }
-  .br-arc-fab svg { width: 18px; height: 18px; display: block; }
-  /* 手机端呼出按钮跟着罗盘停靠侧走 */
-  .br-arc-fab.side-right { right: 8px; }
-  .br-arc-fab.side-left { left: 8px; }
+    transition: background .16s ease, border-color .16s ease, color .16s ease, transform .12s ease; }
+  .br-date-btn:hover { background: rgba(29,155,240,.16); border-color: rgba(29,155,240,.55); color: #fff; }
+  .br-date-btn:active { transform: scale(.96); }
+  .br-date-btn.side-right { right: 14px; }
+  .br-date-btn.side-left { left: 14px; }
+  .br-date-btn .d-ico { width: 14px; height: 14px; flex: none; opacity: .9; }
+  .br-date-btn .d-chev { width: 12px; height: 12px; flex: none; opacity: .6; transition: transform .18s ease; }
+  .br-date-btn[aria-expanded="true"] { background: rgba(29,155,240,.2); border-color: rgba(29,155,240,.7); color: #fff; }
+  .br-date-btn[aria-expanded="true"] .d-chev { transform: rotate(180deg); }
+  /* 日历卡片：贴着胶囊上方弹出，归属侧随停靠侧 */
+  .br-date-pop { position: absolute; bottom: 52px; z-index: 10; width: 248px; padding: 10px;
+    border-radius: 14px; background: rgba(21,32,43,.97); border: 1px solid var(--border, #38444d);
+    box-shadow: 0 14px 38px rgba(0,0,0,.5);
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    opacity: 0; transform: translateY(6px) scale(.97); pointer-events: none;
+    transition: opacity .16s ease, transform .16s ease; }
+  .br-date-pop.side-right { right: 14px; transform-origin: bottom right; }
+  .br-date-pop.side-left { left: 14px; transform-origin: bottom left; }
+  .br-date-pop.open { opacity: 1; transform: none; pointer-events: auto; }
+  .dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .dp-title { font-size: 13px; font-weight: 700; color: var(--text, #e7e9ea); }
+  .dp-nav { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 8px; border: 1px solid transparent; background: transparent;
+    color: #8899a6; font-size: 15px; line-height: 1; cursor: pointer;
+    transition: background .14s ease, color .14s ease; }
+  .dp-nav:hover { background: rgba(255,255,255,.08); color: #e7e9ea; }
+  .dp-dow, .dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .dp-dow span { text-align: center; font-size: 10.5px; color: #8899a6; padding: 2px 0 4px; }
+  .dp-cell { position: relative; height: 30px; padding: 0; border: none; background: transparent;
+    border-radius: 8px; color: #8899a6; font-size: 12.5px; cursor: default;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background .14s ease, color .14s ease; }
+  .dp-cell.pad { visibility: hidden; }
+  /* 有内容的天：可点、加粗、底部一个小点表示「这天有」 */
+  .dp-cell.has { color: var(--text, #e7e9ea); font-weight: 600; cursor: pointer; }
+  .dp-cell.has::after { content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
+    width: 3px; height: 3px; border-radius: 50%; background: var(--accent, #1d9bf0); opacity: .75; }
+  .dp-cell.has:hover { background: rgba(29,155,240,.18); color: #fff; }
+  .dp-cell.today { box-shadow: inset 0 0 0 1px var(--accent, #1d9bf0); }
+  .dp-cell.sel { background: var(--accent, #1d9bf0); color: #fff; font-weight: 700; }
+  .dp-cell.sel::after { display: none; }
+  .dp-foot { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--border, #2f3336); }
+  .dp-quick { flex: 1; height: 26px; border-radius: 8px; border: 1px solid var(--border, #38444d);
+    background: transparent; color: #8899a6; font-size: 12px; cursor: pointer;
+    transition: background .14s ease, color .14s ease, border-color .14s ease; }
+  .dp-quick:hover { background: rgba(29,155,240,.16); color: #fff; border-color: rgba(29,155,240,.5); }
   @media (max-width: 760px) {
-    /* 收起时朝停靠侧的外侧滑出（靠右则右滑、靠左则左滑），免得从内容区横穿 */
-    .br-arc.side-right { opacity: 0; transform: translateY(-50%) translateX(24px);
-      pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
-    .br-arc.side-left { opacity: 0; transform: translateY(-50%) translateX(-24px);
-      pointer-events: none; transition: opacity .22s ease, transform .22s ease; }
-    .br-arc.open { opacity: 1; transform: translateY(-50%) translateX(0); pointer-events: auto; }
-    /* 未呼出时**条目也必须不可命中**：.arc-item 自带 pointer-events:auto 会盖过
-       容器的 none，少了这条，隐藏的条目仍能被长按/点击（表现为长按出现淡蓝
-       选择框 + 手机震动，按一下则直接跳日）。 */
-    .br-arc:not(.open) .arc-item { pointer-events: none; }
-    .br-arc-fab { display: flex; }
+    .br-date-btn { bottom: 12px; height: 30px; font-size: 12px; }
+    .br-date-pop { bottom: 48px; width: 236px; }
   }
-  .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由右侧圆弧时间轴(D)表达 */
-  /* 桌面端：默认收起为固定在角落的一颗小圆按钮（FAB）。点它展开，指针离开自动收起。
-     设计要点（此前反复修不好的根因）：
-     - 收起态整颗必须**完整落在屏内**并**整颗可点**：之前把选中天推到屏幕外只露一角
-       → 命中区太小且半截在屏外 → 表现成「点击无响应 / 像失灵」。
-     - 必须随停靠侧（side-left / side-right）贴在对应边，不能写死 right：写死 right 会让
-       左停靠的弧把按钮压到屏幕内左侧、盖住内容（即「左下方还在遮挡」）。
-     - 容器不能 height:auto：子项都是绝对定位，auto 会让容器塌成 0 高，垂直锚点错乱。
-     做法：收起态把容器本身变成一颗 42px 圆按钮（底色+边框+阴影），选中天数字居中填满，
-     任意位置点击都能展开；非选中项彻底隐藏且不可命中。 */
-  @media (min-width: 761px) {
-    .br-arc.collapsed {
-      width: 42px; height: 42px;
-      top: auto; bottom: 16px;
-      transform: none;
-      pointer-events: auto;            /* 整颗按钮可点 */
-      border-radius: 50%;
-      background: rgba(29,161,242,.14);
-      border: 1px solid rgba(29,161,242,.5);
-      box-shadow: 0 2px 10px rgba(0,0,0,.28);
-      cursor: pointer;
-      z-index: 8;
-    }
-    .br-arc.collapsed.side-right { right: 16px; left: auto; }
-    .br-arc.collapsed.side-left  { left: 16px;  right: auto; }
-    /* 非选中项在收起态彻底隐藏且不可命中，避免误触跳日 */
-    .br-arc.collapsed .arc-item:not(.sel) { opacity: 0; pointer-events: none; }
-    /* 选中天 = FAB 内居中的「日」数字；填满整颗按钮以确保任意位置点击都能展开 */
-    .br-arc.collapsed .arc-item.sel {
-      top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
-      width: auto !important; height: auto !important;
-      transform: none !important;       /* 盖过 arcApply 写入的内联 transform */
-      padding: 0; margin: 0;
-      background: transparent; border: none; box-shadow: none;
-      color: var(--accent, #1d9bf0); font-weight: 700;
-      pointer-events: auto;
-      display: flex; align-items: center; justify-content: center;
-      border-radius: 50%;
-    }
-    .br-arc.collapsed .arc-item.sel .arc-y { display: none; }   /* 圆里只显「日」 */
-    .br-arc.collapsed .arc-item.sel .arc-d { font-size: 16px; font-weight: 700; line-height: 1; }
-  }
+  .br-dayfloat { display: none; }   /* 不再使用悬浮日期头（遮挡内容）；当前天由日期胶囊表达 */
   /* 我的 X（个人页） */
   .me-profile { margin-bottom: 10px; }
   .me-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #2f3336); padding-bottom: 8px; }
@@ -1213,16 +1176,27 @@
       <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
       <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
     </div>
-    <!-- D：圆弧时间轴（滚轮/拖动选日期，中心为选中天；手机端自动隐藏，可由按钮呼出） -->
-    <div id="br-arc" class="br-arc side-right" title="日期时间轴：在上面滚动或上下拖动选择日期，中心为您所选的那一天"></div>
-    <button id="br-arc-fab" class="br-arc-fab side-right" title="呼出日期时间轴" aria-label="呼出日期时间轴">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 7h16M4 12h16M4 17h16"/>
-        <circle cx="9" cy="7" r="1.8" fill="currentColor" stroke="none"/>
-        <circle cx="15" cy="12" r="1.8" fill="currentColor" stroke="none"/>
-        <circle cx="8" cy="17" r="1.8" fill="currentColor" stroke="none"/>
+    <!-- D：跳到某天（常驻日期胶囊 + 日历卡片） -->
+    <button id="br-datebtn" class="br-date-btn side-right" type="button" aria-haspopup="dialog" aria-expanded="false" title="跳到某一天">
+      <svg class="d-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>
       </svg>
+      <span id="br-datelabel">选择日期</span>
+      <svg class="d-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>
     </button>
+    <div id="br-datepop" class="br-date-pop side-right" role="dialog" aria-label="选择日期">
+      <div class="dp-head">
+        <button class="dp-nav" id="dp-prev" type="button" aria-label="上个月">‹</button>
+        <div class="dp-title" id="dp-title">—</div>
+        <button class="dp-nav" id="dp-next" type="button" aria-label="下个月">›</button>
+      </div>
+      <div class="dp-dow"><span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span></div>
+      <div class="dp-grid" id="dp-grid"></div>
+      <div class="dp-foot">
+        <button class="dp-quick" id="dp-today" type="button">今天</button>
+        <button class="dp-quick" id="dp-latest" type="button">最新</button>
+      </div>
+    </div>
     <!-- B：滚动时浮在左上角的当前日期 -->
     <div id="br-dayfloat" class="br-dayfloat"></div>
   </div>
@@ -5329,37 +5303,46 @@
     }
     updateDayFloat();
   }
-  // D 圆弧时间轴：时间倒序的天列表 + 当前索引；滚轮/拖动切换、中心为选中天、主列表滚动时同步
+  // D 跳到某天：常驻日期胶囊（显示当前所在天，兼作位置指示）+ 点开的标准月历卡片。
+  // 取代原先的 3D 圆柱弧线：弧线语义不明、缩放淡出导致日期难读难点、且滚轮/拖动/点击三种
+  // 跳日方式并存 → 误触与歧义的根源。现在只有一条清晰路径：点胶囊 → 选日期 → 跳。
   let _knobDays = [];   // 时间倒序（最新→最旧），覆盖全部已缓存的天（含尚未按天分块展开的）
   let _knobIdx = 0;
-  let _knobLock = false, _knobLockT = null;   // 滚轮/拖动触发跳转期间抑制「列表滚动回写」抢走选中天
-  let _knobUserTill = 0;   // 用户主动操作轮盘后的「控制截止时间」，期间 updateKnobToCurrent 不回写
-  let _arcCollapsed = false;   // 桌面端罗盘是否处于收起态（仅显示当前天）
-  const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
-  // 罗盘停靠侧（right|left），由设置项 ui_arc_side 驱动：既决定 CSS 停靠在哪边，
-  // 也决定弓形朝哪边内收（换边不翻转的话，弧线会朝屏幕外鼓出去）。
-  let _arcSide = 'right';
-  // 罗盘当前是否可交互：手机端须 FAB 呼出(.open)；桌面端须 hover 展开(非 collapsed)。
-  // 未激活（手机未呼出 / 桌面收起）时，手指或滚轮在边缘附近滑动不应触发跳日，应让底层列表正常滚动。
-  function arcInteractive() {
-    if (window.matchMedia && window.matchMedia('(max-width: 760px)').matches)
-      return arcEl().classList.contains('open');
-    return !_arcCollapsed;
+  let _knobLock = false, _knobLockT = null;   // 跳转期间抑制「列表滚动回写」抢走选中天
+  let _knobUserTill = 0;   // 用户主动选择后的「控制截止时间」，期间 updateKnobToCurrent 不回写
+  let _dpOpen = false;     // 日历卡片是否展开
+  let _dpMonth = '';       // 卡片当前显示的月份（YYYY-MM）
+  let _arcSide = 'right';  // 停靠侧，由设置项 ui_arc_side 驱动
+  function dpBtn() { return $('br-datebtn'); }
+  function dpPop() { return $('br-datepop'); }
+  function _pad2(x) { return String(x).padStart(2, '0'); }
+  function dayKeyOf(d) { return d.getFullYear() + '-' + _pad2(d.getMonth() + 1) + '-' + _pad2(d.getDate()); }
+  function todayKey() { return dayKeyOf(new Date()); }
+  // 胶囊文案：今天 / 昨天 优先，其次「M月D日」
+  function dpDayText(k) {
+    if (!k) return '选择日期';
+    if (k === todayKey()) return '今天';
+    const y = new Date(); y.setDate(y.getDate() - 1);
+    if (k === dayKeyOf(y)) return '昨天';
+    const p = String(k).split('-');
+    return (+p[1]) + '月' + (+p[2]) + '日';
   }
-  function arcEl() { return $('br-arc'); }
-  // 展开 / 收起（桌面端）。收起态 CSS 已让整块不可命中，只留小圆图标可点。
-  function setArcExpanded(on) {
-    const arc = arcEl(); if (!arc) return;
-    _arcCollapsed = !on;
-    arc.classList.toggle('collapsed', !on);
-    renderArc();
+  function setDatePop(on) {
+    const pop = dpPop(), btn = dpBtn();
+    _dpOpen = !!on;
+    if (pop) pop.classList.toggle('open', _dpOpen);
+    if (btn) btn.setAttribute('aria-expanded', _dpOpen ? 'true' : 'false');
+    if (_dpOpen) {
+      const k = _knobDays[_knobIdx];
+      _dpMonth = k ? String(k).slice(0, 7) : todayKey().slice(0, 7);
+      renderDatePop();
+    }
   }
   function applyArcSide(side) {
     const s = (side === 'left') ? 'left' : 'right';
     const o = (s === 'left') ? 'right' : 'left';
     _arcSide = s;
-    const arc = $('br-arc'), fab = $('br-arc-fab');
-    [arc, fab].forEach((el) => {
+    [dpBtn(), dpPop()].forEach((el) => {
       if (!el) return;
       el.classList.remove('side-' + o);
       el.classList.add('side-' + s);
@@ -5367,7 +5350,6 @@
     // 记一份本地缓存：下次打开**立刻**按它上色，不等设置请求回来。
     // 否则会先用 HTML 里的默认值渲染成右侧、请求回来再跳到左侧（肉眼可见的跳动）。
     try { localStorage.setItem('xd_arc_side', s); } catch (_) {}
-    renderArc();   // 弓量方向随停靠侧变化，需重算
   }
   // 启动时先用本地缓存上色（真值仍由 bootRoute 里的 loadSettings() 从服务端读回）。
   try {
@@ -5375,206 +5357,107 @@
     if (_cachedSide === 'left' || _cachedSide === 'right') applyArcSide(_cachedSide);
   } catch (_) {}
   function buildDayKnob(dayCount, preserve) {
-    // 折叠展开/滚轮跳转会触发整表重建：preserve=true 时保留当前选中天，避免被 currentDayKey() 抢回旧位置
+    // 折叠展开/跳转会触发整表重建：preserve=true 时保留当前选中天，避免被 currentDayKey() 抢回旧位置
     const prevDay = (preserve && _knobDays[_knobIdx]) ? _knobDays[_knobIdx] : currentDayKey();
     _knobDays = Array.from(dayCount.keys());
-    const arc = $('br-arc'); if (!arc) return;
-    // 绑定一次：滚轮切换、上下拖动选日期、点击直选
-    if (!arc.dataset.bound) {
-      arc.dataset.bound = '1';
-      // 在弧上滚动滚轮 = 切换日期（弧自身消费滚轮，不滚动主列表）
-      arc.addEventListener('wheel', (e) => {
-        if (!arcInteractive()) return;   // 未激活：交还滚轮给主列表，不拦、不跳日
-        e.preventDefault(); e.stopPropagation();
+    const btn = dpBtn(); if (!btn) return;
+    if (!btn.dataset.bound) {
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', (e) => { e.stopPropagation(); setDatePop(!_dpOpen); });
+      // 卡片内部点击不冒泡到「点外部即收起」
+      const pop = dpPop();
+      if (pop) pop.addEventListener('click', (e) => e.stopPropagation());
+      const grid = $('dp-grid');
+      if (grid) grid.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const c = e.target.closest('.dp-cell');
+        if (!c || !c.dataset.k) return;         // 没有内容的天（无 data-k）点了不跳
+        dpPick(c.dataset.k);
+      });
+      const prev = $('dp-prev'), next = $('dp-next');
+      if (prev) prev.addEventListener('click', (e) => { e.stopPropagation(); dpShiftMonth(-1); });
+      if (next) next.addEventListener('click', (e) => { e.stopPropagation(); dpShiftMonth(1); });
+      const qt = $('dp-today'), ql = $('dp-latest');
+      if (qt) qt.addEventListener('click', (e) => { e.stopPropagation(); dpPick(todayKey()); });
+      if (ql) ql.addEventListener('click', (e) => {
+        e.stopPropagation();
         if (!_knobDays.length) return;
-        setKnobDay(_knobIdx + (e.deltaY > 0 ? 1 : -1), true);
-      }, { passive: false });
-      // 鼠标/触摸上下拖动选择日期，松手跳转到所选天
-      let drag = null;
-      arc.addEventListener('pointerdown', (e) => {
-        if (!arcInteractive()) return;   // 未激活：不抢触摸/指针，底层列表照常滑动
-        drag = { y: e.clientY, idx: _knobIdx, moved: false };
-        if (arc.setPointerCapture) { try { arc.setPointerCapture(e.pointerId); } catch (_) {} }
-        e.preventDefault();
+        setKnobDay(0, true); setDatePop(false);
       });
-      arc.addEventListener('pointermove', (e) => {
-        if (!drag) return;
-        const steps = Math.round((drag.y - e.clientY) / _ARC_STEP);
-        const i = Math.max(0, Math.min(_knobDays.length - 1, drag.idx + steps));
-        if (i !== _knobIdx) { _knobIdx = i; renderArc(); drag.moved = true; }
-      });
-      // 仅在真正拖动（位移）后才跳转；纯点轨道空白处不跳日、不滚主列表，弧保持展开
-      const endDrag = () => { if (drag) { const moved = drag.moved; drag = null; if (moved) setKnobDay(_knobIdx, true); } };
-      arc.addEventListener('pointerup', endDrag);
-      arc.addEventListener('pointercancel', endDrag);
-      arc.addEventListener('click', (e) => {
-        // 注意：上面 pointerdown 调了 setPointerCapture，会把 click 的 target 重定向到 #br-arc，
-        // 直接用 e.target.closest('.arc-item') 必然拿不到子项（导致「点日期不跳转」）。
-        // 改用光标命中点反查真实落到的子项。
-        const it = (document.elementFromPoint(e.clientX, e.clientY) || e.target).closest('.arc-item');
-        // 收起态：这一下**只负责展开，绝不跳日**——否则「想展开」却把列表滚到别处，
-        // 正是「误触直接跳转」的来源。
-        if (_arcCollapsed) { setArcExpanded(true); return; }
-        if (!arcInteractive()) return;   // 未激活（手机端未呼出）：忽略点击
-        // 展开态点中某一天 → 跳转并顺手收起（拾取器完成即关闭，业界通用范式）
-        if (it) { setKnobDay(+it.dataset.i, true); setArcExpanded(false); }
-        // 点轨道缝隙（非日期项）保持展开，等外部点击 / Esc / 滚动主列表来收纳
-      });
-      // 手机端呼出按钮
-      const fab = $('br-arc-fab');
-      if (fab) fab.addEventListener('click', () => arc.classList.toggle('open'));
-      // 桌面端：默认收起为角落小圆，点它展开成整条轨道。展开后的「收纳」采用弹出层
-      // light-dismiss 范式（MDN Popover auto / Radix·Headless UI Popover 同一套），**不靠 mouseleave**：
-      // ①点弧外任意处 ②按 Esc ③选中某天（click 里已跳转并收起）④滚动主列表。
-      // 不用 mouseleave 的原因——展开后弧体居中、光标落在弧体外，之后在弧外移动不会再触发
-      // mouseleave，会永远收不回（即此前「点开无法自动收纳」的根因）。
-      if (window.matchMedia && window.matchMedia('(min-width: 761px)').matches) {
-        _arcCollapsed = true; arc.classList.add('collapsed');
-        // 捕获阶段先于一切 stopPropagation 判断：点在弧外即收起。
-        document.addEventListener('click', (e) => {
-          if (_arcCollapsed) return;
-          const a = arcEl(); if (!a || a.contains(e.target)) return;
-          setArcExpanded(false);
-        }, true);
-        document.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape' && !_arcCollapsed) setArcExpanded(false);
-        });
-        const list = $('view-browse');
-        if (list) list.addEventListener('scroll', () => { if (!_arcCollapsed) setArcExpanded(false); }, { passive: true });
-      }
+      // 弹出层 light-dismiss（MDN Popover auto / Radix·Headless UI 同一套）：
+      // 点外部 / Esc / 滚动主列表 即收起。**不用 mouseleave**：展开后光标在卡片外，
+      // 移动不会再触发 mouseleave，会永远收不回。
+      document.addEventListener('click', () => { if (_dpOpen) setDatePop(false); });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _dpOpen) setDatePop(false); });
+      const list = $('view-browse');
+      if (list) list.addEventListener('scroll', () => { if (_dpOpen) setDatePop(false); }, { passive: true });
     }
     let ci = _knobDays.indexOf(prevDay);
     if (ci < 0) ci = _knobDays.indexOf(currentDayKey());
     _knobIdx = ci >= 0 ? ci : 0;
-    renderArc();
+    renderDateBtn();
+    if (_dpOpen) renderDatePop();
+  }
+  function dpPick(k) {
+    const i = _knobDays.indexOf(k);
+    if (i < 0) return;                 // 该天没有内容：不跳、不关（保持打开让用户另选）
+    setKnobDay(i, true);
+    setDatePop(false);
+  }
+  function dpShiftMonth(d) {
+    const p = (_dpMonth || todayKey().slice(0, 7)).split('-');
+    const dt = new Date(+p[0], (+p[1]) - 1 + d, 1);
+    _dpMonth = dt.getFullYear() + '-' + _pad2(dt.getMonth() + 1);
+    renderDatePop();
+  }
+  function renderDateBtn() {
+    const lb = $('br-datelabel');
+    const txt = dpDayText(_knobDays[_knobIdx]);
+    if (lb) lb.textContent = txt;
+    const btn = dpBtn();
+    if (btn) btn.title = '跳到某一天（当前：' + txt + '）';
+  }
+  function renderDatePop() {
+    const grid = $('dp-grid'), title = $('dp-title');
+    if (!grid || !title) return;
+    const p = (_dpMonth || todayKey().slice(0, 7)).split('-');
+    const y = +p[0], m = +p[1];
+    title.textContent = y + '年' + m + '月';
+    const firstDow = new Date(y, m - 1, 1).getDay();
+    const days = new Date(y, m, 0).getDate();
+    const hasSet = new Set(_knobDays);
+    const selKey = _knobDays[_knobIdx], tk = todayKey();
+    let html = '';
+    for (let i = 0; i < firstDow; i++) html += '<span class="dp-cell pad"></span>';
+    for (let d = 1; d <= days; d++) {
+      const k = y + '-' + _pad2(m) + '-' + _pad2(d);
+      const has = hasSet.has(k);
+      const cls = 'dp-cell' + (has ? ' has' : '') + (k === selKey ? ' sel' : '') + (k === tk ? ' today' : '');
+      html += '<button type="button" class="' + cls + '"' + (has ? ' data-k="' + k + '"' : ' disabled') +
+        ' aria-label="' + m + '月' + d + '日">' + d + '</button>';
+    }
+    grid.innerHTML = html;
   }
   function setKnobDay(i, jump) {
     if (!_knobDays.length) return;
     _knobIdx = Math.max(0, Math.min(_knobDays.length - 1, i));
-    renderArc();
+    renderDateBtn();
+    if (_dpOpen) renderDatePop();
     if (jump) {
       _knobLock = true; clearTimeout(_knobLockT);
       _knobLockT = setTimeout(() => { _knobLock = false; }, 800);   // 跳转动画期间屏蔽回写
-      _knobUserTill = Date.now() + 10000;   // 用户主动操作后，10 秒内轮盘不被滚动回写抢走
+      _knobUserTill = Date.now() + 10000;   // 用户主动选择后，10 秒内不被滚动回写抢走
       jumpToDay(_knobDays[_knobIdx]);
     }
   }
-  // 渲染 3D 圆柱滚轮：保持项元素池，按天索引定位并过渡（滚动时整体平滑滚动而非瞬移）
-  const _arcPool = new Map();   // dayIndex -> 元素（跨帧复用，触发 transform/opacity 过渡）
-  function arcTransform(j, t) {
-    const y = j * _ARC_STEP;
-    // 弓量朝内容侧内收：靠右停时向左收（负），靠左停时向右收（正）
-    const tx = ((_arcSide === 'left' ? 1 : -1) * _ARC_BOW * (1 - t * t)).toFixed(1);
-    const rx = (-j / _ARC_RANGE * _ARC_TILT).toFixed(1); // 上仰/下列：绕水平轴后仰
-    const sc = (1 - t * 0.4).toFixed(3);
-    return 'translate(' + tx + 'px,calc(-50% + ' + y + 'px)) rotateX(' + rx + 'deg) scale(' + sc + ')';
-  }
-  let _arcYear = '';   // 选中天所属年份，用于识别「刚跨过年份交界」
-  function arcApply(el, j, k) {
-    const t = Math.abs(j) / _ARC_RANGE;
-    const pp = String(k).split('-');
-    const sel = (j === 0);
-    el.classList.toggle('sel', sel);
-    // 内容没变就不重建 DOM：列表滚动会高频调用本函数，每帧重建纯属浪费。
-    // ⚠️ 缓存键必须带上「选中/非选中」状态：元素池按索引复用，滚一格后原本以非选中
-    // 身份显示过某天的元素会变成选中项——若只按天键判定，会误判「内容没变」而跳过
-    // 两行式重建，选中大胶囊里残留单行文本（表现为选中项一会儿是两行一会儿是单行）。
-    // 同时带 |c/|e：收起态(圆图标只显「日」)与展开态(年+月日周)文本不同，切换必须重建。
-    const ck = k + (sel ? '|sel' : '|n') + (_arcCollapsed ? '|c' : '|e');
-    if (sel) {
-      if (_arcCollapsed) {
-        // 收起态：选中天化身边缘悬浮的圆形图标，圈内只显示「日」
-        const dayNum = String(+pp[2]);
-        if (el.dataset.k !== ck) {
-          el.dataset.k = ck; el.dataset.t = '';
-          el.textContent = '';
-          const d = document.createElement('span');
-          d.className = 'arc-d'; d.textContent = dayNum;
-          el.appendChild(d);
-        }
-      } else {
-        // 展开态：选中天上行年份、下行「月日 · 周」
-        if (el.dataset.k !== ck) {
-          el.dataset.k = ck; el.dataset.t = '';
-          el.textContent = '';
-          const y = document.createElement('span');
-          y.className = 'arc-y'; y.textContent = pp[0] + '年';
-          const d = document.createElement('span');
-          d.className = 'arc-d'; d.textContent = dayLabelOf(k);
-          el.appendChild(y); el.appendChild(d);
-          // 跨到另一年：让年份动一下
-          if (_arcYear && _arcYear !== pp[0]) {
-            el.classList.remove('year-changed');
-            void el.offsetWidth;                 // 强制重排，动画才能重新触发
-            el.classList.add('year-changed');
-          }
-          _arcYear = pp[0];
-        }
-      }
-    } else {
-      // 非选中项一律带两位年份（如 23/2/13、22/10/19）。此前是「与选中天不同年才补」，
-      // 结果选中天一换（滚过年份交界时），同一条目就在「23/2/13」和「2/13」之间反复横跳，
-      // 看起来年份一会有一会没有。固定显示后与选中天解耦，完全确定、零闪烁。
-      const txt = pp[0].slice(2) + '/' + (+pp[1]) + '/' + (+pp[2]);
-      if (el.dataset.k !== ck || el.dataset.t !== txt) {
-        el.dataset.k = ck; el.dataset.t = txt;
-        el.textContent = txt;
-      }
-    }
-    if (_arcCollapsed) {
-      // 收起态：选中项显示、其他项聚拢到中心缩小并透明，展开时从中散开淡入
-      el.style.opacity = sel ? '1' : '0';
-      el.style.transform = sel
-        ? 'translate(0,calc(-50% + 0px)) scale(1)'
-        : 'translate(0,calc(-50% + 0px)) scale(0.4)';
-    } else {
-      el.style.opacity = (1 - t * 0.78).toFixed(3);
-      el.style.transform = arcTransform(j, t);
-    }
-  }
-  function renderArc() {
-    const arc = $('br-arc'); if (!arc) return;
-    const n = _knobDays.length;
-    const lo = _knobIdx - _ARC_RANGE, hi = _knobIdx + _ARC_RANGE;
-    const want = new Set();
-    for (let i = lo; i <= hi; i++) {
-      if (i < 0 || i >= n) continue;
-      want.add(i);
-      const j = i - _knobIdx, t = Math.abs(j) / _ARC_RANGE;
-      let el = _arcPool.get(i);
-      if (!el) {
-        el = document.createElement('div');
-        el.className = 'arc-item'; el.dataset.i = i;
-        // **不能**在这里挂 click：条目级监听不受 arcInteractive() 约束，
-        // 隐藏 / 收起状态下被误触也会直接跳日（手机端「没按展开却跳日」的根因）。
-        // 统一走上方 arc 上的委托处理：带守卫，且收起态只展开、不跳日。
-        arc.appendChild(el); _arcPool.set(i, el);
-        // 新进入的天：先落在外侧并透明，下一帧滑入（滚动时衔接平滑）
-        el.style.opacity = '0';
-        el.style.transform = arcTransform(j - Math.sign(j || 1), t);
-        requestAnimationFrame(() => { if (_arcPool.get(i) === el) arcApply(el, j, _knobDays[i]); });
-      } else {
-        arcApply(el, j, _knobDays[i]);
-      }
-    }
-    // 滚出窗口的天：滑出并淡出后移除
-    _arcPool.forEach((el, i) => {
-      if (want.has(i)) return;
-      const j = i - _knobIdx, sign = j < 0 ? -1 : 1;
-      el.style.opacity = '0';
-      el.style.transform = arcTransform(sign * (_ARC_RANGE + 1), 1);
-      _arcPool.delete(i);
-      setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 280);
-    });
-  }
-  // 主列表滚动时让圆弧跟随当前天（仅同步刻度，不主动跳转）；滚轮跳转锁定期内跳过以免被抢
+  // 主列表滚动时让日期胶囊跟随当前天（仅同步显示，不主动跳转）；跳转锁定期内跳过以免被抢
   function updateKnobToCurrent() {
     if (_knobLock) return;
-    if (Date.now() < _knobUserTill) return;   // 用户主动操作轮盘后，暂不回写
+    if (Date.now() < _knobUserTill) return;   // 用户主动择日后，暂不回写
     const k = currentDayKey();
     if (!k) return;
     const i = _knobDays.indexOf(k);
-    if (i >= 0 && i !== _knobIdx) { _knobIdx = i; renderArc(); }
+    if (i >= 0 && i !== _knobIdx) { _knobIdx = i; renderDateBtn(); if (_dpOpen) renderDatePop(); }
   }
   // 当前所在天：按偏移表找「底部已越过视口顶」的最后一个分组头（与挂载状态无关，兼容占位窗口化）
   function currentDayKey() {
@@ -5611,8 +5494,8 @@
     }
     return cur;
   }
-  // 不再用悬浮日期头（会遮挡内容、体验差）。当前天由右侧圆弧时间轴(D，固定边栏)表达；
-  // 这里仅保留 updateKnobToCurrent 以同步右轴高亮。
+  // 不再用悬浮日期头（会遮挡内容、体验差）。当前天由日期胶囊(D)表达；
+  // 这里仅保留 updateKnobToCurrent 以同步胶囊显示。
   function updateDayFloat() {
     const fl = $('br-dayfloat'); if (fl) fl.style.display = 'none';
     updateKnobToCurrent();
