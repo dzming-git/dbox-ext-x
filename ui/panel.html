@@ -121,7 +121,9 @@
   /* 资源库选择弹窗：点击下载时才弹出 */
   .lib-picker { position: fixed; inset: 0; z-index: 10000; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; }
   .lib-picker-box { background: #fff; border-radius: 14px; padding: 20px 22px; width: min(360px, 86vw); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
-  .lib-picker-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: #14171a; }
+  .lib-picker-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; color: #14171a; }
+  /* 「存入」会发生什么的说明：浅色主题下的次要文字（面板为浅色，勿用 X 暗色值） */
+  .lib-picker-hint { font-size: 12px; color: #536471; line-height: 1.5; margin-bottom: 12px; }
   .lib-picker-box select { width: 100%; padding: 9px 10px; border: 1px solid #cfd9de; border-radius: 8px; font-size: 14px; box-sizing: border-box; margin-bottom: 16px; background: #fff; }
   .lib-picker-check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #333; margin-bottom: 16px; cursor: pointer; }
   .lib-picker-actions { display: flex; gap: 10px; justify-content: flex-end; }
@@ -1320,7 +1322,10 @@
        隐藏资源同样是下载时的选项，故一并收进此弹窗，避免与「预览」混淆。 -->
   <div class="lib-picker" id="lib-picker" style="display:none">
     <div class="lib-picker-box">
-      <div class="lib-picker-title">选择目标资源库</div>
+      <div class="lib-picker-title">存入到哪个资源库</div>
+      <!-- 说明「存入」到底会发生什么：此前按钮只写「下载」，用户以为只是保存文件，
+           不知道媒体已入库到自己的资源库、还会按推文聚合生成一条帖子。 -->
+      <div class="lib-picker-hint">媒体会入库到所选资源库，并按这条推文生成一篇帖子。</div>
       <select id="lib-picker-sel"><option value="">加载中…</option></select>
       <label class="lib-picker-check"><input type="checkbox" id="lib-picker-hidden" /> 隐藏资源（仅帖子流可见）</label>
       <div class="lib-picker-actions">
@@ -4501,7 +4506,7 @@
       <div class="actions">
         <button class="star ${starSet.has(String(tid)) ? 'on' : ''}" data-tid="${esc2(tid)}">${starLabel(starSet.has(String(tid)))}</button>
         <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}刷新</button>
-        <button class="dl" data-tid="${esc2(tid)}">${icon('xi-download')}下载</button>
+        <button class="dl" data-tid="${esc2(tid)}">${icon('xi-download')}存入 DBox</button>
       </div>`;
     // 点击图片/视频缩略图 → lightbox 大图/播放视频（不是打开帖子）。
     // 点击正文/标题 → 打开 DBox 内推文详情页。
@@ -4549,9 +4554,9 @@
       const t = b.dataset.tid;
       if (downloadedTweetIds.has(t)) return;
       downloadedTweetIds.add(t);
-      b.disabled = true; b.textContent = '下载中…';
+      b.disabled = true; b.textContent = '存入中…';
       downloadTweet(tweetUrl)
-        .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已下载' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
+        .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已存入' : '下载失败'; if (!ok) { downloadedTweetIds.delete(t); b.disabled = false; } })
         .catch(() => { b.textContent = '下载失败'; downloadedTweetIds.delete(t); b.disabled = false; });
     }));
     // 刷新：以推文为单位重新拉取完整内容（正文+媒体），确保列表里旧的
@@ -7941,7 +7946,7 @@
       </div>
       <div class="dt-actions">
         <button class="star ${isFav ? 'on' : ''}" data-tid="${esc2(t.tweet_id)}">${starLabel(isFav)}</button>
-        <button class="dl" data-url="${esc2(t.url || '')}">${icon('xi-download')}下载</button>
+        <button class="dl" data-url="${esc2(t.url || '')}">${icon('xi-download')}存入 DBox</button>
         <button class="openx" data-url="${esc2(t.url || '')}">打开原文 ↗</button>
       </div>`;
     // 视频：点按原地点播，复用浏览卡片那套 hls.js 播放逻辑（封面 + ▶）
@@ -7995,9 +8000,9 @@
     // 下载
     card.querySelectorAll('.dl').forEach((b) => b.addEventListener('click', () => {
       const u = b.dataset.url;
-      b.disabled = true; b.textContent = '下载中…';
+      b.disabled = true; b.textContent = '存入中…';
       downloadTweet(u || t.url)
-        .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已下载' : '下载失败'; b.disabled = !ok; })
+        .then((ok) => { b.innerHTML = ok ? icon('xi-check') + '已存入' : '下载失败'; b.disabled = !ok; })
         .catch(() => { b.textContent = '下载失败'; b.disabled = false; });
     }));
     // 打开原文（明确点击才跳 X）
