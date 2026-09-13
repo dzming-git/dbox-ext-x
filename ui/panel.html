@@ -5335,7 +5335,6 @@
   let _knobLock = false, _knobLockT = null;   // 滚轮/拖动触发跳转期间抑制「列表滚动回写」抢走选中天
   let _knobUserTill = 0;   // 用户主动操作轮盘后的「控制截止时间」，期间 updateKnobToCurrent 不回写
   let _arcCollapsed = false;   // 桌面端罗盘是否处于收起态（仅显示当前天）
-  let _arcExpandTs = 0;        // 最近一次「点击展开」的时间戳，用于抑制展开瞬间因弧体变大导致的误收起
   const _ARC_RANGE = 5, _ARC_STEP = 40, _ARC_BOW = 50, _ARC_TILT = 34;   // 窗口半径 / 行距 / 水平弓量 / 后仰角
   // 罗盘停靠侧（right|left），由设置项 ui_arc_side 驱动：既决定 CSS 停靠在哪边，
   // 也决定弓形朝哪边内收（换边不翻转的话，弧线会朝屏幕外鼓出去）。
@@ -5353,7 +5352,6 @@
     const arc = arcEl(); if (!arc) return;
     _arcCollapsed = !on;
     arc.classList.toggle('collapsed', !on);
-    if (on) _arcExpandTs = Date.now();   // 记下展开时刻，供 mouseleave 守卫抑制误收起
     renderArc();
   }
   function applyArcSide(side) {
@@ -5395,7 +5393,7 @@
       let drag = null;
       arc.addEventListener('pointerdown', (e) => {
         if (!arcInteractive()) return;   // 未激活：不抢触摸/指针，底层列表照常滑动
-        drag = { y: e.clientY, idx: _knobIdx };
+        drag = { y: e.clientY, idx: _knobIdx, moved: false };
         if (arc.setPointerCapture) { try { arc.setPointerCapture(e.pointerId); } catch (_) {} }
         e.preventDefault();
       });
@@ -5403,38 +5401,46 @@
         if (!drag) return;
         const steps = Math.round((drag.y - e.clientY) / _ARC_STEP);
         const i = Math.max(0, Math.min(_knobDays.length - 1, drag.idx + steps));
-        if (i !== _knobIdx) { _knobIdx = i; renderArc(); }
+        if (i !== _knobIdx) { _knobIdx = i; renderArc(); drag.moved = true; }
       });
-      const endDrag = () => { if (drag) { drag = null; setKnobDay(_knobIdx, true); } };
+      // 仅在真正拖动（位移）后才跳转；纯点轨道空白处不跳日、不滚主列表，弧保持展开
+      const endDrag = () => { if (drag) { const moved = drag.moved; drag = null; if (moved) setKnobDay(_knobIdx, true); } };
       arc.addEventListener('pointerup', endDrag);
       arc.addEventListener('pointercancel', endDrag);
       arc.addEventListener('click', (e) => {
-        const it = e.target.closest('.arc-item'); if (!it) return;
+        // 注意：上面 pointerdown 调了 setPointerCapture，会把 click 的 target 重定向到 #br-arc，
+        // 直接用 e.target.closest('.arc-item') 必然拿不到子项（导致「点日期不跳转」）。
+        // 改用光标命中点反查真实落到的子项。
+        const it = (document.elementFromPoint(e.clientX, e.clientY) || e.target).closest('.arc-item');
         // 收起态：这一下**只负责展开，绝不跳日**——否则「想展开」却把列表滚到别处，
         // 正是「误触直接跳转」的来源。
         if (_arcCollapsed) { setArcExpanded(true); return; }
         if (!arcInteractive()) return;   // 未激活（手机端未呼出）：忽略点击
-        setKnobDay(+it.dataset.i, true);
+        // 展开态点中某一天 → 跳转并顺手收起（拾取器完成即关闭，业界通用范式）
+        if (it) { setKnobDay(+it.dataset.i, true); setArcExpanded(false); }
+        // 点轨道缝隙（非日期项）保持展开，等外部点击 / Esc / 滚动主列表来收纳
       });
       // 手机端呼出按钮
       const fab = $('br-arc-fab');
       if (fab) fab.addEventListener('click', () => arc.classList.toggle('open'));
-      // 桌面端：默认收起（仅显示当前天小圆图标），**点击它才展开**，指针离开自动收起。
-      // 这里刻意去掉了原来的 hover 展开：hover 一碰就把它撑成 96×470 的整块，
-      // 鼠标路过右边缘（哪怕只是去拖滚动条）就展开并吞掉滚轮 → 直接跳日。
-      // 触摸设备同样受益：以前一次轻点会先触发兼容的 mouseenter 把它展开，
-      // 紧接着的 click 就通过守卫跳日了。现在必须显式点一下才展开。
+      // 桌面端：默认收起为角落小圆，点它展开成整条轨道。展开后的「收纳」采用弹出层
+      // light-dismiss 范式（MDN Popover auto / Radix·Headless UI Popover 同一套），**不靠 mouseleave**：
+      // ①点弧外任意处 ②按 Esc ③选中某天（click 里已跳转并收起）④滚动主列表。
+      // 不用 mouseleave 的原因——展开后弧体居中、光标落在弧体外，之后在弧外移动不会再触发
+      // mouseleave，会永远收不回（即此前「点开无法自动收纳」的根因）。
       if (window.matchMedia && window.matchMedia('(min-width: 761px)').matches) {
         _arcCollapsed = true; arc.classList.add('collapsed');
-        arc.addEventListener('mouseleave', () => {
-          if (!_arcCollapsed) return;                       // 已是收起态，无需处理
-          // 收起态点击展开后，弧体从 42px 小圆变成居中 96×470 的整条轨道，
-          // 光标原本在底部角落、此刻落到了弧体外 → 浏览器派发一次 mouseleave，
-          // 若直接收起会表现成「点了没反应 / 一闪而过」。展开后极短时间内抑制这一次误收起；
-          // 用户随后真正把指针移开（>120ms）再触发的 mouseleave 才正常收起。
-          if (Date.now() - _arcExpandTs < 120) return;
+        // 捕获阶段先于一切 stopPropagation 判断：点在弧外即收起。
+        document.addEventListener('click', (e) => {
+          if (_arcCollapsed) return;
+          const a = arcEl(); if (!a || a.contains(e.target)) return;
           setArcExpanded(false);
+        }, true);
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !_arcCollapsed) setArcExpanded(false);
         });
+        const list = $('view-browse');
+        if (list) list.addEventListener('scroll', () => { if (!_arcCollapsed) setArcExpanded(false); }, { passive: true });
       }
     }
     let ci = _knobDays.indexOf(prevDay);
