@@ -2076,6 +2076,17 @@
     if (item.type === 'video') {
       const m3u8 = item.m3u8 || '';
       const mp4 = item.src || '';
+      // 自动播放会被浏览器策略拒绝（未静音的自动播放），此时若把 reject 直接
+      // 吞掉，视频会**永远停在 0:00 干转**——用户只看到进度不动。
+      // 与卡片一致：被拒后静音再试一次（静音播放是允许自动播放的）。
+      const tryPlay = () => {
+        try {
+          const p = v.play();
+          if (p && p.catch) {
+            p.catch(() => { try { v.muted = true; v.play().catch(() => {}); } catch (e) {} });
+          }
+        } catch (e) {}
+      };
       if (m3u8 && window.Hls && window.Hls.isSupported()) {
         const v = document.createElement('video');
         v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
@@ -2085,7 +2096,24 @@
         const hls = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: false });
         hls.loadSource(m3u8);
         hls.attachMedia(v);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => { v.play().catch(() => {}); });
+        hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
+        // 致命错误有限自愈，且**不能静默**：此前灯箱没有错误监听，源出问题时
+        // 用户只能对着 0:00 一直转圈，看不到任何反馈。次数必须限——无条件
+        // startLoad 会在分片始终拿不到时无限重试（卡片侧已踩过这个坑）。
+        let _lbNetErrs = 0, _lbMediaErrs = 0;
+        hls.on(Hls.Events.ERROR, (evt, data) => {
+          if (!data || !data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            if (_lbNetErrs++ < 3) { try { hls.startLoad(); } catch (e) {} return; }
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            if (_lbMediaErrs++ < 2) { try { hls.recoverMediaError(); } catch (e) {} return; }
+          }
+          if (layer.querySelector('.lb-note')) return;
+          const note = document.createElement('div');
+          note.className = 'lb-note';
+          note.innerHTML = '<div class="lb-note-tip">视频加载失败，请稍后重试</div>';
+          layer.appendChild(note);
+        });
         const syncLevel = () => {
           if (hls.levels && hls.levels.length) {
             hls.currentLevel = (document.fullscreenElement === v || v.webkitDisplayingFullscreen)
@@ -2109,7 +2137,7 @@
         v.src = mp4;
         v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
         v.preload = 'metadata';
-        v.addEventListener('loadedmetadata', () => v.play().catch(() => {}));
+        v.addEventListener('loadedmetadata', tryPlay);
         v.addEventListener('click', (e) => e.stopPropagation());
         layer.appendChild(v);
       } else {
@@ -2284,9 +2312,11 @@
 
   function showLightbox(idx) {
     _lbIdx = idx;
-    renderLightbox();
+    // 先让容器可见再渲染：video 若创建在 display:none 的容器里，起播会被浏览器
+    // 拦下（表现为停住不动、一直 0:00）。对图片无影响。
     if (!lbEl.classList.contains('active')) enterDrill('lb');   // 拦截浏览器后退
     lbEl.classList.add('active');
+    renderLightbox();
   }
   $('lb-prev').addEventListener('click', (e) => { e.stopPropagation(); lbStep(-1); });
   $('lb-next').addEventListener('click', (e) => { e.stopPropagation(); lbStep(1); });
