@@ -2019,6 +2019,17 @@
     else unlockFullscreenOrientation();
   });
 
+  // 销毁灯箱里的视频：停播 + 销毁 hls + 摘掉挂到 document 上的全屏监听。
+  // 切换渲染 / 过渡收尾 / 关闭灯箱三处都要做同样的事，散着写迟早漏一处——
+  // 漏掉任意一个都会让已废弃的视频继续下载分片或继续响应全屏事件。
+  function _destroyLbVideo(v) {
+    if (!v) return;
+    try { v._cleanupFs && v._cleanupFs(); } catch (e) {}
+    try { v._hls && v._hls.destroy(); } catch (e) {}
+    try { v.pause(); } catch (e) {}
+    try { v.removeAttribute('src'); v.load(); } catch (e) {}
+  }
+
   /* ---- Lightbox：点击图片放大查看 + 左右切换（图片/视频，带层叠过渡） ---- */
   const lbEl = $('lb');
   const lbStage = $('lb-stage');
@@ -2048,9 +2059,17 @@
               ? hls.levels.length - 1 : -1;
           }
         };
-        v.addEventListener('fullscreenchange', syncLevel);
+        // fullscreenchange 是在 **document** 上触发的（不冒泡到 <video>），
+        // 挂在 v 上永远收不到——等于「全屏时切最高清晰度」这条逻辑一直没生效，
+        // 只有 iOS 的 webkitbegin/endfullscreen 那两条（挂在 video 上）是活的。
+        document.addEventListener('fullscreenchange', syncLevel);
         v.addEventListener('webkitbeginfullscreen', syncLevel);
         v.addEventListener('webkitendfullscreen', syncLevel);
+        // 摘监听的钩子：由 _destroyLbVideo 调用。不摘的话每打开一个视频就往
+        // document 上多挂一个，旧视频被销毁后仍会响应全屏事件去写 hls 层级。
+        v._cleanupFs = () => {
+          try { document.removeEventListener('fullscreenchange', syncLevel); } catch (e) {}
+        };
         v._hls = hls;
       } else if (mp4) {
         const v = document.createElement('video');
@@ -2168,7 +2187,7 @@
     const item = _lbItems[_lbIdx];
     if (!item) return;
     const oldVid = lbStage.querySelector('video');
-    if (oldVid) { try { oldVid._hls && oldVid._hls.destroy(); } catch (e) {} oldVid.pause(); }
+    _destroyLbVideo(oldVid);
     lbStage.innerHTML = '';
     const layer = lbBuildLayer(item);
     lbStage.appendChild(layer);
@@ -2201,7 +2220,7 @@
       inLayer.removeEventListener('transitionend', finish);
       if (outLayer.parentNode) {
         const ov = outLayer.querySelector('video');
-        if (ov) { try { ov._hls && ov._hls.destroy(); } catch (e) {} ov.pause(); }
+        _destroyLbVideo(ov);
         outLayer.parentNode.removeChild(outLayer);
       }
       inLayer.classList.remove('lb-anim');
@@ -2246,6 +2265,8 @@
   let _inlineVid = null;
   function stopInlineVideo(rec) {
     if (!rec) return;
+    // 摘掉挂到 document 上的全屏监听，否则卡片视频关掉后仍会响应全屏事件
+    try { rec.v && rec.v._cleanupFs && rec.v._cleanupFs(); } catch (e) {}
     try { rec.hls && rec.hls.destroy(); } catch (e) {}
     try { rec.v.pause(); } catch (e) {}
     if (rec.el && rec.el._thumbHtml !== undefined) {
@@ -2479,9 +2500,13 @@
             ? hls.levels.length - 1 : -1;
         }
       };
-      v.addEventListener('fullscreenchange', sync);
+      // 同灯箱：fullscreenchange 只在 document 上触发，挂在 v 上收不到。
+      document.addEventListener('fullscreenchange', sync);
       v.addEventListener('webkitbeginfullscreen', sync);
       v.addEventListener('webkitendfullscreen', sync);
+      v._cleanupFs = () => {
+        try { document.removeEventListener('fullscreenchange', sync); } catch (e) {}
+      };
       v._hls = hls;
       _inlineVid = { el: mediaEl, v, hls, close, grid: inGridEl };
     } else if (mp4) {
@@ -2575,7 +2600,7 @@
   window.addEventListener('popstate', () => {
     const kind = _drillStack.pop();
     if (kind === 'lb') {
-      const v = lbEl.querySelector('video'); if (v) { try { v._hls && v._hls.destroy(); } catch (e) {} v.pause(); }
+      _destroyLbVideo(lbEl.querySelector('video'));
       lbEl.classList.remove('active');
     } else if (kind === 'detail') {
       hideDetailLayer();
