@@ -65,9 +65,14 @@
   .preview .author a { color: #1d9bf0; text-decoration: none; }
   .preview .ttext { font-size: 12.5px; color: #333; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
   .preview .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+  /* 单个媒体时不要被塞进 180px 的窄列（那样连一张图都看不清），给它整行宽度。 */
+  .preview .grid.n1 { grid-template-columns: minmax(0, 1fr); max-width: 460px; }
   .media { background: #fff; border: 1px solid #e3e6eb; border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
-  .media .thumb { position: relative; width: 100%; aspect-ratio: 16 / 10; background: #eef0f4; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: pointer; max-height: 200px; }
-  .media .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .2s; }
+  /* aspect-ratio 只是加载前的占位，图片 onload 后由 JS 改成媒体真实比例（见 _pvFitThumbs）。
+     object-fit 用 contain 而非 cover：cover 会把竖屏视频/长图裁成中间一条横带，
+     用户根本认不出是什么——「看不清」有一半是这个原因。 */
+  .media .thumb { position: relative; width: 100%; aspect-ratio: 16 / 10; background: #eef0f4; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: pointer; max-height: 360px; }
+  .media .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; transition: transform .2s; }
   .media .thumb:hover img { transform: scale(1.03); }
   .media .thumb .placeholder { font-size: 12px; color: #999; text-align: center; padding: 8px; }
   .media .play { position: absolute; inset: 0; margin: auto; width: 42px; height: 42px; border-radius: 50%; border: none; background: rgba(0,0,0,.45); color: #fff; font-size: 17px; cursor: pointer; display: flex; align-items: center; justify-content: center; padding-left: 3px; }
@@ -1897,19 +1902,25 @@
       </div>`;
     }).join('');
 
-    // 视频点击播放
+    // 视频点击：打开查看器播放，**不在网格格子里原地播**。
+    //
+    // 此前这里是 `wrap.innerHTML = <video controls autoplay>`，等于把视频塞回
+    // 那个 180px 宽、16:10 的格子里播——竖屏视频出来只剩中间一条，用户啥也看不清。
+    // 业界通例（X / Instagram / 微博）都是「网格里只做封面预览，真正的观看走查看器」：
+    // 点任何媒体都进灯箱，在灯箱里按原始尺寸播放。这里对齐之。
     gridEl.querySelectorAll('.media .play').forEach((btn) => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
         const i = Number(btn.dataset.i);
-        const m = media[i];
         const wrap = btn.parentElement;
         if (btn.dataset.noplay) {
+          // 没有可播直连（如需先下载）：仍给原地提示，别把用户扔进空灯箱
           wrap.querySelector('.note').hidden = false;
           btn.hidden = true;
           return;
         }
-        const src = mediaUrl(m.mp4 || m.url, 'video');
-        wrap.innerHTML = `<video src="${esc(src)}" controls autoplay playsinline></video>`;
+        const idx = _lbItems.findIndex((x) => x.mi === i);
+        showLightbox(idx >= 0 ? idx : 0);
       });
     });
 
@@ -1932,8 +1943,27 @@
         });
       } else if (m.type !== 'document') {
         // 灯箱大图同样必须走代理，否则点开放大后是一张空图
-        if (m.url) _lbItems.push({ type: 'image', src: mediaUrl(m.url, 'image'), label: m.label || '图片' });
+        // mi 是原始媒体索引：点击缩略图时靠它定位到灯箱里的对应项。
+        // 此前图片项漏了 mi，导致点第 2/3 张图会错误地打开第 1 张。
+        if (m.url) _lbItems.push({ type: 'image', mi: i, src: mediaUrl(m.url, 'image'), label: m.label || '图片' });
       }
+    });
+
+    // 单个媒体给整行宽度，多个仍走自动分列（见 .grid.n1）
+    gridEl.classList.toggle('n1', media.length === 1);
+
+    // 缩略图按媒体真实比例显示：默认 16:10 的占位比例会把竖屏内容压扁/裁掉，
+    // 图片加载完成后按 naturalWidth/Height 纠正。比例夹在 [0.5, 2] 之间，
+    // 免得超宽全景图或超长图把网格撑得面目全非。
+    gridEl.querySelectorAll('.media .thumb img').forEach((img) => {
+      const fit = () => {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const thumb = img.closest('.thumb');
+        if (!w || !h || !thumb) return;
+        thumb.style.aspectRatio = String(Math.min(2, Math.max(0.5, w / h)));
+      };
+      if (img.complete) fit();
+      else img.addEventListener('load', fit, { once: true });
     });
 
     // 缩略图点击放大（lightbox，图片/视频均可）
@@ -1955,6 +1985,39 @@
 
   // 关闭预览 → 回到空闲状态（表单保留），缓存不清除
   $('pv-cancel').onclick = () => { showIdle(); };
+
+  /* ---- 全屏方向：按视频宽高比锁定，避免「竖屏视频全屏后得转手机」 ----
+     竖屏视频（9:16）若按横屏全屏，画面会被压成中间一条、两侧大黑边，用户只能
+     把手机转过来——而这是产品该替用户做掉的事（YouTube/抖音/TikTok 均按视频比例
+     决定全屏方向，而不是一律横屏）。
+
+     平台差异：screen.orientation.lock 只在移动端 + 全屏态有效，且 **iOS Safari
+     根本不实现**（lock() 直接抛错）。好在 iOS 走 webkitEnterFullscreen 进的是系统
+     原生播放器，方向本来就跟随系统。所以这里做能力检测，不支持就静默跳过。 */
+  function lockFullscreenOrientation(v) {
+    try {
+      const o = screen.orientation;
+      if (!o || typeof o.lock !== 'function') return;
+      const w = v.videoWidth || 0, h = v.videoHeight || 0;
+      const ratio = (w && h) ? (w / h) : (16 / 9);
+      // 1.05 的余量：接近正方形（如 1:1）按竖屏处理，体验更接近手机持握习惯
+      const p = o.lock(ratio <= 1.05 ? 'portrait' : 'landscape');
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) { /* 不支持方向锁定的平台直接忽略 */ }
+  }
+  function unlockFullscreenOrientation() {
+    try {
+      const o = screen.orientation;
+      if (o && typeof o.unlock === 'function') o.unlock();
+    } catch (e) {}
+  }
+  // 只在 document 上挂一次：覆盖所有视频（灯箱里用原生控件的、卡片里自定义按钮的），
+  // 也避免每个视频各挂一个导致监听器堆积。
+  document.addEventListener('fullscreenchange', () => {
+    const fs = document.fullscreenElement;
+    if (fs && fs.tagName === 'VIDEO') lockFullscreenOrientation(fs);
+    else unlockFullscreenOrientation();
+  });
 
   /* ---- Lightbox：点击图片放大查看 + 左右切换（图片/视频，带层叠过渡） ---- */
   const lbEl = $('lb');
