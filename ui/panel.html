@@ -119,6 +119,10 @@
   .lightbox .lb-zoom-hint { position: absolute; bottom: 20px; right: 20px; color: #fff; font-size: 12px; background: rgba(0,0,0,.5); padding: 5px 12px; border-radius: 12px; z-index: 1; pointer-events: none; display: none; }
   .lightbox .lb-zoom-hint.show { display: block; }
   .lightbox .lb-note { position: absolute; bottom: 56px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 1; }
+  /* 灯箱视频加载指示：卡片那套 .vid-loading 选择器限定在 .bm-media 内，
+     灯箱用不了，这里给一份等价的。没有它，源慢/卡住时用户只能对着 0:00 干等。 */
+  .lightbox .lb-vloading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1; }
+  .lightbox .lb-vloading .spin { width: 30px; height: 30px; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; border-radius: 50%; animation: kwspin .8s linear infinite; }
   .lightbox .lb-note-tip { color: #fff; font-size: 13px; background: rgba(0,0,0,.55); padding: 6px 14px; border-radius: 10px; max-width: 80%; text-align: center; }
   .lightbox .lb-dl { align-self: center; background: #1d9bf0; color: #fff; border: none; border-radius: 20px; padding: 8px 20px; font-size: 14px; cursor: pointer; }
   .lightbox .lb-dl:hover { background: #1a8cd8; }
@@ -2079,6 +2083,7 @@
       // 自动播放会被浏览器策略拒绝（未静音的自动播放），此时若把 reject 直接
       // 吞掉，视频会**永远停在 0:00 干转**——用户只看到进度不动。
       // 与卡片一致：被拒后静音再试一次（静音播放是允许自动播放的）。
+      const v = document.createElement('video');
       const tryPlay = () => {
         try {
           const p = v.play();
@@ -2087,16 +2092,49 @@
           }
         } catch (e) {}
       };
+      // 提示条（复用灯箱已有的不可播提示样式）
+      const lbNote = (msg) => {
+        if (layer.querySelector('.lb-note')) return;
+        const note = document.createElement('div');
+        note.className = 'lb-note';
+        note.innerHTML = '<div class="lb-note-tip"></div>';
+        note.firstChild.textContent = msg;
+        layer.appendChild(note);
+      };
+      // 加载反馈：转圈 + 超时兜底。此前灯箱视频卡住时**完全没有任何提示**，
+      // 用户只能对着 0:00 一直等。卡片那套（转圈 / 错误提示 / 重试）是成熟的，
+      // 灯箱对齐之。
+      const attachVideoFeedback = () => {
+        const loading = document.createElement('div');
+        loading.className = 'lb-vloading';
+        loading.innerHTML = '<div class="spin"></div>';
+        layer.appendChild(loading);
+        const clear = () => { if (loading && loading.parentNode) loading.remove(); };
+        let started = false;
+        v.addEventListener('playing', () => { started = true; clear(); });
+        v.addEventListener('canplay', clear);
+        v.addEventListener('error', () => { clear(); lbNote('视频加载失败，可稍后重试'); });
+        setTimeout(() => {
+          if (started) return;
+          clear();
+          lbNote('视频加载较慢，可点播放按钮重试');
+        }, 15000);
+      };
+      v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
+      v.preload = 'metadata';
+      v.addEventListener('click', (e) => e.stopPropagation());
+      layer.appendChild(v);
+      attachVideoFeedback();
       if (m3u8 && window.Hls && window.Hls.isSupported()) {
-        const v = document.createElement('video');
-        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
-        v.preload = 'metadata';
-        v.addEventListener('click', (e) => e.stopPropagation());
-        layer.appendChild(v);
         const hls = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: false });
         hls.loadSource(m3u8);
         hls.attachMedia(v);
         hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
+        // 必须在**点击的同步调用栈里**先调一次 play：等 MANIFEST_PARSED /
+        // loadedmetadata 再调，那时已脱离用户手势上下文，iOS 等严格策略会直接
+        // 拒绝（连静音重试也不认），视频就一直停在 0:00。同步调一次后浏览器会
+        // 自行缓冲、就绪即播。
+        tryPlay();
         // 致命错误有限自愈，且**不能静默**：此前灯箱没有错误监听，源出问题时
         // 用户只能对着 0:00 一直转圈，看不到任何反馈。次数必须限——无条件
         // startLoad 会在分片始终拿不到时无限重试（卡片侧已踩过这个坑）。
@@ -2133,13 +2171,9 @@
         };
         v._hls = hls;
       } else if (mp4) {
-        const v = document.createElement('video');
         v.src = mp4;
-        v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = false;
-        v.preload = 'metadata';
         v.addEventListener('loadedmetadata', tryPlay);
-        v.addEventListener('click', (e) => e.stopPropagation());
-        layer.appendChild(v);
+        tryPlay();   // 同上：在用户手势的同步栈里起播，不能只等 loadedmetadata
       } else {
         const img = document.createElement('img');
         img.src = item.cover || '';
