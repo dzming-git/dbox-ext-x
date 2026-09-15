@@ -1926,28 +1926,8 @@
 
     // 收集 lightbox 可切换序列（图片 + 视频）。视频同时携带 mp4 直链与 m3u8 流，
     // 灯箱优先用 hls.js 播 m3u8（自适应码率 + 全屏最高清），其次直链 mp4。
-    _lbItems = [];
-    media.forEach((m, i) => {
-      if (m.type === 'video') {
-        const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
-        const mp4 = (m.mp4 && !m.mp4.includes('.m3u8')) ? mediaUrl(m.mp4, 'video') : '';
-        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
-        _lbItems.push({
-          type: 'video',
-          mi: i,                       // 原始媒体索引，用于单独下载
-          src: mp4,                    // 直链 mp4（高清，经 /media 缓存）；空则回退 m3u8
-          m3u8: m3u8,                  // HLS 流（经 /media 代理），hls.js 播放
-          cover: mediaUrl(m.cover || '', 'image'),
-          label: m.label || '视频',
-          playable: !!(mp4 || m3u8),
-        });
-      } else if (m.type !== 'document') {
-        // 灯箱大图同样必须走代理，否则点开放大后是一张空图
-        // mi 是原始媒体索引：点击缩略图时靠它定位到灯箱里的对应项。
-        // 此前图片项漏了 mi，导致点第 2/3 张图会错误地打开第 1 张。
-        if (m.url) _lbItems.push({ type: 'image', mi: i, src: mediaUrl(m.url, 'image'), label: m.label || '图片' });
-      }
-    });
+    // 与卡片共用 buildLbItems，避免两处逻辑漂移（mi 漏字段之类的错误已发生过）。
+    _lbItems = buildLbItems(media);
 
     // 单个媒体给整行宽度，多个仍走自动分列（见 .grid.n1）
     gridEl.classList.toggle('n1', media.length === 1);
@@ -2028,6 +2008,49 @@
     try { v._hls && v._hls.destroy(); } catch (e) {}
     try { v.pause(); } catch (e) {}
     try { v.removeAttribute('src'); v.load(); } catch (e) {}
+  }
+
+  // 构建灯箱序列（图片 + 视频）。
+  //
+  // 视频**必须**进序列：此前各卡片都是 `filter(m => m.type !== 'video')` 把视频
+  // 排除掉，结果多媒体推文在灯箱里左右切换时会直接跳过视频——用户滑到底也看不
+  // 到那个视频，只能退出去再点一次。三处（预览 / 收藏卡片 / 浏览卡片）各写一份
+  // 同样的构建逻辑，正是这个 bug 得以存在的土壤，这里收敛成一份。
+  function buildLbItems(mediaList) {
+    const out = [];
+    (mediaList || []).forEach((m, i) => {
+      if (m.type === 'video') {
+        const isM3u8 = !!(m.url && String(m.url).includes('.m3u8'));
+        const mp4 = (m.mp4 && !String(m.mp4).includes('.m3u8')) ? mediaUrl(m.mp4, 'video') : '';
+        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
+        out.push({
+          type: 'video', mi: i,
+          src: mp4, m3u8: m3u8,
+          cover: mediaUrl(m.cover || '', 'image'),
+          label: m.label || '视频',
+          playable: !!(mp4 || m3u8),
+        });
+      } else if (m.type !== 'document' && m.url) {
+        out.push({ type: 'image', mi: i, src: mediaUrl(m.url, 'image'), label: m.label || '图片' });
+      }
+    });
+    return out;
+  }
+
+  // 媒体缩略图点击：**多媒体一律弹灯箱**（图片与视频行为一致，且能左右滑到彼此）；
+  // 只有「整条推文就一个视频」时才原地点播——那种情况下弹窗是多余的一步。
+  function openMediaOrInline(el, lbItems, inlinePlay) {
+    const idx = Number(el.dataset.idx || 0);
+    if (el.dataset.type === 'video' && lbItems.length <= 1) {
+      inlinePlay();
+      return;
+    }
+    if (!lbItems.length) return;
+    // 按 mi（原始媒体索引）定位：序列可能与媒体数组长度不一致（如文档被排除）
+    const at = lbItems.findIndex((x) => x.mi === idx);
+    _lbItems = lbItems;
+    _lbIdx = at >= 0 ? at : Math.min(idx, lbItems.length - 1);
+    showLightbox(_lbIdx);
   }
 
   /* ---- Lightbox：点击图片放大查看 + 左右切换（图片/视频，带层叠过渡） ---- */
@@ -3361,22 +3384,12 @@
              <button class="refetch" data-tid="${esc2(tid)}">${icon('xi-refresh')}刷新</button>`}
       </div>`;
     // 收藏媒体缩略图点击 → lightbox 预览（图片全图 / 视频真实播放）。
-    // 灯箱只放图片（视频改为原地点播，不弹窗）；支持左右滑动切换
-    const bmLBItems = medias.filter((m) => m.type !== 'video' && (m.url || m.cover)).map((m) => {
-      return { type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' };
-    });
+    // 视频同样进灯箱序列，多媒体推文里可与图片左右切换；仅单视频才原地点播。
+    const bmLBItems = buildLbItems(medias);
     card.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (el.dataset.type === 'video') {
-          playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);   // 视频原地点播，不弹窗
-          return;
-        }
-        const idx = Number(el.dataset.idx || 0);
-        if (!bmLBItems.length) return;
-        _lbItems = bmLBItems;
-        _lbIdx = Math.min(idx, bmLBItems.length - 1);
-        showLightbox(_lbIdx);
+        openMediaOrInline(el, bmLBItems, () => playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8));
       });
     });
     // 点正文 → 打开 DBox 内推文页（与首页/搜索/历史里点开同一条推文是同一个
@@ -4500,24 +4513,16 @@
   }
   window.addEventListener('resize', relayoutAllJustified);
 
-  // 给某个卡片区块内的媒体缩略图绑定交互：点图进灯箱、点视频原地点播
+  // 给某个卡片区块内的媒体缩略图绑定交互：多媒体一律进灯箱（图片 + 视频，
+  // 可左右切换），仅单视频原地点播。
 
   function wireMediaBlock(blockEl, mediaList) {
     if (!blockEl) return;
-    const lbItems = (mediaList || []).filter((m) => m.type !== 'video' && (m.url || m.cover))
-      .map((m) => ({ type: 'image', src: mediaUrl(m.url || '', 'image'), label: '图片' }));
+    const lbItems = buildLbItems(mediaList);
     blockEl.querySelectorAll('.bm-media').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        const idx = Number(el.dataset.idx || 0);
-        if (el.dataset.type === 'video') {
-          playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8);
-          return;
-        }
-        if (!lbItems.length) return;
-        _lbItems = lbItems;
-        _lbIdx = Math.min(idx, lbItems.length - 1);
-        showLightbox(_lbIdx);
+        openMediaOrInline(el, lbItems, () => playInlineVideo(el, el.dataset.mp4, el.dataset.m3u8));
       });
     });
     // justified 行式布局：blockEl 可能是 .media 本身，也可能是 .quoted（内部含 .media）
