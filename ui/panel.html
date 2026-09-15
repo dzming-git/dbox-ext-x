@@ -2020,9 +2020,15 @@
     const out = [];
     (mediaList || []).forEach((m, i) => {
       if (m.type === 'video') {
-        const isM3u8 = !!(m.url && String(m.url).includes('.m3u8'));
-        const mp4 = (m.mp4 && !String(m.mp4).includes('.m3u8')) ? mediaUrl(m.mp4, 'video') : '';
-        const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
+        const url = m.url || '';
+        const isM3u8 = !!String(url).includes('.m3u8');
+        // 直链可能在 m.mp4（解析结果）或 m.url（卡片数据）里，**两种都要认**：
+        // 卡片渲染时 data-mp4 就是由 m.url 推出来的（见 cardMediaInner），
+        // 只认 m.mp4 会让浏览/收藏卡片里的视频被误判成「不可播」→ 灯箱只能提示
+        // 「下载后查看」，等于把原本能直接看的视频变成了必须下载。
+        const raw = m.mp4 || url;
+        const mp4 = (raw && !String(raw).includes('.m3u8')) ? mediaUrl(raw, 'video') : '';
+        const m3u8 = isM3u8 ? mediaUrl(url, 'video') : '';
         out.push({
           type: 'video', mi: i,
           src: mp4, m3u8: m3u8,
@@ -2041,13 +2047,17 @@
   // 只有「整条推文就一个视频」时才原地点播——那种情况下弹窗是多余的一步。
   function openMediaOrInline(el, lbItems, inlinePlay) {
     const idx = Number(el.dataset.idx || 0);
-    if (el.dataset.type === 'video' && lbItems.length <= 1) {
+    // 按 mi（原始媒体索引）定位：序列可能与媒体数组长度不一致（如文档被排除）
+    const at = lbItems.findIndex((x) => x.mi === idx);
+    const item = at >= 0 ? lbItems[at] : null;
+    // 单视频**且可播**才原地点播（少一次弹窗）；
+    // 拿不到播放地址的仍进灯箱——灯箱会给「下载后查看」的提示和下载按钮，
+    // 好过硬塞给原地点播然后黑屏。
+    if (el.dataset.type === 'video' && lbItems.length <= 1 && item && item.playable) {
       inlinePlay();
       return;
     }
     if (!lbItems.length) return;
-    // 按 mi（原始媒体索引）定位：序列可能与媒体数组长度不一致（如文档被排除）
-    const at = lbItems.findIndex((x) => x.mi === idx);
     _lbItems = lbItems;
     _lbIdx = at >= 0 ? at : Math.min(idx, lbItems.length - 1);
     showLightbox(_lbIdx);
