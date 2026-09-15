@@ -3312,7 +3312,17 @@
         startMasterPoll();     // 此后持续对账，主控被抢能及时反映到指示灯
         const v = XSTATE.get('active_view');
         const VALID = ['download', 'browse', 'history', 'cache', 'bookmarks', 'search', 'stars'];
-        if (v && !userSwitchedView && v !== activeView && VALID.includes(v)) {
+        // 有浮层打开（推文详情 / 用户页 / 灯箱）时**不要**切底层视图。
+        //
+        // 这条判断不能省：从 URL 直接落地到推文页时，applyRoute 只开详情层、
+        // 不走 switchView，于是 userSwitchedView 仍是 false，对账就认为
+        // 「用户没动过视图」，拿服务端同步的 active_view 把底层拽走——
+        // 表现正是「打开/刷新推文页却跳到了搜索页」，换设备也一样
+        // （服务端记录的就是上次停留的搜索页）。
+        const overlayOpen = (_drillStack && _drillStack.length > 0)
+          || (dtEl && dtEl.classList.contains('active'))
+          || (userEl && userEl.classList.contains('active'));
+        if (v && !userSwitchedView && !overlayOpen && v !== activeView && VALID.includes(v)) {
           switchView(v, { silent: true });
         }
       } catch (_) {}
