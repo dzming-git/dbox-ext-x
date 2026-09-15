@@ -147,6 +147,14 @@ class _ProgressStore:
 def create_blueprint(host):
     bp = Blueprint('x', __name__, url_prefix=host.url_prefix)
 
+    # 向框架登记本插件任务支持的动作（框架据此提供入口，不登记即判定不支持）：
+    # resume=从中断处继续，retry=失败后从头重跑。
+    try:
+        host.tasks.register_resume('/search/resume')
+        host.tasks.register_retry('/search/rerun')
+    except Exception:
+        pass
+
     # ---- 缓存层（列表 / 资源本体两套，见 cache_store.py 顶部说明）----
     # 落在扩展私有 SQLite（host.db('cache')）：进程重启、面板重载都不丢。
     _cache = cache_store.CacheStore(host.db('cache'))
@@ -1995,6 +2003,97 @@ def create_blueprint(host):
         except Exception:
             pass
 
+    def _bg_state_get(key, auth=None, device=None):
+        """后台线程读 UserState（与 _bg_state_put 配套的显式鉴权版本）。"""
+        try:
+            base = host.state._base()
+            ns = host.state._ns
+            url = '%s/api/user-state/%s/%s' % (base, ns, key)
+            hdr = {}
+            if auth:
+                hdr['Authorization'] = auth
+            if device:
+                hdr['X-Dbox-Device-Id'] = device
+            req = urllib.request.Request(url, headers=hdr, method='GET')
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read().decode('utf-8', 'replace') or '{}')
+            return data.get('value')
+        except Exception:
+            return None
+
+    def _kw_cached(kk, auth=None, device=None):
+        """该关键词是否已有**可用**缓存（断点续跑时据此跳过）。
+
+        上次明确失败的（err 非空）不该跳过——那正是需要重爬的。
+        """
+        v = _bg_state_get('search:kw:' + kk, auth=auth, device=device)
+        if not isinstance(v, dict):
+            return False
+        if v.get('err'):
+            return False
+        return bool(v.get('top') or v.get('latest'))
+
+    def _start_search_worker(keywords, resource_key, task_id, cookie, auth, device,
+                             resume=False):
+        """启动批量爬取线程。
+
+        resume=True：跳过已有缓存的关键词，用于**从中断处继续**——
+        批量搜索往往要爬几十个词，中断后从头再来既费时又浪费接口配额。
+        """
+        def _txid(method, path):
+            return get_transaction_id(xrun.build_headers(cookie, with_bearer=False),
+                                      method, path, ua=xrun.UA)
+
+        def worker():
+            n = len(keywords)
+            done = 0
+            try:
+                for q in keywords:
+                    kk = _kw_key(q)
+                    if resume and _kw_cached(kk, auth=auth, device=device):
+                        done += 1
+                        pct = int(done / n * 100)
+                        _report_task(task_id, progress=pct, stage='爬取中',
+                                     detail='已跳过（上次已完成）: ' + q)
+                        _progress_store.update(resource_key, percent=pct,
+                                               message='已跳过: ' + q)
+                        continue
+                    top_items, top_cur = [], None
+                    latest_items, latest_cur = [], None
+                    try:
+                        top_items, top_cur = xrun.search_tweets(
+                            cookie, q, 50, None, 'Top', txid_func=_txid)
+                    except Exception:
+                        top_cur = None
+                    try:
+                        latest_items, latest_cur = xrun.search_tweets(
+                            cookie, q, 50, None, 'Latest', txid_func=_txid)
+                    except Exception:
+                        latest_cur = None
+                    merged = [_merge_tweet(it) for it in ((top_items or []) + (latest_items or []))]
+                    if merged:
+                        # 与前端 XTWEETS 同一份内容缓存：feed('tweets') 在 UserState 的键是 feed:tweets:items
+                        _bg_state_put('feed:tweets:items', merged, strategy='union_by_id', cap=1500,
+                                      auth=auth, device=device)
+                    err = '' if (top_items or latest_items) else '未返回结果'
+                    _bg_state_put('search:kw:' + kk,
+                                  {'q': q, 'top': (top_items or []), 'latest': (latest_items or []),
+                                   'cursorTop': top_cur, 'cursorLatest': latest_cur,
+                                   'ts': int(time.time() * 1000), 'err': err},
+                                  strategy='lww', auth=auth, device=device)
+                    done += 1
+                    pct = int(done / n * 100)
+                    _report_task(task_id, progress=pct, stage='爬取中', detail='已爬取: ' + q)
+                    _progress_store.update(resource_key, percent=pct, message='已爬取: ' + q)
+                _report_task(task_id, status='completed', progress=100, stage='完成',
+                             detail='全部关键词已爬取')
+                _progress_store.mark_completed(resource_key, '全部关键词已爬取')
+            except Exception as e:
+                _report_task(task_id, status='failed', detail=str(e))
+                _progress_store.mark_failed(resource_key, str(e))
+
+        threading.Thread(target=worker, daemon=True, name='x-search').start()
+
     @bp.route('/search/run', methods=['POST'])
     @host.login_required
     def search_run():
@@ -2034,55 +2133,71 @@ def create_blueprint(host):
         except Exception:
             pass
 
-        def _txid(method, path):
-            return get_transaction_id(xrun.build_headers(cookie, with_bearer=False),
-                                      method, path, ua=xrun.UA)
-
-        def worker():
-            n = len(keywords)
-            try:
-                for i, q in enumerate(keywords):
-                    kk = _kw_key(q)
-                    top_items, top_cur = [], None
-                    latest_items, latest_cur = [], None
-                    try:
-                        top_items, top_cur = xrun.search_tweets(
-                            cookie, q, 50, None, 'Top', txid_func=_txid)
-                    except Exception:
-                        top_cur = None
-                    try:
-                        latest_items, latest_cur = xrun.search_tweets(
-                            cookie, q, 50, None, 'Latest', txid_func=_txid)
-                    except Exception:
-                        latest_cur = None
-                    merged = [_merge_tweet(it) for it in ((top_items or []) + (latest_items or []))]
-                    if merged:
-                        # 与前端 XTWEETS 同一份内容缓存：feed('tweets') 在 UserState 的键是 feed:tweets:items
-                        _bg_state_put('feed:tweets:items', merged, strategy='union_by_id', cap=1500,
-                                      auth=auth, device=device)
-                    # 关键词缓存存完整对象（与前台 searchKeyword 路径一致），而非仅存
-                    # {tweet_id, created_at} 轻量桩。桩会导致前端渲染时无 author/text → 创建骨架
-                    # 依赖 fetchSearchCard 懒拉；懒拉若失败/XTWEETS LRU 淘汰后 → 永久骨架。
-                    # 尤其删词触发重渲染时会批量暴露此问题（整屏骨架不填充）。
-                    err = '' if (top_items or latest_items) else '未返回结果'
-                    _bg_state_put('search:kw:' + kk,
-                                  {'q': q, 'top': (top_items or []), 'latest': (latest_items or []),
-                                   'cursorTop': top_cur, 'cursorLatest': latest_cur,
-                                   'ts': int(time.time() * 1000), 'err': err},
-                                  strategy='lww', auth=auth, device=device)
-                    pct = int((i + 1) / n * 100)
-                    _report_task(task_id, progress=pct, stage='爬取中', detail='已爬取: ' + q)
-                    _progress_store.update(resource_key, percent=pct, message='已爬取: ' + q)
-                _report_task(task_id, status='completed', progress=100, stage='完成',
-                             detail='全部关键词已爬取')
-                _progress_store.mark_completed(resource_key, '全部关键词已爬取')
-            except Exception as e:
-                _report_task(task_id, status='failed', detail=str(e))
-                _progress_store.mark_failed(resource_key, str(e))
-
-        threading.Thread(target=worker, daemon=True).start()
+        _start_search_worker(keywords, resource_key, task_id, cookie, auth, device,
+                             resume=bool(data.get('resume')))
         return jsonify({'success': True, 'task_id': task_id,
                         'resource_key': resource_key, 'job_id': job_id})
+
+    @bp.route('/search/rerun', methods=['POST'])
+    @host.login_required
+    def search_rerun():
+        """重跑一次批量搜索（失败/取消后）：复用原任务与关键词，从头开始。
+
+        与 resume 的区别：rerun 不跳过任何关键词，全部重爬。
+        """
+        return _search_continue(request, resume=False)
+
+    @bp.route('/search/resume', methods=['POST'])
+    @host.login_required
+    def search_resume():
+        """从中断处继续：复用原任务，只爬上次没完成的关键词。
+
+        为什么需要单独一个入口：批量搜索常要爬几十个关键词，中途重启/断网后
+        任务会卡在 running（现由统一任务表的重启回收标记为 interrupted）。
+        从头重跑既慢又浪费接口配额，而每个关键词爬完就已落缓存，
+        所以「跳过已完成的」即可精确续跑。
+        """
+        return _search_continue(request, resume=True)
+
+    def _search_continue(req, resume):
+        """按已有任务继续/重跑批量搜索。
+
+        resume=True  ：跳过已缓存的关键词（从中断处继续）
+        resume=False ：全部重爬（失败后重跑）
+        """
+        data = req.get_json(force=True, silent=True) or {}
+        task_id = str(data.get('task_id') or '').strip()
+        if not task_id:
+            return jsonify({'success': False, 'message': '缺少 task_id'}), 400
+        try:
+            t = host.tasks.get(task_id)
+        except Exception:
+            t = None
+        if not t:
+            return jsonify({'success': False, 'message': '任务不存在'}), 404
+        params = t.get('params') or {}
+        keywords = [str(k).strip() for k in (params.get('keywords') or []) if str(k).strip()]
+        if not keywords:
+            return jsonify({'success': False, 'message': '该任务没有可继续的关键词'}), 400
+        cookie = _x_cookie_header()
+        if not cookie:
+            return jsonify({'success': False, 'message': '未配置 x.com 登录 Cookie'}), 400
+        auth = req.headers.get('Authorization')
+        device = req.headers.get('X-Dbox-Device-Id')
+        resource_key = params.get('resource_key') or ('xsearch:' + uuid.uuid4().hex[:16])
+        # 复用同一条任务：回到进行中，进度由 worker 从已完成的关键词数继续往上走
+        try:
+            host.tasks.update(
+                task_id, status='running',
+                stage='继续中' if resume else '重跑中',
+                detail='从中断处继续' if resume else '重新爬取全部关键词',
+                error_code='')
+        except Exception:
+            pass
+        _start_search_worker(keywords, resource_key, task_id, cookie, auth, device,
+                             resume=resume)
+        return jsonify({'success': True, 'task_id': task_id,
+                        'resource_key': resource_key})
 
     @bp.route('/user_tweets', methods=['GET'])
     @host.login_required
