@@ -388,6 +388,9 @@ def create_blueprint(host):
     # 结果是「URL 失败一次就永远 502」，代理后来恢复也再不会重试。
     _media_dl_err = {}                       # url -> float(timestamp)
     _MEDIA_ERR_TTL = 45.0                    # 失败 45 秒后允许再次尝试
+    # url -> 上游声明的资源总字节数。下载期间供「边下边播」降级路径使用，
+    # 让它可以给出正确的 Content-Range 总长（下载结束后即清除，不长期驻留）。
+    _media_declared_size = {}
     # 并发下载上限：代理（Clash 等）在突发并发下会 ERRNO2 / 10053，
     # 收藏列表一次性加载十几张图时极易被掐断，故串行化到 4 路。
     _media_dl_sem = threading.Semaphore(4)
@@ -438,6 +441,9 @@ def create_blueprint(host):
     # 历史坑：早期只让 m3u8 走完整下载、后又补了 mp4，却漏了 HLS 的 ts/m4s 分片——
     # 分片落入图片那条「边下边播」路径，首播必被截断，只有刷新命中缓存才正常。
     _COMPLETE_ONLY_EXT = ('.mp4', '.m4v', '.webm', '.mov', '.ts', '.m4s', '.aac', '.m4a')
+    # 等「完整下载」的宽限期（秒）：够小文件下完即可，超过就转边下边播。
+    # 设得短是为了让大文件也能立刻起播（画面秒出，后台继续下载并登记缓存）。
+    _COMPLETE_GRACE_SEC = 3.0
     _M3U8_URL_RE = re.compile(r'(https?://[^\s"\']+)')
 
     def _rewrite_m3u8(text):
@@ -496,6 +502,12 @@ def create_blueprint(host):
                                     up.headers.get('Content-Length') or 0) or None
                             except Exception:
                                 _declared = None
+                            # 共享给「边下边播」的降级路径：它必须知道资源的**真实总长**。
+                            # 否则只能拿当前已下字节数冒充总长，浏览器据此认为文件已完整，
+                            # 实际拿到截断内容 → mp4 无法起播、进度条也错。
+                            if _declared:
+                                with _media_dl_lock:
+                                    _media_declared_size[url] = _declared
                             try:
                                 with open(tmp_path, 'wb') as f:
                                     while True:
@@ -546,6 +558,7 @@ def create_blueprint(host):
                         _media_dl_err[url] = time.time()
                 with _media_dl_lock:
                     _media_dl_active.discard(url)
+                    _media_declared_size.pop(url, None)   # 下载已结束，总长不再需要
         threading.Thread(target=run, daemon=True).start()
 
     def _serve_media_partial(tmp_path, ct, req, url, ext):
@@ -659,12 +672,16 @@ def create_blueprint(host):
                             pass
             resp = Response(stream_with_context(gen()), status=206, mimetype=ct)
             resp.headers['Accept-Ranges'] = 'bytes'
-            # 注意：这条「边下边播」分支给出的总长是【当前已下大小】，对 mp4 意味着
-            # 浏览器会认为文件已完整、拿到的是截断文件。mp4/m3u8 已在 media() 中
-            # 改为等下载完整后走 send_file 分支返回，正常情况下不会落到这里；
-            # 这里仅作为超时/失败的降级路径，保持原有的定量语义。
+            # Content-Range 的总长**必须**是资源的真实总长（上游声明的），
+            # 不能拿「当前已下字节数」冒充——那会让浏览器以为文件已完整，
+            # 实际拿到截断内容，mp4 因此无法起播、进度条也错。
+            # 真实总长由下载线程记录在 _media_declared_size；
+            # 拿不到时（上游 chunked）才退回已下大小，保持原有语义。
+            with _media_dl_lock:
+                _declared_total = _media_declared_size.get(url)
+            real_total = _declared_total if (_declared_total and _declared_total > cur) else cur
             resp.headers['Content-Range'] = 'bytes %d-%d/%d' % (
-                start, start + total - 1, cur)
+                start, start + total - 1, real_total)
             resp.headers['Content-Length'] = str(total)
             # 边下边播的分片并非完整资源，绝不能被浏览器长期缓存：
             # 一旦本次只传出部分/空内容，浏览器会把它当有效图片缓存住。
@@ -756,6 +773,12 @@ def create_blueprint(host):
                     pass
         resp = Response(stream_with_context(gen()), mimetype=ct)
         resp.headers['Accept-Ranges'] = 'bytes'
+        # 已知真实总长时显式声明：否则走 chunked、浏览器不知道资源多大，
+        # 视频就拖不动进度条。gen() 会一直读到下载完成，字节数与声明一致。
+        with _media_dl_lock:
+            _declared_total = _media_declared_size.get(url)
+        if _declared_total:
+            resp.headers['Content-Length'] = str(_declared_total)
         # 流式传输的是「正在增长的文件」，可能中途失败而只传出空/半个 body。
         # 此前这里给的是 max-age=86400，浏览器会把那次失败的空响应缓存 1 天，
         # 于是即便服务端后来修好了，用户刷新也永远是空白图。改为不缓存，
@@ -2691,7 +2714,15 @@ def create_blueprint(host):
         if ext in _COMPLETE_ONLY_EXT:
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             _mt0 = time.time()
-            while (time.time() - _mt0) < 60.0:
+            # 只给一小段「宽限期」等它下完：小文件基本瞬间完成，可一次性返回完整
+            # 内容并登记缓存。超过宽限期立刻转流式边下边播——用户马上看到画面，
+            # 而不是干等满 60 秒。
+            #
+            # （此前是硬等 60 秒，因为当时降级路径会【谎报总长】、浏览器拿到截断
+            #  文件根本播不了，只能指望等满后拿到完整文件。现在降级路径会带上
+            #  上游声明的真实总长（_media_declared_size），边下边播是有效的，
+            #  因此没必要再让用户干等。下载线程仍在后台跑，完成后照常登记缓存。）
+            while (time.time() - _mt0) < _COMPLETE_GRACE_SEC:
                 with _media_dl_lock:
                     _dl_failed = url in _media_dl_err
                 if _dl_failed:
