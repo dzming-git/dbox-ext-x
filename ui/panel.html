@@ -3977,7 +3977,11 @@
       if ((yTop + h) > top && yTop < top + vh) { if (firstVis < 0) firstVis = i; lastVis = i; }
     }
     if (firstVis < 0) return;                       // 视口内无卡片（极端情况）
-    const ahead = Math.max(0, parseInt((stCfg && stCfg.client_prefetch_ahead) || 5, 10) || 5);
+    // 预取半径（视口前后各多少张）。默认从 5 提到 10：
+    // 列表一次上千条，而后台定时预取只覆盖最新 60 张，其余全靠这里现补——
+    // 半径太小（5）时用户稍一快滑就会看到白框。图片多为几十~几百 KB，
+    // 代价可接受；仍可由 client_prefetch_ahead 覆盖。
+    const ahead = Math.max(0, parseInt((stCfg && stCfg.client_prefetch_ahead) || 10, 10) || 10);
     if (ahead <= 0) return;
     const lo = Math.max(0, firstVis - ahead), hi = Math.min(_rows.length - 1, lastVis + ahead);
     for (let i = lo; i <= hi; i++) {
