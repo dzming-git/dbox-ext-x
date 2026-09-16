@@ -391,6 +391,16 @@ def create_blueprint(host):
     # 并发下载上限：代理（Clash 等）在突发并发下会 ERRNO2 / 10053，
     # 收藏列表一次性加载十几张图时极易被掐断，故串行化到 4 路。
     _media_dl_sem = threading.Semaphore(4)
+    # 视频/音频**单独一套闸门**，不与封面图共用。
+    #
+    # 为什么必须分开：一条多图+视频的推文，打开时会同时请求 4 张封面和一个视频，
+    # 共 5 个下载争抢 4 个槽 —— 视频被排在懒加载封面**后面**。而 media() 对
+    # mp4 是「等完整下载再返回，最多等 60s」（见 _COMPLETE_ONLY_EXT 分支），
+    # 排队把 60s 耗光后就降级为边下边播，且**不登记缓存**。
+    # 于是：首播要等一分钟才出画面，刷新后又得重新等一分钟（缓存始终没建立）。
+    # 电脑端看似正常，只是因为封面已在浏览器缓存里、没有参与排队。
+    # 分开后封面再多也不会挡住用户真正想看的视频。
+    _media_dl_sem_video = threading.Semaphore(4)
 
     def _media_ext_ct(url, mtype):
         """按 URL 后缀 / 显式 type 推断扩展名与 mimetype（用于边下边播的响应类型）。
@@ -462,7 +472,10 @@ def create_blueprint(host):
                     try:
                         # 并发闸门：整段下载（含连接与读流）都在信号量内，
                         # 避免收藏列表一次性拉十几张图把代理打垮。
-                        with _media_dl_sem:
+                        # 视频/音频走独立闸门，不与封面图排队互挡（见其定义处注释）。
+                        _sem = (_media_dl_sem_video if ext in _COMPLETE_ONLY_EXT
+                                else _media_dl_sem)
+                        with _sem:
                             cookie = _x_cookie_header()
                             headers = xrun.build_headers(cookie, with_bearer=True)
                             opener = xrun.make_opener(None)
