@@ -25,6 +25,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from collections import OrderedDict
+from datetime import datetime
 
 from flask import Blueprint, request, g, jsonify, Response, stream_with_context
 import importlib.util as _ilu
@@ -1513,6 +1514,72 @@ def create_blueprint(host):
                 pass
         return n
 
+    def _iso_order(ts):
+        """把 X 的 created_at 转成 ISO 时间串（union_by_id 对 order 的契约）。
+
+        ⚠️ 为什么必须转换：core/state_merge 的 _sortable_ts 只认「数字 / 数字串 /
+        ISO 时间串」，其余一律判为 -inf。X 的 created_at 形如
+        'Sun Aug 30 11:00:03 +0000 2026' 三者都不是 → 所有条目排序键相同 →
+        排序退化为插入序（旧条目在前、新追加的在后）→ 封顶 items[:cap] 恰好把
+        新推文截掉。表现为「任务照常成功、接口照常 200，但首页永远不更新」。
+        """
+        raw = ts.strip() if isinstance(ts, str) else ''
+        if not raw:
+            return ''
+        try:
+            datetime.fromisoformat(raw[:-1] + '+00:00' if raw.endswith('Z') else raw)
+            return raw                      # 已是 ISO，原样返回
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(raw, '%a %b %d %H:%M:%S %z %Y').isoformat()
+        except Exception:
+            return ''
+
+    _feed_orders_fixed = [False]
+
+    def _feed_fix_orders_once():
+        """存量迁移：把已存 feed 的 order 从 X 原串改写为 ISO（每进程一次）。
+
+        不迁移也能让新推文进来（新的有真实时间戳、会排到最前），但旧条目全是
+        -inf 会一直压在尾部且顺序是乱的。迁移一次让整份列表恢复时间序。
+        """
+        if _feed_orders_fixed[0]:
+            return
+        _feed_orders_fixed[0] = True
+        try:
+            cur = host.state.get('feed:main:items')
+        except Exception:
+            return
+        if not isinstance(cur, list) or not cur:
+            return
+        fixed, changed = [], False
+        for r in cur:
+            if not isinstance(r, dict):
+                continue
+            rec = dict(r)
+            o = rec.get('order')
+            sortable = isinstance(o, (int, float)) and not isinstance(o, bool)
+            if not sortable and isinstance(o, str) and o.strip():
+                try:
+                    datetime.fromisoformat(o.strip()[:-1] + '+00:00'
+                                           if o.strip().endswith('Z') else o.strip())
+                    sortable = True
+                except ValueError:
+                    sortable = False
+            if not sortable:
+                iso = _iso_order(rec.get('created_at')) or _iso_order(o)
+                if iso:
+                    rec['order'] = iso
+                    changed = True
+            fixed.append(rec)
+        if changed:
+            try:
+                # lww = 整值覆盖：这里就是要拿规范化后的整份列表替换存量
+                host.state.put('feed:main:items', fixed, strategy='lww')
+            except Exception:
+                pass
+
     def _ac_run_once():
         """抓一轮首页 + 预取媒体。返回 (ok, tweets, media, err)。"""
         cfg = _settings_load()
@@ -1546,9 +1613,10 @@ def create_blueprint(host):
             rec = dict(it)
             tid = it.get('tweet_id')
             rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
-            rec['order'] = it.get('created_at')
+            rec['order'] = _iso_order(it.get('created_at')) or it.get('created_at')
             norm.append(rec)
         try:
+            _feed_fix_orders_once()
             host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
         except Exception:
             pass
@@ -1834,10 +1902,11 @@ def create_blueprint(host):
                 rec = dict(it)
                 tid = it.get('tweet_id')
                 rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
-                rec['order'] = it.get('created_at')
+                rec['order'] = _iso_order(it.get('created_at')) or it.get('created_at')
                 norm.append(rec)
             canonical = None
             try:
+                _feed_fix_orders_once()
                 merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
                 if isinstance(merged, dict) and isinstance(merged.get('value'), list):
                     canonical = merged['value']
