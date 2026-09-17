@@ -490,22 +490,40 @@ def create_blueprint(host):
                         with _sem:
                             cookie = _x_cookie_header()
                             headers = xrun.build_headers(cookie, with_bearer=True)
-                            opener = xrun.make_opener(None)
-                            # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket
-                            xrun._apply_socks()
-                            try:
-                                up = opener.open(urllib.request.Request(
-                                    url, headers=headers), timeout=60)
-                            finally:
-                                xrun._restore_socks()
+                            # 优先走连接复用（实测 twimg 0.40s → 0.11s）；失败则回退 urllib
+                            up = None
+                            resp = None
+                            sess = xrun._media_session()
+                            if sess is not None:
+                                try:
+                                    # SOCKS 只作用于建立连接这一步：连接一旦建立就还原全局 socket
+                                    xrun._apply_socks()
+                                    try:
+                                        resp = sess.get(url, headers=headers,
+                                                        timeout=60, stream=True)
+                                    finally:
+                                        xrun._restore_socks()
+                                except Exception:
+                                    resp = None
+                                    xrun._media_session_invalidate()
+                            if resp is None:
+                                opener = xrun.make_opener(None)
+                                xrun._apply_socks()
+                                try:
+                                    up = opener.open(urllib.request.Request(
+                                        url, headers=headers), timeout=60)
+                                finally:
+                                    xrun._restore_socks()
                             # 记下上游声明的长度，用于事后校验完整性。
                             # 代理（Clash 等）掐断连接时 up.read() 会提前返回空，
                             # 若只凭「size>0」就判成功，残缺文件会被登记进 LRU 缓存
                             # 并【永久污染】——该媒体此后永远只能拿到截断内容，
                             # 怎么刷新都救不回来（实测 40MB 视频被截成 128KB 入库）。
                             try:
+                                _hdrs = (resp.headers if resp is not None
+                                         else (up.headers if up is not None else {}))
                                 _declared = int(
-                                    up.headers.get('Content-Length') or 0) or None
+                                    _hdrs.get('Content-Length') or 0) or None
                             except Exception:
                                 _declared = None
                             # 共享给「边下边播」的降级路径：它必须知道资源的**真实总长**。
@@ -516,16 +534,23 @@ def create_blueprint(host):
                                     _media_declared_size[url] = _declared
                             try:
                                 with open(tmp_path, 'wb') as f:
-                                    while True:
-                                        chunk = up.read(65536)
-                                        if not chunk:
-                                            break
-                                        f.write(chunk)
+                                    if resp is not None:
+                                        for chunk in resp.iter_content(65536):
+                                            if chunk:
+                                                f.write(chunk)
+                                    else:
+                                        while True:
+                                            chunk = up.read(65536)
+                                            if not chunk:
+                                                break
+                                            f.write(chunk)
                             finally:
-                                try:
-                                    up.close()
-                                except Exception:
-                                    pass
+                                for _c in (resp, up):
+                                    try:
+                                        if _c is not None:
+                                            _c.close()
+                                    except Exception:
+                                        pass
                         _got = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
                         # 只有「拿全了」才算成功；上游未给长度（chunked）时退化为原判定
                         if _got > 0 and (_declared is None or _got >= _declared):

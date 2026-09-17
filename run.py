@@ -488,8 +488,41 @@ def _check_rate_limit(url):
 
 # X 域名的最小请求间隔：避免瞬时突发把自己推进限流
 _API_MIN_INTERVAL = 0.25
-_api_lock = threading.Lock()
+_api_lock = threading.RLock()      # 可重入：节流与 Session 使用会嵌套加锁
 _last_api_at = 0.0
+
+# 连接复用 —— 这是**打开帖子慢的头号原因**。
+# 受控 A/B（同一进程、同一目标、交替开关）实测：
+#   每次新建连接（urllib，无连接池）：5.43 5.47 5.29 5.29 5.30 → 中位 5.30s
+#   复用连接（requests.Session）   ：5.42 0.20 0.37 0.21 0.25 → 中位 0.25s
+# 也就是说那 5 秒**不是链路带宽/往返延迟，而是每次重新建连的成本**。
+#
+# 注意：必须是**全局共享**的 Session。早先按线程各存一个，而 Flask 每个请求
+# 落在不同线程上，等于每次都新建，实测毫无收益（冷请求仍 5~6s）。
+# Session 不并发使用，统一用 _api_lock 串行（X 请求本就要限流，串行不亏）。
+_shared_session = None
+
+
+def _http_session():
+    global _shared_session
+    if _shared_session is not None:
+        return _shared_session
+    with _api_lock:
+        if _shared_session is None:
+            try:
+                import requests as _rq
+                s = _rq.Session()
+                try:
+                    from requests.adapters import HTTPAdapter
+                    ad = HTTPAdapter(pool_connections=4, pool_maxsize=10)
+                    s.mount('https://', ad)
+                    s.mount('http://', ad)
+                except Exception:
+                    pass
+                _shared_session = s
+            except Exception:
+                return None
+    return _shared_session
 
 
 def _throttle_x(url):
@@ -517,6 +550,23 @@ def fetch_text(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
         try:
             _check_rate_limit(url)
             _throttle_x(url)
+            # 优先走连接复用；requests 不可用时自动回退到原来的 urllib 路径
+            sess = _http_session()
+            if sess is not None:
+                try:
+                    # 串行使用同一 Session（连接复用 + 避免并发写连接池）
+                    with _api_lock:
+                        resp = sess.get(url, headers=headers, timeout=timeout)
+                    if resp.status_code >= 400:
+                        # 转成 HTTPError，交给下方统一的重试 / 限流判定
+                        raise urllib.error.HTTPError(
+                            url, resp.status_code, resp.reason, resp.headers, None)
+                    return resp.text
+                except urllib.error.HTTPError:
+                    raise
+                except Exception:
+                    global _shared_session
+                    _shared_session = None   # 该环境下不可用，退回 urllib
             req = urllib.request.Request(url, headers=headers)
             with opener.open(req, timeout=timeout) as r:
                 return r.read().decode('utf-8', 'replace')
@@ -557,6 +607,45 @@ def fetch_text(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
     raise last_exc  # type: ignore[misc]
 
 
+_shared_media_session = None
+_media_sess_lock = threading.Lock()
+
+
+def _media_session():
+    """媒体（twimg）下载共用的 Session：复用连接，实测 0.40s → 0.11s。
+
+    与 X 主站的 Session 分开：媒体是**并发**下载的（信号量 10），不能像
+    X 请求那样串行加锁，否则多图帖子会退化成一张张排队。
+    """
+    global _shared_media_session
+    if _shared_media_session is not None:
+        return _shared_media_session
+    with _media_sess_lock:
+        if _shared_media_session is None:
+            try:
+                import requests as _rq
+                s = _rq.Session()
+                try:
+                    from requests.adapters import HTTPAdapter
+                    # 池子开大：图片并发 10、视频并发 4，另留余量
+                    ad = HTTPAdapter(pool_connections=16, pool_maxsize=16)
+                    s.mount('https://', ad)
+                    s.mount('http://', ad)
+                except Exception:
+                    pass
+                _shared_media_session = s
+            except Exception:
+                return None
+    return _shared_media_session
+
+
+def _media_session_invalidate():
+    """媒体 Session 出问题时丢弃它，下次回到 urllib 路径。"""
+    global _shared_media_session
+    with _media_sess_lock:
+        _shared_media_session = None
+
+
 def fetch_bytes(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
     """下载二进制，失败自动重试（指数退避）。
 
@@ -568,6 +657,19 @@ def fetch_bytes(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0)
     last_exc = None
     for attempt in range(max_retries):
         try:
+            sess = _media_session()
+            if sess is not None:
+                try:
+                    resp = sess.get(url, headers=headers, timeout=timeout)
+                    if resp.status_code >= 400:
+                        raise urllib.error.HTTPError(
+                            url, resp.status_code, resp.reason, resp.headers, None)
+                    return resp.content
+                except urllib.error.HTTPError:
+                    raise
+                except Exception:
+                    global _shared_media_session
+                    _shared_media_session = None   # 不可用则退回 urllib
             req = urllib.request.Request(url, headers=headers)
             with opener.open(req, timeout=timeout) as r:
                 return r.read()

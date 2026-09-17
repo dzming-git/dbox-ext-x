@@ -1883,7 +1883,7 @@
         const playable = m.mp4 || (m.url || '').endsWith('.mp4');
         thumb = `<div class="thumb">
           ${cover
-            ? `<img src="${esc(mediaUrl(cover, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />`
+            ? `<img src="${esc(mediaUrl(cover, 'image', { size: MEDIA_CARD_SIZE }))}" alt="" loading="lazy" onerror="_onImgErr(this)" />`
             : '<div class="placeholder">视频</div>'}
           <button class="play" data-i="${i}">▶</button>
           <div class="note" hidden>该视频需下载后播放</div>
@@ -1897,7 +1897,7 @@
         // 必须走 mediaUrl() 代理：直接用原始 pbs.twimg.com 地址会被网络拦截，
         // 图片永远加载不出来（浏览卡 renderBmCard 一直走代理，这里此前漏了）。
         thumb = `<div class="thumb">
-          <img src="${esc(mediaUrl(m.url, 'image'))}" alt="" loading="lazy" onerror="_onImgErr(this)" />
+          <img src="${esc(mediaUrl(m.url, 'image', { size: MEDIA_CARD_SIZE }))}" alt="" loading="lazy" onerror="_onImgErr(this)" />
         </div>`;
       }
       const label = m.label || (m.type === 'video' ? '视频' : m.type === 'document' ? '文档' : '图片');
@@ -3430,11 +3430,22 @@
 
   function mediaUrl(url, type, opts) {
     if (!url || !/twimg\.com|pbs\.twimg/.test(url)) return url || '';
-    let s = `${API}/media?u=${encodeURIComponent(url)}&type=${type || 'image'}&v=${MEDIA_CACHE_BUST}`;
+    let u = url;
+    // 尺寸变体：X 的 CDN 支持 ?name=<preset>。列表/卡片/评论区用中等尺寸即可，
+    // 实测同一张图：原图 127KB、900x900 74KB、small 47KB —— 多图帖子省下的是
+    // 几倍流量，而列表中根本看不出差别。
+    // 放大查看（灯箱）仍走原图（不传 size），保证放大后的清晰度。
+    const size = opts && opts.size;
+    if (size && !/name=/.test(u)) {
+      u += (u.includes('?') ? '&' : '?') + 'format=jpg&name=' + size;
+    }
+    let s = `${API}/media?u=${encodeURIComponent(u)}&type=${type || 'image'}&v=${MEDIA_CACHE_BUST}`;
     // force：绕过服务端坏缓存、强制重新从上游取图（以推文为单位刷新时用）。
     if (opts && opts.force) s += `&force=1&_=${Date.now()}`;
     return s;
   }
+  // 卡片/列表/评论区统一用的尺寸档（改这一处即可整体调档）
+  const MEDIA_CARD_SIZE = '900x900';
 
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
@@ -3954,9 +3965,10 @@
     const meds = (item && item.media) || [];
     for (const m of meds) {
       if (m.type === 'video' || m.type === 'gif') {
-        if (m.cover || m.url) out.push(mediaUrl(m.cover || m.url, 'image'));  // 视频预取封面（与卡片渲染一致）
+        // 尺寸档必须和卡片渲染**完全一致**，否则预取的是另一个 URL，白预热
+        if (m.cover || m.url) out.push(mediaUrl(m.cover || m.url, 'image', { size: MEDIA_CARD_SIZE }));  // 视频预取封面
       } else if (m.url) {
-        out.push(mediaUrl(m.url, 'image'));
+        out.push(mediaUrl(m.url, 'image', { size: MEDIA_CARD_SIZE }));
       }
     }
     return out;
@@ -4509,7 +4521,7 @@
     const dimAttr = (m) => (m.w && m.h) ? ` data-w="${m.w}" data-h="${m.h}"` : '';
     const html = medias.map((m, idx) => {
       if (m.type === 'video') {
-        const poster = mediaUrl(m.cover || m.url || '', 'image');
+        const poster = mediaUrl(m.cover || m.url || '', 'image', { size: MEDIA_CARD_SIZE });
         const isM3u8 = !!(m.url && m.url.includes('.m3u8'));
         const mp4 = (!isM3u8 && m.url) ? mediaUrl(m.url, 'video') : '';
         const m3u8 = isM3u8 ? mediaUrl(m.url, 'video') : '';
@@ -4529,7 +4541,7 @@
       // 图片也要带真实 width/height 属性（此前只有视频带了）：浏览器据此推导 aspect-ratio，
       // 在（lazy）图片尚未加载时就能预留正确空间，避免加载过程中布局尺寸来回变化。
       const idim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : '';
-      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"${dimAttr(m)}><img src="${esc2(mediaUrl(m.url, 'image'))}" alt=""${idim} loading="lazy" decoding="async" onerror="_onImgErr(this)"/></div>` : '';
+      return m.url ? `<div class="bm-media" data-idx="${idx}" data-type="image"${dimAttr(m)}><img src="${esc2(mediaUrl(m.url, 'image', { size: MEDIA_CARD_SIZE }))}" alt=""${idim} loading="lazy" decoding="async" onerror="_onImgErr(this)"/></div>` : '';
     }).join('');
     // justified：横向行式布局（每行等高、按宽高比分配宽度），由 layoutJustified() 计算尺寸。
     // 仅多图启用；单图仍走全宽自然撑高（保持与多图接近的视觉体量，不被行高夹小）。
@@ -8276,7 +8288,7 @@
   function renderReplyCard(rp) {
     const a = rp.author || {};
     const thumb = (rp.media || []).slice(0, 1).map((m) =>
-      m.url ? `<div class="dt-reply-media"><img src="${esc2(mediaUrl(m.url, 'image'))}" alt="" /></div>` : '').join('');
+      m.url ? `<div class="dt-reply-media"><img src="${esc2(mediaUrl(m.url, 'image', { size: MEDIA_CARD_SIZE }))}" alt="" /></div>` : '').join('');
     const div = document.createElement('div');
     div.className = 'dt-reply';
     div.innerHTML = `
