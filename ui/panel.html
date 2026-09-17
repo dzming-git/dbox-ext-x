@@ -2041,7 +2041,11 @@
           playable: !!(mp4 || m3u8),
         });
       } else if (m.type !== 'document' && m.url) {
-        out.push({ type: 'image', mi: i, src: mediaUrl(m.url, 'image'), label: m.label || '图片' });
+        // src 仍是原图（放大要清晰）；srcSmall 是卡片同一档尺寸——列表滚动时
+        // 已经预取过，放大瞬间就能用它先出画面（见 lbBuildLayer 的渐进呈现）。
+        out.push({ type: 'image', mi: i, src: mediaUrl(m.url, 'image'),
+                   srcSmall: mediaUrl(m.url, 'image', { size: MEDIA_CARD_SIZE }),
+                   label: m.label || '图片' });
       }
     });
     return out;
@@ -2194,7 +2198,16 @@
       }
     } else {
       const img = document.createElement('img');
-      img.src = item.src;
+      // 渐进呈现：先用卡片那档（已随列表预取、浏览器缓存里就有）秒出画面，
+      // 再后台拉原图并替换。否则每次放大都要现拉原图 —— 冷启动约 0.1~0.4s，
+      // 表现为「点开大图先白一下」。清晰度不受影响：原图到位后即替换。
+      const small = item.srcSmall || '';
+      img.src = small || item.src;
+      if (small && item.src && small !== item.src) {
+        const full = new Image();
+        full.onload = () => { if (img.isConnected) img.src = item.src; };
+        full.src = item.src;
+      }
       layer.appendChild(img);
     }
     return layer;
