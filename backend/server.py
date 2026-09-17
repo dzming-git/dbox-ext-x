@@ -2328,10 +2328,23 @@ def create_blueprint(host):
         cursor = request.args.get('cursor') or None
 
         def _fetch():
-            return xrun.get_tweet_thread(tweet_id, cookie, cursor)
+            # 与 /search 一致：带上 X 的反爬令牌（x-client-transaction-id）。
+            # 详情路径此前一直没带，被 X 判为机器人 → 大量 429（实测日志上万次）。
+            _home_headers = xrun.build_headers(cookie, with_bearer=False)
+
+            def _txid(method, path):
+                return get_transaction_id(_home_headers, method, path, ua=xrun.UA)
+
+            return xrun.get_tweet_thread(tweet_id, cookie, cursor, txid_func=_txid)
 
         try:
             data, ts, cached, stale = _cached('item', 'tweet', {'id': tweet_id, 'cursor': cursor or ''}, _fetch)
+        except xrun.XRateLimited as e:
+            # 限流要显式告知前端「多久后再试」——别伪装成普通失败，
+            # 否则前端会以为数据有问题、用户也会反复点、进一步恶化限流。
+            return jsonify({'success': False, 'rate_limited': True,
+                            'retry_after': int(getattr(e, 'retry_after', 60) or 60),
+                            'message': str(e)}), 429
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取推文详情失败: ' + str(e)}), 502

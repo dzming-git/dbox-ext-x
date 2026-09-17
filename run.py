@@ -35,6 +35,7 @@ import hashlib
 import shutil
 import socket
 import subprocess
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -433,23 +434,107 @@ def notify_input(input_ctx, files):
     result(files)
 
 
+# ---------------- X 限流保护 ----------------
+# 背景（实测）：TweetDetail 被 X 判为机器人后大量返回 429，日志累计上万次；
+# 而旧逻辑遇到 429 会退避 1s / 2s 再试两次——限流窗口通常远长于此，重试既
+# 拿不到数据，又继续消耗配额，还让用户干等约 3 秒。
+# 因此改为：**429 一律不重试**，只登记冷却期；冷却期内直接快速失败。
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_UNTIL = 0.0
+_RATE_LIMIT_DEFAULT = 60.0    # X 未返回 reset 时的缺省冷却
+_RATE_LIMIT_MAX = 900.0       # 冷却上限，避免异常值把功能卡死
+
+
+class XRateLimited(Exception):
+    """X 正在限流且仍在冷却期内（调用方应提示用户稍后再试）。"""
+
+    def __init__(self, retry_after: float = 0):
+        super().__init__(f'X 接口限流中，约 {max(1, int(retry_after))} 秒后自动恢复')
+        self.retry_after = max(0.0, float(retry_after))
+
+
+def rate_limit_remaining():
+    """距限流结束还剩多少秒（<=0 表示当前未被限流）。"""
+    with _RATE_LIMIT_LOCK:
+        return _RATE_LIMIT_UNTIL - time.time()
+
+
+def _is_x_host(url):
+    """是否 X 主站/API（CDN 如 twimg 不算，图片要靠并发才快）。"""
+    host = (urllib.parse.urlparse(url).hostname or '').lower()
+    return host == 'x.com' or host == 'api.x.com' or host.endswith('.x.com')
+
+
+def _note_rate_limited(reset_at=None):
+    """登记限流：优先用 X 返回的 x-rate-limit-reset（epoch 秒）。"""
+    global _RATE_LIMIT_UNTIL
+    now = time.time()
+    if reset_at and reset_at > now:
+        until = min(float(reset_at), now + _RATE_LIMIT_MAX)
+    else:
+        until = now + _RATE_LIMIT_DEFAULT
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, until)
+    return _RATE_LIMIT_UNTIL - now
+
+
+def _check_rate_limit(url):
+    if not _is_x_host(url):
+        return
+    left = rate_limit_remaining()
+    if left > 0:
+        raise XRateLimited(left)
+
+
+# X 域名的最小请求间隔：避免瞬时突发把自己推进限流
+_API_MIN_INTERVAL = 0.25
+_api_lock = threading.Lock()
+_last_api_at = 0.0
+
+
+def _throttle_x(url):
+    global _last_api_at
+    if not _is_x_host(url):
+        return
+    with _api_lock:
+        wait = _API_MIN_INTERVAL - (time.time() - _last_api_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_api_at = time.time()
+
+
 # ---------------- 网络请求封装 ----------------
 def fetch_text(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
     """抓取文本内容，失败自动重试（指数退避）。
 
-    - 可重试：网络异常 / 超时 / SSL EOF / 5xx / 429。
-    - 不可重试：4xx 中除 429 外的错误（如 404），直接抛出。
+    - 可重试：网络异常 / 超时 / SSL EOF / 5xx。
+    - **429 不重试**：登记冷却期后直接抛 XRateLimited（见上方限流说明）。
+    - 其它 4xx（如 404）直接抛出。
     """
     _apply_socks()
     last_exc = None
     for attempt in range(max_retries):
         try:
+            _check_rate_limit(url)
+            _throttle_x(url)
             req = urllib.request.Request(url, headers=headers)
             with opener.open(req, timeout=timeout) as r:
                 return r.read().decode('utf-8', 'replace')
         except urllib.error.HTTPError as e:
             last_exc = e
-            retryable = e.code in (429, 500, 502, 503, 504)
+            if e.code == 429:
+                reset = None
+                try:
+                    v = e.headers.get('x-rate-limit-reset')
+                    if v:
+                        reset = float(v)
+                except Exception:
+                    reset = None
+                left = _note_rate_limited(reset)
+                log(f'请求被限流（{url[:80]}…）HTTP 429，冷却 {left:.0f}s，期间不再重试',
+                    level='warn')
+                raise XRateLimited(left)
+            retryable = e.code in (500, 502, 503, 504)
             if retryable and attempt < max_retries - 1:
                 wait = retry_base * (2 ** attempt)
                 log(f'请求失败（{url[:90]}…）HTTP {e.code}，{wait:.0f}s 后第 {attempt + 2} 次重试',
@@ -2596,13 +2681,18 @@ def _resolve_pic_url(short_url, opener=None, max_redirects=5):
         return ''
 
 
-def get_tweet_thread(tweet_id, cookie_header, cursor=None):
+def get_tweet_thread(tweet_id, cookie_header, cursor=None, txid_func=None):
     """拉取单条推文详情 + 评论区（对话线程）。
 
     X 推文详情页的评论区就包含在 TweetDetail 响应里
     （data.threaded_conversation_with_injections_v2.instructions：
     第一个是焦点推文，后续 conversationthread-* 是回复）。
     返回 {'tweet': focal, 'replies': [...], 'next_cursor': ...}。
+
+    txid_func：计算 x-client-transaction-id 的回调（method, path）-> str。
+    **详情路径此前一直没注入这个头**，而 /search、/user_tweets 等都注入了——
+    X 据此识别真实客户端，缺失会被判为机器人并限流（实测日志中 TweetDetail
+    的 429 累计上万次）。传入它可显著降低 429。
     """
     opener = make_opener(None)
     qid = _get_tweet_detail_qid()
@@ -2610,10 +2700,19 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None):
         qid = _discover_tweet_detail_qid(opener, cookie_header)
     if not qid:
         raise RuntimeError('未能发现 TweetDetail query id')
-    url = (f'https://x.com/i/api/graphql/{qid}/TweetDetail'
+    path = f'/i/api/graphql/{qid}/TweetDetail'
+    url = (f'https://x.com{path}'
            f'?variables={urllib.parse.quote(json.dumps(_gql_variables(tweet_id, cursor)))}'
            f'&features={urllib.parse.quote(json.dumps(_GQL_TWEET_DETAIL_FEATURES))}')
     headers = build_headers(cookie_header, with_bearer=True)
+    if txid_func:
+        try:
+            tid = txid_func('GET', path)
+            if tid:
+                headers['x-client-transaction-id'] = tid
+        except Exception as e:
+            # 令牌算不出来也要把请求发出去：没有它最多被限流，不发则一定没数据
+            log(f'计算 x-client-transaction-id 失败（继续请求）: {e}', level='warn')
     try:
         raw = fetch_text(url, opener, headers, timeout=30)
     except urllib.error.HTTPError as e:
