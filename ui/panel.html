@@ -4000,7 +4000,68 @@
         im.src = u;  // 仅触发缓存，不入 DOM；浏览器同源图片缓存，卡片真正挂载时瞬时命中
       }
     }
+    // 顺带预取视口相邻卡片的**详情**：见下方 prefetchDetailsNear 的说明
+    try { prefetchDetailsNear(_rows, firstVis, lastVis, 1); } catch (_) {}
   }
+
+  // ---- 详情预取：把「打开帖子」的等待移出点击路径 ----
+  // 实测（2026-09-17）：冷请求 /tweet/<id> 平均 5.4s（x.com 链路往返就要 5.8s，
+  // 优化空间在链路上、不在我们代码里），而命中服务端缓存只要 0.06s。
+  // 既然这 5 秒省不掉，就趁用户浏览、停顿时提前把详情取回来：点开时直接命中缓存。
+  // 量必须小 —— 取一条就要占用约 5~6 秒上游时间，贪多反而把自己推进限流。
+  const _dtPrefetched = new Set();
+  const _DT_PREFETCH_MAX = 2;        // 每次最多取几条
+  let _dtPrefetchBusy = false;       // 串行取，避免并发突发
+  let _dtPrefetchPausedUntil = 0;    // 命中限流后的暂停截止时间
+
+  function prefetchDetailsNear(rows, firstVis, lastVis, radius) {
+    if (_dtPrefetchBusy || firstVis < 0) return;
+    if (Date.now() < _dtPrefetchPausedUntil) return;
+    const lo = Math.max(0, firstVis - radius);
+    const hi = Math.min(rows.length - 1, lastVis + radius);
+    const ids = [];
+    for (let i = lo; i <= hi && ids.length < _DT_PREFETCH_MAX; i++) {
+      const row = rows[i];
+      if (!row || row.kind !== 'card' || !row.tid) continue;
+      if (_dtPrefetched.has(row.tid)) continue;
+      if (dtCacheGet(row.tid)) continue;          // 详情已在缓存里
+      _dtPrefetched.add(row.tid);
+      ids.push(row.tid);
+    }
+    if (!ids.length) return;
+    _dtPrefetchBusy = true;
+    (async () => {
+      try {
+        for (const tid of ids) {
+          if (Date.now() < _dtPrefetchPausedUntil) break;
+          try {
+            const r = await req(`${API}/tweet/${encodeURIComponent(tid)}`);
+            const d = await r.json().catch(() => ({}));
+            if (d && d.rate_limited) {
+              // 被限流：按后端给的窗口暂停，期间不再消耗配额
+              _dtPrefetchPausedUntil = Date.now() + (parseInt(d.retry_after, 10) || 60) * 1000;
+              _dtPrefetched.delete(tid);
+              break;
+            }
+            if (d && d.success && d.tweet) {
+              const t = mergeTweet(d.tweet);
+              persistTweetToFeed(d.tweet);
+              dtCachePut(t, d.replies || [], d.next_cursor);
+              twTsPut(tid, d.fetched_at);
+            } else {
+              _dtPrefetched.delete(tid);          // 失败则允许以后重试
+            }
+          } catch (_) {
+            _dtPrefetched.delete(tid);
+            break;
+          }
+        }
+      } finally {
+        _dtPrefetchBusy = false;
+      }
+    })();
+  }
+
   const _hEst = { card: 340, sep: 40, coll: 34 };
   let _rows = [];                   // 有序行模型（时间倒序）：{kind:'card'|'sep'|'coll'|'more', tid?, day?, count?, item?, remain?}
   let _browseItems = [];            // 全量浏览推文（buildRows 数据源，时间倒序）
@@ -8450,7 +8511,15 @@
       const r = await req(`${API}/tweet/${encodeURIComponent(tweetId)}`);
       const d = await r.json();
       if (!d.success) {
-        dtBody.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '')}</div>`;
+        // 限流是「预期内」的状态：X 对高频调用会限流一段时间，后端已带
+        // retry_after。这里给出明确提示与恢复时间，别让用户以为是数据坏了；
+        // 且**保留已用列表数据渲染出的正文**，只在评论区区域提示。
+        const msg = d.rate_limited
+          ? `X 接口限流中（打开太频繁），约 ${parseInt(d.retry_after, 10) || 60} 秒后自动恢复`
+          : (d.message || '');
+        const html = `<div class="bm-empty err">${esc2(msg)}</div>`;
+        if (seed) dtReplies.innerHTML = html;      // 正文已渲染，提示放评论区
+        else dtBody.innerHTML = html;
         return;
       }
       const replies = d.replies || [];
