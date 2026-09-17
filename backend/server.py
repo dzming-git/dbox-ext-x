@@ -450,6 +450,10 @@ def create_blueprint(host):
     # 等「完整下载」的宽限期（秒）：够小文件下完即可，超过就转边下边播。
     # 设得短是为了让大文件也能立刻起播（画面秒出，后台继续下载并登记缓存）。
     _COMPLETE_GRACE_SEC = 3.0
+    # 等 HLS 清单（m3u8）下完的上限（秒）。m3u8 只是几 KB 的文本索引，
+    # 连接复用后通常不到 1 秒；此前写死 60 秒，一旦上游卡住，用户就要盯着
+    # 转圈等满一分钟才看到失败——而截断的清单本来也解析不出画面。
+    _M3U8_WAIT_SEC = 12.0
     _M3U8_URL_RE = re.compile(r'(https?://[^\s"\']+)')
 
     def _rewrite_m3u8(text):
@@ -2792,7 +2796,7 @@ def create_blueprint(host):
             # 带 cookie 拉取并落盘，看过的视频二次秒开、首播也走服务端代理更稳。
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             _mt0 = time.time()
-            while (time.time() - _mt0) < 60.0:
+            while (time.time() - _mt0) < _M3U8_WAIT_SEC:
                 with _media_dl_lock:
                     _dl_failed = url in _media_dl_err
                 if _dl_failed:
