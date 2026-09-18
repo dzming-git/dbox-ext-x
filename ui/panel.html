@@ -6247,6 +6247,40 @@
     return neu.length;
   }
 
+  // 从最新一天依次加载，直到（含）targetDay；条目累积进 dayOut。
+  // ⚠️ 存在的理由：首屏**绝不能只给最新一天** —— 续读锚点可能在更早的某天，
+  // 只加载最新一天会让锚点卡不在列表里、anchorTo 定位失败 → 阅读位置被冲掉
+  // （表现为「一打开就跳到最新」）。所以必须一直加载到锚点所在天为止。
+  async function loadDaysThrough(targetDay, dayOut, maxDays = 60) {
+    if (!brDayIndex.length) return;
+    let n = 0;
+    for (const e of brDayIndex) {
+      const day = e && e.day;
+      if (!day || brLoadedDays.has(day)) continue;
+      const items = await fetchDay(day);
+      brLoadedDays.add(day);
+      (items || []).forEach((it) => dayOut.push(it));
+      n++;
+      if (targetDay && day === targetDay) break;
+      if (!targetDay && dayOut.length >= 40) break;   // 无锚点：够填满首屏即可
+      if (n >= maxDays) break;
+    }
+  }
+
+  // 锚点推文属于哪一天（先查本地镜像，再退内容缓存）。口径与服务端按天分桶一致（本地时区）。
+  function dayOfTweetId(tid) {
+    const sid = String(tid || '');
+    if (!sid) return null;
+    try {
+      const mem = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || [];
+      const m = mem.find((x) => String(x.tweet_id || x.id) === sid);
+      if (m && m.created_at) return dayKeyOf(m.created_at);
+    } catch (_) {}
+    const t = tweetCacheGet(sid);
+    const ts = t && (t.created_at || t.timeline_at);
+    return ts ? dayKeyOf(ts) : null;
+  }
+
   async function loadBrowse(reset = true) {
     if (brLoading) return;
     brLoading = true;
@@ -6303,8 +6337,6 @@
           else if (reset) showBrowseStatus('加载失败: ' + (d.message || '未知错误'), 'err');
           return;
         }
-        // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
-        const items = mergeTweets(d.items || []);
         // 定位前先等对账落地：锚点必须取服务端真相。否则本机旧锚点会被当成"当前位置"，
         // 而本设备刚抢占为主控，随后一滚动就把陈旧位置推回服务端、覆盖真正进度。
         // 但本机续读位置（localStorage）可能比服务端陈旧锚点更新——优先取本机最新，
@@ -6312,34 +6344,20 @@
         if (syncP) { try { await syncP; } catch (_) {} }
         const _pa = pickAnchor();
         const anchorTid = _pa ? _pa.id : null;
-        if (d.canonical) {
-          // 后端无 cursor 时返回的是「服务端合并后的完整列表」（canonical），横跨新与旧。
-          // 绝不能交给 prependNewTweets：它按「这一批全是新推文」的语义往顶部插入，
-          // 于是更旧的那部分被插到最新推文上面 → 时间顺序错乱；且一次性插入上千张
-          // 卡片会把锚点定位冲掉，视图落回列表顶部——正是「深度滚动后刷新，位置被
-          // 强制刷到最新」的根因。完整列表的正确处理是整表按时间重建再定位锚点。
-          rebuildBrowseList(items);
-          saveBrowseCache(items, true);
-          if (anchorTid) anchorTo(anchorTid, _pa ? _pa.offset : 0);
-          else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
-        } else if (openMode || preview) {
-          // 列表里已有内容（打开即秒开的缓存，或已有列表）：顶部并入最新推文，
-          // 但恢复上次查看位置（框架 feed 锚点，按 id 定位），不跳到顶部——
-          // 新推文在上方，用户停在原来的位置，上滑即见更新。
-          prependNewTweets(items, { toTop: false, anchorTid });
-          saveBrowseCache(items, true);
-        } else {
-          // 首次加载且无本地缓存：能恢复服务端锚点则定位回去，绝不无条件回顶部
-          // （回顶部会触发 scroll 事件把"顶部"当主控锚点写回服务端，污染真实位置）
-          saveBrowseCache(items, true);
-          if (anchorTid) {
-            prependNewTweets(items, { toTop: false, anchorTid });
-          } else if (!brUserScrolled) {
-            // 无锚点才回顶部；用户已经自己滚过就绝不动他的位置
-            holdBrRestoring(200);
-            viewBrowse.scrollTop = 0;
-          }
-        }
+        // ⚠️ 首屏绝不能只给「最新一天」：续读锚点可能在更早的某天，只加载最新一天会让
+        // 锚点卡不在列表里、anchorTo 定位失败 → 阅读位置被冲掉（表现为打开就跳到最新）。
+        // 因此从最新一天一路加载到「锚点所在天」，保证锚点卡一定在列表中。
+        const collected = (d.items || []).slice();
+        await loadDaysThrough(dayOfTweetId(anchorTid), collected);
+        // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
+        const items = mergeTweets(collected);
+        // 整表按时间重建再定位锚点：不能走 prepend——这批横跨新与旧，而 prepend 的
+        // 语义是「这一批全是新推文」，会把更旧的部分插到最新上面、时间顺序错乱，
+        // 且一次性插入大量卡片会把锚点定位冲掉（「刷新后位置被强制刷到最新」的根因）。
+        rebuildBrowseList(items);
+        saveBrowseCache(items, true);
+        if (anchorTid) anchorTo(anchorTid, _pa ? _pa.offset : 0);
+        else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
       } else {
