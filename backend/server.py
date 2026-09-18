@@ -25,7 +25,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Blueprint, request, g, jsonify, Response, stream_with_context
 import importlib.util as _ilu
@@ -1605,19 +1605,10 @@ def create_blueprint(host):
                 break
         if not items:
             return True, 0, 0, ''
-        # 合并进服务端唯一真相源（与 /timeline、前端共用同一份，跨设备一致）
-        norm = []
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            rec = dict(it)
-            tid = it.get('tweet_id')
-            rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
-            rec['order'] = _iso_order(it.get('created_at')) or it.get('created_at')
-            norm.append(rec)
+        # 按天写入各自的缓存单元（不再写「一整份清单」——详见 /timeline 上方说明）
         try:
-            _feed_fix_orders_once()
-            host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
+            _feed_migrate_from_state()
+            _feed_days_put(items)
         except Exception:
             pass
         media_n = 0
@@ -1871,60 +1862,229 @@ def create_blueprint(host):
         threading.Thread(target=_run_job, args=(job,), daemon=True).start()
         return jsonify({'success': True})
 
+    # ---------- 首页 feed：按天分桶（每天 = 一个独立 LRU 缓存单元）----------
+    # 为什么不再用「一整份清单 + 条数上限」：
+    #   整份清单是**一个**缓存单元，每次刷新都会重写它 → 它永远处于「刚被访问」
+    #   → LRU 永不淘汰 → 只能靠人为条数上限兜底；而上限既会截断历史，写错时还会
+    #   连新推文都挡在门外（封顶按插入序截，截掉的恰恰是最新追加的那些）。
+    #   改成每天一个单元后：当天会被反复更新（本就该新），历史天写完就再没人访问，
+    #   自然成为最久未访问者，被统一 LRU（字节预算 evict_oldest）清理。
+    #   因此这里**不再需要任何条数上限**，历史深度由缓存预算自然决定。
+    _FEED_DAY_KIND = 'list'
+    _FEED_DAY_NS = 'feed_day'
+    _FEED_INDEX_NS = 'feed_index'
+    _feed_migrated = [False]
+
+    def _item_dt(it):
+        """推文时间 → datetime（X 原串与 ISO 都认）。"""
+        ts = it.get('created_at') or it.get('timeline_at')
+        raw = ts.strip() if isinstance(ts, str) else ''
+        if not raw:
+            return None
+        try:
+            return datetime.strptime(raw, '%a %b %d %H:%M:%S %z %Y')
+        except Exception:
+            pass
+        try:
+            return datetime.fromisoformat(raw[:-1] + '+00:00' if raw.endswith('Z') else raw)
+        except Exception:
+            return None
+
+    def _item_ts(it):
+        d = _item_dt(it)
+        if d is None:
+            return 0.0
+        try:
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return d.timestamp()
+        except Exception:
+            return 0.0
+
+    def _day_of(it):
+        """推文属于哪一天。用**本地时区**，与前端 dayKeyOf() 的口径保持一致。"""
+        d = _item_dt(it)
+        if d is None:
+            return ''
+        try:
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            d = d.astimezone()
+        except Exception:
+            pass
+        return d.strftime('%Y-%m-%d')
+
+    def _feed_day_items(day):
+        """取某一天的条目。命中会刷新该单元的 LRU 访问时间（这正是「用过的天留下、没用过的天被淘汰」的依据）。"""
+        try:
+            payload, fetched_at, _age = _cache.get(_FEED_DAY_KIND, _FEED_DAY_NS, day)
+        except Exception:
+            return [], None
+        return (payload if isinstance(payload, list) else []), fetched_at
+
+    def _feed_day_counts():
+        try:
+            payload, _ts, _age = _cache.get(_FEED_DAY_KIND, _FEED_INDEX_NS, 'counts')
+        except Exception:
+            payload = None
+        return payload if isinstance(payload, dict) else {}
+
+    def _feed_days_put(items):
+        """把一批推文按天并入各自的缓存单元；返回 {day: 条数}。"""
+        buckets = {}
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            d = _day_of(it)
+            if not d:
+                continue
+            buckets.setdefault(d, []).append(it)
+        if not buckets:
+            return {}
+        counts = _feed_day_counts()
+        changed = {}
+        for day, arr in buckets.items():
+            cur, _ts = _feed_day_items(day)
+            by_id = {}
+            for r in (cur or []):
+                if isinstance(r, dict):
+                    rid = r.get('tweet_id') or r.get('id')
+                    if rid is not None:
+                        by_id[str(rid)] = r
+            for r in arr:
+                rid = r.get('tweet_id') or r.get('id')
+                if rid is not None:
+                    by_id[str(rid)] = r       # 同 id 用本次拉到的覆盖（内容可能更新）
+            merged = sorted(by_id.values(), key=_item_ts, reverse=True)
+            try:
+                _cache.put(_FEED_DAY_KIND, _FEED_DAY_NS, day, merged)
+            except Exception:
+                continue
+            counts[day] = len(merged)
+            changed[day] = len(merged)
+        if changed:
+            try:
+                _cache.put(_FEED_DAY_KIND, _FEED_INDEX_NS, 'counts', counts)
+            except Exception:
+                pass
+            _feed_days_reindex(counts)
+        return changed
+
+    def _feed_days_reindex(counts=None):
+        """重建天索引。目录来自缓存 key，条数来自 counts（两者都很小，不必读各天 payload）。"""
+        if counts is None:
+            counts = _feed_day_counts()
+        try:
+            rows = _cache.keys(_FEED_DAY_KIND, _FEED_DAY_NS)
+        except Exception:
+            return
+        days = [{'day': r.get('key'),
+                 'count': int(counts.get(r.get('key'), 0) or 0),
+                 'fetched_at': r.get('fetched_at')}
+                for r in (rows or []) if r.get('key')]
+        days.sort(key=lambda d: d['day'], reverse=True)
+        try:
+            _cache.put(_FEED_DAY_KIND, _FEED_INDEX_NS, 'days', {'days': days})
+        except Exception:
+            pass
+
+    def _feed_days_list():
+        try:
+            payload, _ts, _age = _cache.get(_FEED_DAY_KIND, _FEED_INDEX_NS, 'days')
+        except Exception:
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get('days'), list):
+            return payload['days']
+        _feed_days_reindex()
+        try:
+            payload, _ts, _age = _cache.get(_FEED_DAY_KIND, _FEED_INDEX_NS, 'days')
+        except Exception:
+            payload = None
+        return (payload or {}).get('days') or [] if isinstance(payload, dict) else []
+
+    def _feed_migrate_from_state():
+        """一次性把旧的整份 feed:main:items 拆成按天单元（不删旧数据，避免不可逆）。"""
+        if _feed_migrated[0]:
+            return
+        _feed_migrated[0] = True
+        try:
+            cur = host.state.get('feed:main:items')
+        except Exception:
+            return
+        if not isinstance(cur, list) or not cur:
+            return
+        try:
+            if _cache.keys(_FEED_DAY_KIND, _FEED_DAY_NS):
+                return          # 已有按天数据就不再覆盖
+        except Exception:
+            pass
+        _feed_days_put(cur)
+
+    @bp.route('/timeline/days', methods=['GET'])
+    @host.login_required
+    def timeline_days():
+        """首页按天分页的「天索引」：有哪些天、每天多少条、何时拉取的。"""
+        _feed_migrate_from_state()
+        return jsonify({'success': True, 'days': _feed_days_list()})
+
     @bp.route('/timeline', methods=['GET'])
     @host.login_required
     def timeline():
-        """拉取 X 关注中（Following）时间线——只含用户真实关注的人。
+        """首页关注流（Following），**按天分页**：一天一页。
 
-        （之前误用 For You / HomeTimeline，会混入大量推荐与广告，已改用
-        HomeLatestTimeline 关注流。）
+        · ?date=YYYY-MM-DD  取某一天：命中缓存直接返回，一个网络包都不发
+        · ?force=1          重新拉最新一页，结果按天入桶，返回本次条目
+        · ?cursor=...       向更旧翻（X 只能按游标顺序下翻），结果同样按天入桶
+        · 不带参数          返回最新一天的缓存（秒开），没有才回源
 
-        缓存优先：列表（关注流）按 (count, cursor) 缓存，未过期/非 force 时直接返回，
-        不重打 X（用户更新慢，已拉到的列表能看很久）。拉取结果仍并入服务端 host.state，
-        使任意设备打开看到的是合并后的同一份。
+        存储：每天是**一个独立缓存单元**（kind=list / ns=feed_day / key=日期），
+        不再有「一整份清单 + 条数上限」——详见上方按天分桶的说明。
         """
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False,
                             'message': '未配置 x.com 登录 Cookie'}), 400
+        _feed_migrate_from_state()
+        day = (request.args.get('date') or '').strip()
+
+        # ---- 取某一天：纯缓存读，不回源 ----
+        if day:
+            items, fetched_at = _feed_day_items(day)
+            return jsonify({'success': True, 'day': day, 'items': items,
+                            'count': len(items), 'fetched_at': fetched_at,
+                            'cached': True, 'stale': False})
+
         count = min(int(request.args.get('count', 20)), 50)
         cursor = request.args.get('cursor') or None
 
         def _fetch():
             items, next_cursor = xrun.list_following_timeline(cookie, count, cursor)
-            # 服务端为唯一真相源：拉取结果先并入服务端缓存（union_by_id 去重、封顶 1500）。
-            # 首次加载（无 cursor）时返回「服务端合并后的完整列表」，使任何设备打开
-            # 刷新看到的都是同一份。union_by_id 只认 { id, order, ... }，故映射领域字段。
-            norm = []
-            for it in (items or []):
-                if not isinstance(it, dict):
-                    continue
-                rec = dict(it)
-                tid = it.get('tweet_id')
-                rec['id'] = str(tid if tid is not None else (it.get('id') or ''))
-                rec['order'] = _iso_order(it.get('created_at')) or it.get('created_at')
-                norm.append(rec)
-            canonical = None
-            try:
-                _feed_fix_orders_once()
-                merged = host.state.put('feed:main:items', norm, strategy='union_by_id', cap=1500)
-                if isinstance(merged, dict) and isinstance(merged.get('value'), list):
-                    canonical = merged['value']
-                if next_cursor:
+            # 拉到的推文按 created_at 分桶，各自并入那一天的缓存单元
+            _feed_days_put(items or [])
+            if next_cursor:
+                try:
                     host.state.put('feed:main:cursor', next_cursor, strategy='max')
-            except Exception:
-                canonical = None   # 状态服务不可用时退化为只返回本次结果
-            return {'items': canonical if (canonical is not None and not cursor) else items,
-                    'next_cursor': next_cursor,
-                    'canonical': canonical is not None and not cursor}
+                except Exception:
+                    pass
+            return {'items': items or [], 'next_cursor': next_cursor}
 
+        # 首次进入（无 cursor、未强制刷新）：直接给最新一天的缓存，做到秒开且不重复打 X
+        if not cursor and not _force_arg():
+            days = _feed_days_list()
+            if days:
+                newest = days[0]['day']
+                items, fetched_at = _feed_day_items(newest)
+                return jsonify({'success': True, 'day': newest, 'items': items,
+                                'count': len(items), 'fetched_at': fetched_at,
+                                'cached': True, 'stale': False, 'days': days})
         try:
-            data, ts, cached, stale = _cached('list', 'timeline', {'count': count, 'cursor': cursor or ''}, _fetch)
+            data, ts, cached, stale = _cached('list', 'timeline',
+                                              {'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 关注流失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached,
-                        'fetched_at': ts, 'stale': stale,
+        return jsonify({'success': True, **data, 'days': _feed_days_list(),
+                        'cached': cached, 'fetched_at': ts, 'stale': stale,
                         'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/check', methods=['GET'])
