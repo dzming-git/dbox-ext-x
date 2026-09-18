@@ -471,6 +471,30 @@ def create_blueprint(host):
 
     _MEDIA_DL_TRIES = 3          # 单次代理抖动（ERRNO2 / 10053）很常见，允许重试
 
+    # 下载完成/失败事件：用来替代「每 0.1s 轮询文件是否出现」的忙等。
+    #
+    # 轮询的问题不只是空转：唤醒粒度固定 100ms（最多白等 100ms 才响应下载完成），
+    # 且一屏十几张图同时等待时，每秒上百次无谓的 exists/getsize 与锁竞争。
+    # 改成事件后，下载线程一结束（改名登记成功，或重试耗尽最终失败）立刻唤醒
+    # 等待方；等待方仍保留一个较长的兜底间隔复查文件，防止事件因故丢失时卡死
+    # （退化为「慢速轮询」，不会比改造前更差）。
+    _media_done_events = {}
+    _media_done_lock = threading.Lock()
+
+    def _media_event(url):
+        with _media_done_lock:
+            ev = _media_done_events.get(url)
+            if ev is None:
+                ev = threading.Event()
+                _media_done_events[url] = ev
+            # 条目无限增长会拖慢查表：超量时整体清空。事件丢失的后果仅是
+            # 等待方多等一个兜底周期（等价于回到轮询），安全。
+            if len(_media_done_events) > 2000:
+                _media_done_events.clear()
+                ev = threading.Event()
+                _media_done_events[url] = ev
+            return ev
+
     def _start_media_download(url, tmp_path, ext):
         """后台把上游 twimg 读到 .part，完成后登记 LRU 缓存；同一 url 并发只跑一个线程。
 
@@ -482,6 +506,11 @@ def create_blueprint(host):
                 return
             _media_dl_active.add(url)
             _media_dl_err.pop(url, None)
+        # 新一轮下载：清掉上一轮遗留的完成信号，避免本次等待被旧信号立刻唤醒
+        try:
+            _media_event(url).clear()
+        except Exception:
+            pass
         def run():
             last_err = None
             try:
@@ -595,6 +624,11 @@ def create_blueprint(host):
                 with _media_dl_lock:
                     _media_dl_active.discard(url)
                     _media_declared_size.pop(url, None)   # 下载已结束，总长不再需要
+                # 唤醒所有等待方：无论成功（已改名登记）还是最终失败，都不必再等
+                try:
+                    _media_event(url).set()
+                except Exception:
+                    pass
         threading.Thread(target=run, daemon=True).start()
 
     def _serve_media_partial(tmp_path, ct, req, url, ext):
@@ -3003,6 +3037,7 @@ def create_blueprint(host):
             #  文件根本播不了，只能指望等满后拿到完整文件。现在降级路径会带上
             #  上游声明的真实总长（_media_declared_size），边下边播是有效的，
             #  因此没必要再让用户干等。下载线程仍在后台跑，完成后照常登记缓存。）
+            _ev = _media_event(url)
             while (time.time() - _mt0) < _COMPLETE_GRACE_SEC:
                 with _media_dl_lock:
                     _dl_failed = url in _media_dl_err
@@ -3016,7 +3051,12 @@ def create_blueprint(host):
                         return resp
                     except Exception:
                         break
-                time.sleep(0.1)
+                # 事件驱动：下载一结束立刻被唤醒，不再 0.1s 忙等。
+                # 仍按较长间隔复查一次，防止事件因故丢失时卡死。
+                _left = _COMPLETE_GRACE_SEC - (time.time() - _mt0)
+                if _left <= 0:
+                    break
+                _ev.wait(min(_left, 0.5))
             return _serve_media_partial(tmp_path, ct, request, url, ext)
         if ext == '.m3u8':
             # HLS 清单必须整份下完再返回，且要把片源地址改写成走本代理（见 _rewrite_m3u8）：
@@ -3025,6 +3065,7 @@ def create_blueprint(host):
             # 带 cookie 拉取并落盘，看过的视频二次秒开、首播也走服务端代理更稳。
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             _mt0 = time.time()
+            _ev = _media_event(url)
             while (time.time() - _mt0) < _M3U8_WAIT_SEC:
                 with _media_dl_lock:
                     _dl_failed = url in _media_dl_err
@@ -3041,7 +3082,10 @@ def create_blueprint(host):
                         return resp
                     except Exception:
                         break
-                time.sleep(0.1)
+                _left = _M3U8_WAIT_SEC - (time.time() - _mt0)
+                if _left <= 0:
+                    break
+                _ev.wait(min(_left, 0.5))
             # 超时/已失败：回落到既有的边下边播路径，保留原有降级行为
             return _serve_media_partial(tmp_path, ct, request, url, ext)
 
@@ -3053,6 +3097,7 @@ def create_blueprint(host):
         # 既无法触发 onerror 重试也让用户以为是坏了。
         _final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
         _t0 = time.time()
+        _ev = _media_event(url)
         while (time.time() - _t0) < 8.0:
             with _media_dl_lock:
                 _failed = url in _media_dl_err
@@ -3072,7 +3117,11 @@ def create_blueprint(host):
                     break
             except OSError:
                 pass
-            time.sleep(0.1)
+            # 事件驱动：下载结束即唤醒；未结束则按较短间隔复查是否已有字节可读
+            _left = 8.0 - (time.time() - _t0)
+            if _left <= 0:
+                break
+            _ev.wait(min(_left, 0.2))
         return _serve_media_partial(tmp_path, ct, request, url, ext)
 
     @bp.route('/media/cache', methods=['GET'])
