@@ -5039,14 +5039,13 @@
     // 只清内容不清成员的话，这些 id 会一直占着位置，随后 prependNewTweets 又会
     // 用残缺对象兜底把它们渲染成 @unknown 空壳，脏数据永远去不干净。
     try {
-      if (XFEED) {
-        const alive = new Set(clean.map((x) => String(x.tweet_id || x.id)));
-        const mem = (XFEED.items() || []).filter((m) => alive.has(String(m.tweet_id || m.id)));
-        if (mem.length !== (XFEED.items() || []).length) {
-          XSTATE.set(XFEED.keys.items, mem, { strategy: 'lww' });
-          XFEED.merge(mem);
-        }
-      }
+      // 只清本地成员镜像里的孤儿。feed 已由服务端按天存，前端不再维护「一整份清单」
+      // ——那一整份正是被弃用的模型：一个缓存单元、每次刷新都被重写 → 永远最新 →
+      // LRU 永不淘汰 → 只能靠人为条数上限兜底。这里若再 XFEED.merge 就等于把它写回去。
+      const alive = new Set(clean.map((x) => String(x.tweet_id || x.id)));
+      const mem = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || [];
+      const keep = mem.filter((m) => alive.has(String(m.tweet_id || m.id)));
+      if (keep.length !== mem.length) localStorage.setItem(BR_MIRROR_KEY, JSON.stringify(keep));
     } catch (_) {}
     return Promise.resolve(dirty);
   }
@@ -5069,9 +5068,17 @@
   // 用于预览阶段算「锚点所在天」——内容缓存（XTWEETS）可能因 @unknown 壳条目被清洗而取不到，
   // 但成员记录仍在，可据此展开到正确天数让卡片被渲染、restore 能定位（避免刷新先闪到顶部）。
   function feedItemById(id) {
-    if (!XFEED || id == null) return null;
+    if (id == null) return null;
     const sid = String(id);
-    return (XFEED.items() || []).find((x) => String(x.tweet_id || x.id) === sid) || null;
+    if (XFEED) {
+      const m = (XFEED.items() || []).find((x) => String(x.tweet_id || x.id) === sid);
+      if (m) return m;
+    }
+    // 回退本地成员镜像（feed 已改为服务端按天存，前端只留这份小镜像）
+    try {
+      const mem = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || [];
+      return mem.find((x) => String(x.tweet_id || x.id) === sid) || null;
+    } catch (_) { return null; }
   }
   // 详情页补全后回写：直接覆盖该推文的内容（正文/媒体）+ 评论分页 + 游标，确保
   // 「详情拉到的全文」压过列表里的截断版——union_by_id 按 created_at 同序时不会覆盖，
@@ -5105,14 +5112,34 @@
     return out;
   }
 
+  // 本地镜像：只留最近若干条「成员」用于「打开即秒开」，**不再复制整份清单**。
+  // 整份清单正是被弃用的模型：它作为一个缓存单元每次刷新都被重写 → 永远最新 →
+  // LRU 永不淘汰 → 只能靠人为条数上限兜底。现在服务端按天存，前端只需这份小镜像。
+  const BR_MIRROR_KEY = 'x_browse_mirror_v1';
+  const BR_MIRROR_MAX = 80;
+  function saveBrowseMirror(items, append) {
+    try {
+      let cur = [];
+      if (append) { try { cur = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || []; } catch (_) { cur = []; } }
+      const add = (items || []).filter(_browseValid)
+        .map((it) => ({ tweet_id: String(it.tweet_id || it.id), created_at: it.created_at }));
+      const seen = new Set();
+      const out = [];
+      add.concat(cur).forEach((m) => {
+        const k = String(m.tweet_id || '');
+        if (!k || seen.has(k)) return;
+        seen.add(k); out.push(m);
+      });
+      out.sort((a, b) => (Date.parse(b.created_at || '') || 0) - (Date.parse(a.created_at || '') || 0));
+      localStorage.setItem(BR_MIRROR_KEY, JSON.stringify(out.slice(0, BR_MIRROR_MAX)));
+    } catch (_) {}
+  }
   function saveBrowseCache(items, append) {
     try {
-      // 内容只登记进全局单缓存 XTWEETS；本 feed 只保留成员 id + 位置（不重复存内容）
+      // 内容只登记进全局单缓存 XTWEETS（一处内容，所有视图共享，不重复存）
       tweetCachePut(items);
-      if (XFEED) {
-        XFEED.merge(toMembership(items || []), !!append);
-        if (brCursor) XFEED.setCursor(brCursor);
-      }
+      // 不再写 XFEED（feed:main:items）：feed 已由服务端按天存
+      saveBrowseMirror(items, append);
     } catch (_) {}
   }
   // 把补全后的推文回流到全局单缓存 XTWEETS（所有视图与详情共享同一份，写回即全员一致）。
@@ -5122,8 +5149,9 @@
   }
   function renderCachedBrowse() {
     try {
-      // 本 feed 只存成员 id；内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
-      const ids = XFEED ? XFEED.items() : [];
+      // 只存成员镜像；内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
+      let ids = [];
+      try { ids = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || []; } catch (_) { ids = []; }
       if (!ids.length) return false;
       // 缺内容的成员不能丢：实测 members=544 中仅 427 条有内容，丢掉另外 117 条会让
       // 行模型不完整、锚点排名偏小（1 而非 12）→ 首次定位偏上，网络补齐后猛跳约 3900px。
@@ -5143,7 +5171,7 @@
       }
       if (!list.length) return false;
       rebuildBrowseList(list);
-      brCursor = (XFEED && XFEED.cursor()) || null;
+      brCursor = null;
       brLoadmore.style.display = 'none';
       return true;
     } catch (_) { return false; }
@@ -6118,6 +6146,9 @@
         else showBrowseStatus('刷新失败: ' + (d.message || '未知错误'), 'err');
         return;
       }
+      // 刷新后服务端可能多出「今天」之外的天，同步天索引与已加载集合
+      if (d && Array.isArray(d.days) && d.days.length) brDayIndex = d.days;
+      if (d && d.day) brLoadedDays.add(d.day);
       // 显式下拉刷新：直接重拉（force=1），并记下缓存时间展示「缓存于 X前」
       brCacheMeta = { fetched_at: d.fetched_at, cached: d.cached, stale: d.stale };
       showCacheBadge('#view-browse', brCacheMeta);
@@ -6170,6 +6201,52 @@
     }
   }
 
+  // ---- 按天分页：服务端已把 feed 拆成「一天一个缓存单元」----
+  // 旧模型是「一整份清单」：每次刷新都重写它 → 它永远是刚被访问的 → LRU 永不淘汰，
+  // 只能靠人为条数上限兜底（上限还会截断历史）。按天取之后：滑到底＝加载「上一天」，
+  // 老的天没人再访问，自然被 LRU 清理 —— 因此不再需要任何条数上限。
+  let brDayIndex = [];            // 服务端天索引 [{day, count}]，由新到旧
+  let brLoadedDays = new Set();   // 本次会话已加载进列表的天
+
+  async function fetchDayIndex() {
+    try {
+      const r = await req(`${API}/timeline/days`);
+      const d = await r.json();
+      if (d && d.success && Array.isArray(d.days)) brDayIndex = d.days;
+    } catch (_) {}
+    return brDayIndex;
+  }
+
+  // 取某一天：命中服务端该天的缓存单元即返回，不会去打 X
+  async function fetchDay(day) {
+    const r = await req(`${API}/timeline?date=${encodeURIComponent(day)}`);
+    const d = await r.json();
+    if (!d || !d.success) return [];
+    return d.items || [];
+  }
+
+  // 下一个还没加载的更旧的一天（天索引由新到旧）
+  function nextOlderDay() {
+    for (const e of brDayIndex) {
+      if (e && e.day && !brLoadedDays.has(e.day)) return e.day;
+    }
+    return null;
+  }
+
+  // 加载某一天并追加到列表尾部（更旧的一天）
+  async function loadDayAppend(day) {
+    const items = await fetchDay(day);
+    brLoadedDays.add(day);
+    const merged = mergeTweets(items || []);
+    tweetCachePut(merged);
+    const existIds = new Set(_browseItems.map((it) => String(it.tweet_id || it.id)));
+    const neu = merged.filter(_browseValid).filter((it) => !existIds.has(String(it.tweet_id || it.id)));
+    if (!neu.length) return 0;
+    _browseItems = _browseItems.concat(neu.map((it) => tweetCacheGet(String(it.tweet_id || it.id)) || it));
+    refreshDayModel();
+    return neu.length;
+  }
+
   async function loadBrowse(reset = true) {
     if (brLoading) return;
     brLoading = true;
@@ -6210,9 +6287,13 @@
     }
     try {
       if (reset) {
+        // 按天分页：先取天索引；随后 /timeline 不带参数会直接给「最新一天」的缓存
+        await fetchDayIndex();
         const url = `${API}/timeline?count=50${brCursor ? `&cursor=${encodeURIComponent(brCursor)}` : ''}`;
         const r = await req(url);
         const d = await r.json();
+        if (d && Array.isArray(d.days) && d.days.length) brDayIndex = d.days;
+        if (d && d.day) brLoadedDays.add(d.day);
         // 关注流首次/重置加载：记下缓存时间，展示「缓存于 X前」（未过期则来自缓存，不重打 X）
         brCacheMeta = { fetched_at: d.fetched_at, cached: d.cached, stale: d.stale };
         showCacheBadge('#view-browse', brCacheMeta);
@@ -6262,9 +6343,11 @@
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
       } else {
-        // 上拉加载更旧：X 关注流游标会返回大量重叠内容，单次只多出 2-3 条。
-        // 一次上拉连续翻多页，攒够一批真正新的推文再结束，做到「等一次、看很多」。
-        await loadOlderBatch();
+        // 上拉加载更旧：优先「加载上一天」（服务端按天缓存，命中即返回，不去打 X）；
+        // 天索引用尽才回退到 X 游标翻页继续向更旧爬（爬到的同样会按天入桶）。
+        const nd = nextOlderDay();
+        if (nd) await loadDayAppend(nd);
+        else await loadOlderBatch();
       }
     } catch (e) {
       if (reset && !brList.querySelector('.bm-card'))
@@ -6298,6 +6381,8 @@
       const r = await req(url);
       const d = await r.json();
       if (!d.success) break;
+      // 游标翻页可能爬出新的天（服务端已按天入桶），同步天索引
+      if (d && Array.isArray(d.days) && d.days.length) brDayIndex = d.days;
       const items = mergeTweets(d.items || []);
       if (!items.length) { brCursor = null; break; }
       allItems = allItems.concat(items);
@@ -7975,6 +8060,11 @@
         onBrowseScrollUI();
         renderWindow();   // 二期 A：回收离屏行 / 挂载进入缓冲的行
         preloadMediaNear(); // 媒体预加载：提前拉取视口前后更宽范围的图片到缓存，减少白框
+        // 按天分页：滑到底优先「加载上一天」（服务端按天缓存，命中即返回，不去打 X）
+        if (!brLoading) {
+          const nearDay = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 300;
+          if (nearDay && nextOlderDay()) { loadBrowse(false); return; }
+        }
         // 按天分块：滑到底且还有「更早的一天」未展开 → 自动并进来（纯滚动触发，无需手动点击展开）
         if (_allDays.some((d) => !_revealDays.includes(d))) {
           const nearB = brScroll.scrollTop + brScroll.clientHeight >= brScroll.scrollHeight - 300;

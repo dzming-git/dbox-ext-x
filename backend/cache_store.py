@@ -246,6 +246,23 @@ class CacheStore(object):
                 'db_bytes': size, 'path': self._path,
                 'budget_bytes': budget_bytes}
 
+    def keys(self, kind, ns):
+        """列出某命名空间下的全部 key（供「天索引」这类目录查询，不读 payload）。
+
+        按天分桶后，「有哪些天」就是缓存目录本身，无需另存一份清单；且这里只查
+        索引列、不反序列化 payload，列出上百天也只是一次轻量查询。
+        """
+        with self._lock:
+            conn = self._conn()
+            try:
+                rows = conn.execute(
+                    'SELECT key, fetched_at, last_access FROM cache '
+                    'WHERE kind=? AND ns=?', (kind, ns)).fetchall()
+            finally:
+                conn.close()
+        return [{'key': r[0], 'fetched_at': r[1], 'last_access': r[2]}
+                for r in (rows or [])]
+
 
 def serve_cached(store, kind, ns, params, fetch_fn, force=False):
     """统一的「缓存优先」取数。返回 (payload, fetched_at, from_cache, stale)。
