@@ -1410,6 +1410,11 @@ def create_blueprint(host):
         'likes_enabled': False,
         'likes_interval_min': 720,
         'likes_pages': 2,
+        # ---- 订阅轮询（dbox 级订阅 → 新内容提醒）----
+        # 只读 dbox 订阅表（source_type='x'），绝不读取 X 关注列表；
+        # 默认开启、间隔 30 分钟，由用户在设置页调整。
+        'subscribe_enabled': True,
+        'subscribe_interval_min': 30,
         # ---- 界面（前端展示偏好，随账号跨设备同步）----
         'ui_arc_side': 'right',   # 首页日期罗盘（圆弧时间轴）停靠侧：right|left
     }
@@ -1421,7 +1426,7 @@ def create_blueprint(host):
                 'last_ok': False, 'last_error': '', 'last_count': 0,
                 'last_extra': '', 'runs': 0}
 
-    _JOB_NAMES = ('home', 'bookmarks', 'likes')
+    _JOB_NAMES = ('home', 'bookmarks', 'likes', 'subscribe')
     _job_state = {n: _new_job_state() for n in _JOB_NAMES}
     _job_last = {n: 0.0 for n in _JOB_NAMES}     # 各任务上次成功排程时间
 
@@ -1480,6 +1485,8 @@ def create_blueprint(host):
         c['bookmarks_pages'] = max(1, min(int(c['bookmarks_pages']), 10))
         c['likes_interval_min'] = max(30, min(int(c['likes_interval_min']), 10080))
         c['likes_pages'] = max(1, min(int(c['likes_pages']), 10))
+        c['subscribe_interval_min'] = max(5, min(int(c['subscribe_interval_min']), 1440))
+        c['subscribe_enabled'] = bool(c['subscribe_enabled'])
         for k in ('home_enabled', 'home_prefetch_media',
                   'bookmarks_enabled', 'likes_enabled'):
             c[k] = bool(c[k])
@@ -1781,6 +1788,121 @@ def create_blueprint(host):
             pass
         return True, n, ''
 
+    def _sub_state_path():
+        return os.path.join(host.data_dir, 'subscription_state.json')
+
+    def _sub_state_load():
+        try:
+            with open(_sub_state_path(), 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {'last': {}}
+
+    def _sub_state_save(state):
+        try:
+            with open(_sub_state_path(), 'w', encoding='utf-8') as f:
+                json.dump(state, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def _notify_subscription_post(handle, it):
+        """把一条订阅来源的新推文转成富通知（图 + 摘要 + 跳转）。
+
+        展示内容完全由本插件提供，核心通知中心只做通用渲染。
+        """
+        handle = (handle or '').lstrip('@')
+        tid = str(it.get('tweet_id') or it.get('id') or '')
+        if not tid:
+            return
+        text = (it.get('text') or it.get('full_text') or it.get('content') or '').strip()
+        img = ''
+        for m in (it.get('media') or []):
+            if not isinstance(m, dict):
+                continue
+            if m.get('thumbnail'):
+                img = m['thumbnail']; break
+            if m.get('url'):
+                img = m['url']; break
+        url = 'https://x.com/%s/status/%s' % (handle, tid)
+        host.notify_user(
+            title='@%s 发布了新内容' % handle,
+            body=(text[:120] if text else '新动态'),
+            source='x',
+            category='subscription',
+            payload={
+                'image': img,
+                'url': url,
+                'summary': (text[:200] if text else ''),
+                'target': 'external',
+                'extra': {'handle': handle, 'tweet_id': tid},
+            },
+        )
+
+    def _job_subscribe(cfg):
+        """订阅轮询：只读 dbox 订阅表（source_type='x'），绝不读取 X 关注列表。
+
+        逐个订阅 handle 拉时间线，对比本地记录的最后已见推文 id，
+        对新增推文以富通知提醒用户（图片 + 摘要 + 跳转）。
+        """
+        cookie = _x_cookie_header()
+        if not cookie:
+            return False, 0, '未配置 x.com 登录 Cookie'
+        subs_res = host.get_subscriptions('x')
+        if isinstance(subs_res, dict):
+            subs = subs_res.get('items') or []
+        elif isinstance(subs_res, list):
+            subs = subs_res
+        else:
+            subs = []
+        subs = [s for s in subs if isinstance(s, dict) and s.get('enabled', True)]
+        if not subs:
+            return True, 0, '无启用订阅'
+        state = _sub_state_load()
+        last = state.setdefault('last', {})
+        handled = 0
+        for s in subs:
+            handle = (s.get('source_id') or '').strip().lstrip('@')
+            sid = s.get('id')
+            if not handle:
+                continue
+            try:
+                _home = xrun.build_headers(cookie, with_bearer=False)
+
+                def _txid(method, path):
+                    return get_transaction_id(_home, method, path, ua=xrun.UA)
+
+                items, _, profile = xrun.user_tweets(cookie, handle, 20, None,
+                                                     txid_func=_txid)
+            except Exception as e:
+                try:
+                    host.update_subscription(sid, error=str(e)[:200])
+                except Exception:
+                    pass
+                continue
+            prev = last.get(handle, '')
+            new_items = []
+            for it in (items or []):
+                tid = str(it.get('tweet_id') or it.get('id') or '')
+                if not tid:
+                    continue
+                if prev and tid == prev:
+                    break  # 列表最新在前；遇到上次已见即停止
+                new_items.append(it)
+            if new_items:
+                for it in reversed(new_items):
+                    _notify_subscription_post(handle, it)
+                newest = str((new_items[0] or {}).get('tweet_id')
+                              or (new_items[0] or {}).get('id') or '')
+                if newest:
+                    last[handle] = newest
+                    handled += len(new_items)
+            try:
+                host.update_subscription(sid, last_checked_at=time.time(), error=None)
+            except Exception:
+                pass
+        _sub_state_save(state)
+        return True, handled, ''
+
     def _run_job(name, cfg=None):
         """跑一个后台任务并记账。返回是否成功。"""
         st = _job_state[name]
@@ -1800,6 +1922,10 @@ def create_blueprint(host):
                     extra = '媒体 %d' % media
             elif name == 'bookmarks':
                 ok, count, err = _job_bookmarks(cfg)
+            elif name == 'likes':
+                ok, count, err = _job_likes(cfg)
+            elif name == 'subscribe':
+                ok, count, err = _job_subscribe(cfg)
             else:
                 ok, count, err = _job_likes(cfg)
         except Exception as e:
