@@ -1932,7 +1932,10 @@ def create_blueprint(host):
                     except Exception as _e:
                         host.logger.error('缓存订阅内容失败: %s', _e)
                     for p in posts:
-                        _notify_subscription_post(p)
+                        try:
+                            _notify_subscription_post(p)
+                        except Exception as _e:
+                            host.logger.error('订阅通知失败: %s', _e)
                     newest = str(posts[0].get('post_id') or '')
                     if newest:
                         last[handle] = newest
