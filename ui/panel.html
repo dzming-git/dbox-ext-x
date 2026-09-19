@@ -6358,9 +6358,10 @@
     let syncP = null;
     if (reset) {
       brUserScrolled = false;
-      // 进入「整表重置加载期」：冻结本面板的锚点写入，并暂停框架的「滚动即自动采集锚点」。
-      // 占位列表里的位置没有意义，绝不能被写成本机或服务端的阅读进度（见 brResetLoading 注释）。
-      brResetLoading = true;
+      // 进入「整表重置加载期」：暂停框架的「滚动即自动采集锚点」（见 brResetLoading 注释）。
+      // 本面板锚点写入是否冻结取决于是否有「可秒开的本地预览」：纯骨架（无预览）需全程冻结，
+      // 因为骨架里的位置无意义、不能写成本机/服务端阅读进度；有预览时预览已是真实内容，
+      // 加载期用户滚动应被记录，否则「刷新后滑一下」的新位置会丢（brResetLoading 在下方按 preview 设定）。
       try { if (XFEED && XFEED.suspendAutoAnchor) XFEED.suspendAutoAnchor(true); } catch (_) {}
       // 刷新/首次加载进入「等待定位」阶段：此后数秒内图片加载撑开布局引发的 scroll
       // 一律不算用户操作，否则定位会被放弃、视图停在顶部（最新）。
@@ -6372,6 +6373,9 @@
       syncP = acquireMaster();
       setBrBottom('hidden');
       preview = renderCachedBrowse();
+      // 有预览＝本地缓存命中、已是真实内容：加载期允许用户滚动并记录新位置，不冻结；
+      // 无预览＝纯骨架：全程冻结，避免骨架顶部被写成阅读进度（原始「跳最新」根因）。
+      brResetLoading = !preview;
 
       brCursor = null;
       // 注意：这里绝不能再 scrollTop=0。强制回顶部会触发 scroll 事件把 brUserScrolled
@@ -6457,6 +6461,8 @@
         // 整表按时间重建再定位锚点：不能走 prepend——这批横跨新与旧，而 prepend 的
         // 语义是「这一批全是新推文」，会把更旧的部分插到最新上面、时间顺序错乱，
         // 且一次性插入大量卡片会把锚点定位冲掉（「刷新后位置被强制刷到最新」的根因）。
+        // 重建期间再次冻结锚点写入：此刻列表正在被整表替换，位置是中间态，不应记录。
+        brResetLoading = true;
         rebuildBrowseList(items);
         // rebuildBrowseList 已用 restoreScrollAnchor 把锚点钉在「缓存时看到的同一像素位置 P」
         // （buildScrollAnchorRef 现已改为测真实像素，而非把 0.7 当像素弹到视口顶部）。
@@ -8184,10 +8190,16 @@
     let _lastAnchorSaveAt = 0;   // 滚动中本机锚点落盘节流（见下方 scroll 处理）
     brScroll.addEventListener('scroll', () => {
       if (brRestoring) return;          // 重定位（恢复锚点）引发的程序化滚动：不当作用户操作、不保存
-      // 等待定位阶段：布局抖动（图片逐张撑开卡片）触发的 scroll 并非用户操作，
-      // 据其判定「用户已滚动」会让定位被放弃、视图停在顶部（最新）。
-      // 真实输入另有 wheel / touch / keydown 通道直接接管，不受此处屏蔽影响。
-      if (brAwaitingRestore) return;
+      if (brResetLoading) return;       // 占位/骨架 或整表重建期：冻结（不记录、不接管）
+      // 等待定位阶段（brAwaitingRestore）：布局抖动触发的滚动只应「记录位置、不接管」，
+      // 否则抖动会被误判为「用户已滚动」而放弃定位、停在顶部；记录的正好是锚点位置，无害。
+      // 真实用户输入已由 wheel/touch/keydown 通道 markUserScrolled() 接管并把 brAwaitingRestore 置否。
+      if (brAwaitingRestore && !brUserScrolled) {
+        const _n2 = Date.now();
+        if (_n2 - _lastAnchorSaveAt >= 250) { _lastAnchorSaveAt = _n2; saveLocalAnchor(); }
+        scheduleSavePos();
+        return;
+      }
       markUserScrolled();
       // 落盘节流：原先**每个** scroll 事件都同步写一次 localStorage（实测约 0.9ms/次，
       // 60Hz 下独占约 6% 帧预算，且同步刷盘本身会带来抖动尖峰——这正是「滑动不顺滑」的
@@ -8195,13 +8207,8 @@
       // scheduleSavePos（200ms 防抖）会补写，pagehide 的 flushNow 也兜底，
       // 所以「滑一下就刷新」仍不会丢位置。
       const _nowMs = Date.now();
-      // 整表重置加载期（列表还是占位/骨架）：只冻结锚点写入，其余滚动 UI 照常。
-      // 此时真实输入已把 brAwaitingRestore 结束，这条是最后一道保险——否则占位列表的
-      // 顶部会被写成阅读进度，锚点被就地覆盖成最新那条（见 brResetLoading 注释）。
-      if (!brResetLoading) {
-        if (_nowMs - _lastAnchorSaveAt >= 250) { _lastAnchorSaveAt = _nowMs; saveLocalAnchor(); }
-        scheduleSavePos();
-      }
+      if (_nowMs - _lastAnchorSaveAt >= 250) { _lastAnchorSaveAt = _nowMs; saveLocalAnchor(); }
+      scheduleSavePos();
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
         brScrollTimer = null;
