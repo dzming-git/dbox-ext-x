@@ -1650,6 +1650,14 @@ def create_blueprint(host):
         try:
             _feed_migrate_from_state()
             _feed_days_put(items)
+            # 持久化「向更旧翻页」的游标：后台多页抓取最后一页的 next_cursor 指向
+            # 比已抓取内容更旧的位置。前端首屏加载后靠它续拉更早的天（如昨天）；
+            # 否则前端 brCursor 为 null，滑到底既拉不到也不展开，卡在今天的最后一条。
+            if cursor:
+                try:
+                    host.state.put('feed:main:cursor', cursor, strategy='max')
+                except Exception:
+                    pass
         except Exception:
             pass
         media_n = 0
@@ -2278,9 +2286,18 @@ def create_blueprint(host):
             if days:
                 newest = days[0]['day']
                 items, fetched_at = _feed_day_items(newest)
+                # 回流「向更旧翻页」的游标（由后台抓取时持久化到 feed:main:cursor）。
+                # 前端首屏拿到它才能续拉昨天等更早内容；否则 brCursor 为 null，
+                # 滑到底无法触发游标翻页，卡在今天的最后一条。
+                next_cursor = None
+                try:
+                    next_cursor = host.state.get('feed:main:cursor')
+                except Exception:
+                    pass
                 return jsonify({'success': True, 'day': newest, 'items': items,
                                 'count': len(items), 'fetched_at': fetched_at,
-                                'cached': True, 'stale': False, 'days': days})
+                                'cached': True, 'stale': False, 'days': days,
+                                'next_cursor': next_cursor})
         try:
             data, ts, cached, stale = _cached('list', 'timeline',
                                               {'count': count, 'cursor': cursor or ''}, _fetch)

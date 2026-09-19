@@ -6510,6 +6510,15 @@
       else if (brList.querySelector('.bm-empty.err')) setBrBottom('hidden');
       else if (!brCursor) setBrBottom('end');
       else setBrBottom('hidden');
+      // 上拉加载更旧后：若已贴底且仍有「未展开的天」（刚按天从服务端拉到的更旧一天，
+      // 如昨天），自动展开最新拉到的那天，让更旧内容立刻可见，无需用户再滑一次。
+      // 修复：之前因 brCursor 为 null，滑到底既不拉取也不展开，卡在今天的最后一条。
+      if (isOlder && viewBrowse) {
+        if (_allDays.some((d) => !_revealDays.includes(d))) {
+          const _nb = viewBrowse.scrollTop + viewBrowse.clientHeight >= viewBrowse.scrollHeight - 400;
+          if (_nb) { revealNextDay(); renderWindow(); }
+        }
+      }
       // 加载完成后若仍在底部（或内容不足一屏），继续拉下一页，
       // 与滚动监听形成双保险，避免「加载中触发的那次被防抖吃掉」导致停住不加载。
       setTimeout(brAutoFill, 200);
