@@ -527,6 +527,10 @@
   .bm-card .media.m1 .bm-media {
     display: flex; align-items: center; justify-content: center;
     max-height: 70vh; background: #f3f5f7; border-radius: 10px; overflow: hidden;
+    /* 加载前按固定比例预留高度：X API 不返回图片尺寸，lazy 图未加载时塌成 0，
+       导致折叠态锚点位置错乱（刷新后先顶部再跳锚点）。固定 aspect-ratio 让占位/
+       虚拟化高度与真实渲染一致，锚点数学不变、一次定位准、内容立即可见。 */
+    aspect-ratio: 16 / 10;
   }
   /* 视频安全网：即使封面未加载 / 尺寸缺失，也保证最小可见高度（防塌成一行） */
   .bm-card .media.m1 .bm-media[data-type="video"] { min-height: 120px; }
@@ -626,6 +630,7 @@
   /* 下拉刷新指示器：贴在滚动容器顶部内侧，默认隐藏在内容上沿之上；
      下拉时资源整体向下平移，指示器同步在露出的空隙里出现，与资源一起往下走 */
   #view-browse, #view-search { position: relative; }
+
   .ptr-indicator {
     position: absolute; top: 12px; left: 0; right: 0; height: 48px;
     display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -4392,7 +4397,8 @@
       cont.scrollTop = Math.max(0, yTop - 80);
       renderWindow();
     }
-    return !!brList.querySelector(`.bm-card[data-tid="${CSS.escape(tid)}"]`);
+    const _emFound = !!brList.querySelector(`.bm-card[data-tid="${CSS.escape(tid)}"]`);
+    return _emFound;
   }
   // 用占位重建整个列表 DOM（离屏占满高度，真实卡由 renderWindow 挂窗口），避免一次创建上千张卡
   function renderRowsDOM() {
@@ -5261,6 +5267,9 @@
     // 保存会把「偏移后的位置」当成用户进度写回锚点 → 每次刷新偏一点，
     // 累积即漂移（表现：反复刷新几次后位置跑到旁边的推文）。
     if (brRestoring) return;
+    // 整表重置加载期（列表还是占位/骨架）绝不保存：此刻的位置来自占位列表，不是用户进度。
+    // 一旦写回，锚点就被污染成骨架顶部那条，重建与恢复定位会全按它走 → 停在最新、丢位置。
+    if (brResetLoading) return;
     const cont = viewBrowse;
     if (!cont || getComputedStyle(cont).display === 'none') return;
     XFEED.saveAnchor();
@@ -5352,6 +5361,15 @@
   // 本标志覆盖「整段等待定位期」，只屏蔽 scroll 事件这条不可靠的判定通道；
   // 真实输入（滚轮 / 触摸 / 键盘）仍走各自的监听直接接管，不受影响。
   let brAwaitingRestore = false;
+  // 「整表重置加载中」标志：从 loadBrowse(reset) 开始渲染缓存/占位，到网络返回、整表重建
+  // 并按锚点定位落地为止。窗口内列表内容还只是占位（成员记录无正文 → 骨架卡），行高与
+  // 真实内容完全不是一回事。此窗口必须**冻结一切锚点写入**：用户看到画面像卡住、随手滑
+  // 一下很常见，而这一滑会被当成阅读进度，把「骨架列表顶部那条」写进本机与服务端锚点，
+  // 随后的重建 / restoreScrollAnchor 全按这个被污染的值定位 —— 表现为「刷新后滑动一下
+  // 就直接跳到最新、上次阅读位置彻底丢失」。
+  // 注意 brRestoring 只覆盖前 2.5s（BR_RESTORE_MAX_MS），而占位渲染到网络返回常超过这个
+  // 时长，必然露出无保护空档，所以必须用这个覆盖整段加载期的独立标志。
+  let brResetLoading = false;
   let brRestoring = false;   // 程序化定位（恢复锚点）期间抑制「滚动事件＝用户操作」误判，
                              // 避免重定位把 scrollTop 改到顶部后误把"顶部"当成用户位置写回服务端
   let _brRestoreToken = 0;   // 抑制窗口令牌：reanchor 会被 ResizeObserver / 图片 load 反复
@@ -5477,9 +5495,10 @@
     holdBrRestoring(200);
     _lastAnchorAt = Date.now();
     const _pa = pickAnchor();
-    if (_pa && _pa.id) {
-      if (XFEED.restore({ id: _pa.id, offset: _pa.offset || 0 })) { endAwaitRestore(); return; }
-    } else if (XFEED.restore()) { endAwaitRestore(); return; }   // 定位成功即结束等待阶段
+    let _ok = false;
+    if (_pa && _pa.id) _ok = !!(XFEED.restore({ id: _pa.id, offset: _pa.offset || 0 }));
+    else _ok = !!(XFEED.restore());
+    if (_ok) { endAwaitRestore(); return; }   // 定位成功即结束等待阶段
     let tries = 0;
     _restoreIv = setInterval(() => {
       if (brUserScrolled) { cancelAutoRestore(); return; }
@@ -5559,10 +5578,28 @@
     const pa = pickAnchor();
     if (pa && pa.id) {
       ensureMounted(pa.id);   // 挂载后补偿才量得到卡片位置（顺带预挂载定位区域）
+      const el = (typeof brList !== 'undefined' && brList) ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(pa.id))}"]`) : null;
+      if (el && typeof viewBrowse !== 'undefined' && viewBrowse) {
+        // 实测锚点卡「当前」在视口内的像素位置（而非 pa.offset 那个 0~1 比例），
+        // 这样 restoreScrollAnchor 才能把它精确钉回用户当时看到的位置——
+        // 否则会把它当成像素（0.7px≈0）弹到视口最顶，缓存窗口→全量流切换时锚点卡视觉跳变。
+        const rCont = viewBrowse.getBoundingClientRect();
+        const px = Math.round(el.getBoundingClientRect().top - rCont.top);
+        return { tid: String(pa.id), viewTop: px, isAnchor: true };
+      }
       return { tid: String(pa.id), viewTop: (typeof pa.offset === 'number' ? pa.offset : 0), isAnchor: true };
     }
     const tv = topVisibleCard();   // 无锚点（首次进入）兜底：用顶部可见卡
-    if (tv && tv.tid) return { tid: String(tv.tid), viewTop: tv.offset || 0, isAnchor: false };
+    if (tv && tv.tid) {
+      ensureMounted(tv.tid);
+      const el = (typeof brList !== 'undefined' && brList) ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tv.tid))}"]`) : null;
+      if (el && typeof viewBrowse !== 'undefined' && viewBrowse) {
+        const rCont = viewBrowse.getBoundingClientRect();
+        const px = Math.round(el.getBoundingClientRect().top - rCont.top);
+        return { tid: String(tv.tid), viewTop: px, isAnchor: false };
+      }
+      return { tid: String(tv.tid), viewTop: tv.offset || 0, isAnchor: false };
+    }
     return null;
   }
   // 把锚点卡片按回它「应有的视口位置」，返回补偿的像素差（0=无需补偿，找不到卡片返回 null）。
@@ -6317,6 +6354,10 @@
     let syncP = null;
     if (reset) {
       brUserScrolled = false;
+      // 进入「整表重置加载期」：冻结本面板的锚点写入，并暂停框架的「滚动即自动采集锚点」。
+      // 占位列表里的位置没有意义，绝不能被写成本机或服务端的阅读进度（见 brResetLoading 注释）。
+      brResetLoading = true;
+      try { if (XFEED && XFEED.suspendAutoAnchor) XFEED.suspendAutoAnchor(true); } catch (_) {}
       // 刷新/首次加载进入「等待定位」阶段：此后数秒内图片加载撑开布局引发的 scroll
       // 一律不算用户操作，否则定位会被放弃、视图停在顶部（最新）。
       // 真实输入（滚轮/触摸/键盘）仍可随时接管（markUserScrolled 会结束本阶段）。
@@ -6327,6 +6368,7 @@
       syncP = acquireMaster();
       setBrBottom('hidden');
       preview = renderCachedBrowse();
+
       brCursor = null;
       // 注意：这里绝不能再 scrollTop=0。强制回顶部会触发 scroll 事件把 brUserScrolled
       // 置真、并 scheduleSavePos 把"顶部"当主控锚点写回服务端，既跳走用户当前阅读位置、
@@ -6384,15 +6426,51 @@
         // 锚点卡不在列表里、anchorTo 定位失败 → 阅读位置被冲掉（表现为打开就跳到最新）。
         // 因此从最新一天一路加载到「锚点所在天」，保证锚点卡一定在列表中。
         const collected = (d.items || []).slice();
-        await loadDaysThrough(dayOfTweetId(anchorTid), collected);
+        // ① 锚点天若已从服务端天索引淘汰（LRU 字节预算会清掉不常访问的老天），
+        //    原 loadDaysThrough 会一路向下加载全部天（逐个现爬 X，且永远到不了锚点）
+        //    → 停在最新、丢失记录。改为：锚点天仍在索引就按原逻辑加载到那天；
+        //    否则只定向拉那一天的缓存（当天也淘汰时 fetchDay 才现爬，且仅爬那一天，
+        //    不波及其它天）。fetchDay 不带 force，命中缓存即返回、不打 X。
+        // ② 锚点卡兜底：无论服务端那天是否仍在缓存，都从本地镜像/成员记录注入锚点卡，
+        //    保证 anchorTo 永远有目标，绝不因「锚点天被淘汰」而停在最新。
+        const aday = dayOfTweetId(anchorTid);
+        const dayInIndex = aday && brDayIndex.some((e) => e && e.day === aday);
+        if (dayInIndex) {
+          await loadDaysThrough(aday, collected);
+        } else if (aday) {
+          try {
+            const ai = await fetchDay(aday);
+            (ai || []).forEach((it) => collected.push(it));
+            brLoadedDays.add(aday);
+          } catch (_) {}
+        }
+        if (anchorTid && !collected.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
+          const mem = feedItemById(anchorTid);
+          if (mem) collected.push(mem);
+        }
         // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
         const items = mergeTweets(collected);
         // 整表按时间重建再定位锚点：不能走 prepend——这批横跨新与旧，而 prepend 的
         // 语义是「这一批全是新推文」，会把更旧的部分插到最新上面、时间顺序错乱，
         // 且一次性插入大量卡片会把锚点定位冲掉（「刷新后位置被强制刷到最新」的根因）。
         rebuildBrowseList(items);
+        // rebuildBrowseList 已用 restoreScrollAnchor 把锚点钉在「缓存时看到的同一像素位置 P」
+        // （buildScrollAnchorRef 现已改为测真实像素，而非把 0.7 当像素弹到视口顶部）。
+        ensureMounted(anchorTid);          // 确保锚点卡已挂载，下方才能测到真实像素 P
+        const _pin = buildScrollAnchorRef();
         saveBrowseCache(items, true);
-        if (anchorTid) anchorTo(anchorTid, _pa ? _pa.offset : 0);
+        if (anchorTid) {
+          anchorTo(anchorTid, _pa ? _pa.offset : 0);   // 仍走框架 restore 以同步锚点状态
+          // XFEED.restore 在深层卡未挂载场景会退化到视口最顶（0px），把刚钉好的 P 钉回 0px
+          // → 造成「缓存 174px → 真实 0px」的 174px 可见跳变。强制按 P 钉回，零位移。
+          if (_pin && typeof viewBrowse !== 'undefined' && viewBrowse && brList) {
+            const _c = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(anchorTid))}"]`);
+            if (_c) {
+              let _top = 0, _el = _c; while (_el && _el !== viewBrowse) { _top += _el.offsetTop; _el = _el.offsetParent; }
+              viewBrowse.scrollTop = Math.max(0, _top - _pin.viewTop);
+            }
+          }
+        }
         else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
@@ -6410,6 +6488,13 @@
     } finally {
       if (openMode) showBgLoading(false);
       brLoading = false;
+      // 整表重置加载期结束（真实内容已重建并按锚点定位落地）：解除锚点写入冻结与框架自动采集。
+      // 此后用户的滚动才是真实阅读进度，应正常回写。
+      if (brResetLoading) {
+        brResetLoading = false;
+        try { if (XFEED && XFEED.suspendAutoAnchor) XFEED.suspendAutoAnchor(false); } catch (_) {}
+      }
+
       // 底部状态：失败重试 / 到底 / 仍有更多则隐藏（由滚动或下方自动续拉接管）
       if (olderErr) setBrBottom('error');
       else if (brList.querySelector('.bm-empty.err')) setBrBottom('hidden');
@@ -8106,8 +8191,13 @@
       // scheduleSavePos（200ms 防抖）会补写，pagehide 的 flushNow 也兜底，
       // 所以「滑一下就刷新」仍不会丢位置。
       const _nowMs = Date.now();
-      if (_nowMs - _lastAnchorSaveAt >= 250) { _lastAnchorSaveAt = _nowMs; saveLocalAnchor(); }
-      scheduleSavePos();
+      // 整表重置加载期（列表还是占位/骨架）：只冻结锚点写入，其余滚动 UI 照常。
+      // 此时真实输入已把 brAwaitingRestore 结束，这条是最后一道保险——否则占位列表的
+      // 顶部会被写成阅读进度，锚点被就地覆盖成最新那条（见 brResetLoading 注释）。
+      if (!brResetLoading) {
+        if (_nowMs - _lastAnchorSaveAt >= 250) { _lastAnchorSaveAt = _nowMs; saveLocalAnchor(); }
+        scheduleSavePos();
+      }
       if (brScrollTimer) return;
       brScrollTimer = setTimeout(() => {
         brScrollTimer = null;
@@ -9066,6 +9156,22 @@
   */
   // 详情缓存已统一到全局单缓存 XTWEETS：刷新后重开同一 #/tweet/<id> 直接命中 XTWEETS，
   // 无需单独读回一份本地详情缓存（XTWEETS 本身跨刷新/跨设备持久）。
+
+  /* ---- 首帧前就地渲染缓存预览（消除「空态提示 → 骨架 → 锚点」三段闪烁）----
+     首屏原本只由 bootRoute 触发，而 bootRoute 要等 XSTATE.pull() 对账落地（最长 1s）
+     才渲染。该 pull 返回全部 user_state（含数千条缓存条目，常达数百 ms~1s+），这段时间
+     浏览器已把静态空态提示「下拉刷新加载…」画到屏幕上——这就是刷新先看到提示、再经骨架、
+     最后才到锚点的头两段。这里在脚本求值时（首帧之前，早于 bootRoute）就用本地缓存把关注流
+     渲染出来并预定位到本机锚点：内容齐全时首帧即锚点内容，提示与骨架都没机会出现；随后
+     bootRoute 用服务端权威数据重渲染并对齐锚点（两者同源，不会互相拉扯）。
+     仅在初始路由判定为「首页」时渲染，避免非首页深链下多画一次关注流。 */
+  try {
+    const _boot0 = initialRoute();
+    if (_boot0 && _boot0.name === 'browse' && renderCachedBrowse()) {
+      const _la0 = loadLocalAnchor();
+      if (_la0 && _la0.id) anchorTo(_la0.id, _la0.offset);
+    }
+  } catch (_) {}
 </script>
 </body>
 </html>
