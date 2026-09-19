@@ -5153,7 +5153,7 @@
       let cur = [];
       if (append) { try { cur = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || []; } catch (_) { cur = []; } }
       const add = (items || []).filter(_browseValid)
-        .map((it) => ({ tweet_id: String(it.tweet_id || it.id), created_at: it.created_at }));
+        .map((it) => ({ tweet_id: String(it.tweet_id || it.id), created_at: it.created_at, timeline_at: it.timeline_at || it.created_at }));
       const seen = new Set();
       const out = [];
       add.concat(cur).forEach((m) => {
@@ -5161,7 +5161,11 @@
         if (!k || seen.has(k)) return;
         seen.add(k); out.push(m);
       });
-      out.sort((a, b) => (Date.parse(b.created_at || '') || 0) - (Date.parse(a.created_at || '') || 0));
+      // 排序键必须与展示一致：展示用 timelineAt(= timeline_at || created_at)，镜像也据此排序/封顶。
+      // 若用 created_at 排序，转推(timeline_at 晚于 created_at)在镜像里排名偏低 → 被 80 条上限挤出，
+      // 或预览与全量顺序不一致 → 刷新后这批「补回来」的条目会突然出现在阅读位置旁（必现）。
+      const _mk = (m) => Date.parse(m.timeline_at || m.created_at || '') || 0;
+      out.sort((a, b) => _mk(b) - _mk(a));
       localStorage.setItem(BR_MIRROR_KEY, JSON.stringify(out.slice(0, BR_MIRROR_MAX)));
     } catch (_) {}
   }
