@@ -643,6 +643,15 @@
   .ptr-indicator .ptr-icon { font-size: 16px; }
   .bm-card .bm-play, .quoted .bm-play { position: absolute; inset: 0; margin: auto; width: 36px; height: 36px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; font-size: 14px; display: flex; align-items: center; justify-content: center; padding-left: 3px; pointer-events: none; }
   .bm-card .bm-media.playing, .quoted .bm-media.playing { background: #f3f5f7; max-height: none; }
+  /* 播放态必须关掉占位用的 aspect-ratio：此时容器高度已由 JS 钉死为像素值，
+     aspect-ratio 会把容器「宽」算成 高×16/10（单视频竖屏时接近千像素、远超卡片宽），
+     grid 拉伸随之失效 → 容器溢出，视频在其中「居中」被推到右侧冲出屏幕。
+     竖屏视频（dh 大）尤其明显，故表现为「偶发位置偏差特别大、直接出屏幕」。
+     用 5 类选择器（+.playing）压过 4 类的 .bm-card .media.m1 .bm-media 基础规则。 */
+  .bm-card .media.m1 .bm-media.playing, .bm-card .media.justified .bm-media.playing,
+  .quoted .media.m1 .bm-media.playing, .quoted .media.justified .bm-media.playing {
+    aspect-ratio: auto;
+  }
   /* 原地点播中：解除 .media video 的 max-height:70vh（line 61）。
      该限制会覆盖 JS 钉死的像素高度，把 video 压得比封面小（「缩小一圈」）。
      容器高度已由 JS 冻结为封面高度（或 loadedmetadata 后贴合视频真实比例），无需再限高。 */
