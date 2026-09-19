@@ -6336,7 +6336,18 @@
       // 本机锚点可能略旧，随后 await syncP 落地 + prependNewTweets 会用服务端锚点校正。
       // 这里用 pickAnchor：优先取本机最新滚动位置（localStorage 兜底），绕过服务端陈旧锚点。
       if (preview) {
-        const _pa = pickAnchor();
+        // 预定位必须用「服务端权威锚点」：boot 阶段已 await XSTATE.pull() 落地，
+        // 直接读 XSTATE 中的服务端锚点（与下方 await syncP 后的 pickAnchor 同源），
+        // 否则此处 pickAnchor 读的是 pre-syncP 的本地旧锚点，会与 await syncP 拉回的
+        // 服务端锚点相左，形成「先本地旧位置、几秒后跳回服务端锚点」的两段式跳变。
+        const _sa = (XSTATE && XFEED && XFEED.keys) ? XSTATE.get(XFEED.keys.anchor) : null;
+        const _la = loadLocalAnchor();
+        let _pa = null;
+        if (_sa && _sa.id) _pa = { id: String(_sa.id), offset: (typeof _sa.offset === 'number' ? _sa.offset : 0), at: Number(_sa.at) || 0 };
+        if (_la && _la.id) {
+          const _lac = { id: String(_la.id), offset: _la.offset, at: Number(_la.at) || 0 };
+          if (!_pa || _lac.at > _pa.at) _pa = _lac;
+        }
         if (_pa && _pa.id) anchorTo(_pa.id, _pa.offset);
       }
       if (openMode) showBgLoading(true);
