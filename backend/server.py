@@ -1805,36 +1805,68 @@ def create_blueprint(host):
         except Exception:
             pass
 
-    def _notify_subscription_post(handle, it):
-        """把一条订阅来源的新推文转成富通知（图 + 摘要 + 跳转）。
-
-        展示内容完全由本插件提供，核心通知中心只做通用渲染。
-        """
-        handle = (handle or '').lstrip('@')
+    def _cache_post_from_item(s, it):
+        """把一条时间线条目规整为缓存写入用的 post 字典。"""
         tid = str(it.get('tweet_id') or it.get('id') or '')
         if not tid:
-            return
+            return None
+        handle = (s.get('source_id') or '').strip().lstrip('@')
+        if not handle:
+            return None
         text = (it.get('text') or it.get('full_text') or it.get('content') or '').strip()
-        img = ''
+        media = []
         for m in (it.get('media') or []):
+            if not isinstance(m, dict):
+                continue
+            media.append({'thumbnail': m.get('thumbnail'), 'url': m.get('url')})
+        url = 'https://x.com/%s/status/%s' % (handle, tid)
+        return {
+            'subscription_id': s.get('id'),
+            'source_type': s.get('source_type') or 'x',
+            'source_id': handle,
+            'post_id': tid,
+            'author': handle,
+            'text': text,
+            'media': media,
+            'url': url,
+            'target_mode': s.get('target_mode') or 'video',
+            'library_id': s.get('library_id'),
+        }
+
+    def _notify_subscription_post(post):
+        """把一条已缓存的订阅新内容转成富通知（图 + 摘要 + 跳转站内缓存视图）。
+
+        展示内容完全由本插件提供，核心通知中心只做通用渲染；跳转指向站内
+        「订阅动态」视图，原帖外链放在 extra.externalUrl。
+        """
+        tid = post.get('post_id')
+        if not tid:
+            return
+        text = (post.get('text') or '').strip()
+        img = ''
+        for m in (post.get('media') or []):
             if not isinstance(m, dict):
                 continue
             if m.get('thumbnail'):
                 img = m['thumbnail']; break
             if m.get('url'):
                 img = m['url']; break
-        url = 'https://x.com/%s/status/%s' % (handle, tid)
+        external = post.get('url') or ''
         host.notify_user(
-            title='@%s 发布了新内容' % handle,
+            title='@%s 有新内容（已缓存）' % (post.get('source_id') or ''),
             body=(text[:120] if text else '新动态'),
             source='x',
             category='subscription',
             payload={
                 'image': img,
-                'url': url,
+                'url': '/subscriptions?tab=cache&src=x',
                 'summary': (text[:200] if text else ''),
-                'target': 'external',
-                'extra': {'handle': handle, 'tweet_id': tid},
+                'target': 'internal',
+                'extra': {
+                    'externalUrl': external,
+                    'handle': post.get('source_id'),
+                    'tweet_id': tid,
+                },
             },
         )
 
@@ -1889,13 +1921,22 @@ def create_blueprint(host):
                     break  # 列表最新在前；遇到上次已见即停止
                 new_items.append(it)
             if new_items:
+                posts = []
                 for it in reversed(new_items):
-                    _notify_subscription_post(handle, it)
-                newest = str((new_items[0] or {}).get('tweet_id')
-                              or (new_items[0] or {}).get('id') or '')
-                if newest:
-                    last[handle] = newest
-                    handled += len(new_items)
+                    p = _cache_post_from_item(s, it)
+                    if p:
+                        posts.append(p)
+                if posts:
+                    try:
+                        host.cache_subscription_post(posts)
+                    except Exception as _e:
+                        host.logger.error('缓存订阅内容失败: %s', _e)
+                    for p in posts:
+                        _notify_subscription_post(p)
+                    newest = str(posts[0].get('post_id') or '')
+                    if newest:
+                        last[handle] = newest
+                        handled += len(posts)
             try:
                 host.update_subscription(sid, last_checked_at=time.time(), error=None)
             except Exception:
