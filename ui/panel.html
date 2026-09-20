@@ -8325,12 +8325,15 @@
     function finishRefresh() { refreshing = false; resetAll(); }
 
     scrollEl.addEventListener('touchstart', (e) => {
-      if (refreshing || scrollEl.scrollTop > 0) { active = false; return; }
+      // 打开/加载/锚点恢复阶段（brLoading 为真）严禁触发下拉刷新：移动端 WebView 在顶部会做
+      // overscroll 回弹，瞬时 scrollTop=0，极易被误判成下拉手势，表现为「一进 X 先看到刷新、
+      // 再跳到锚点」。加载期本就该安静地把锚点恢复好，不该响应下拉刷新。
+      if (brLoading || refreshing || scrollEl.scrollTop > 0) { active = false; return; }
       active = true; pulling = false; dist = 0; startY = e.touches[0].clientY;
       kids = Array.from(scrollEl.children).filter(c => !c.classList || !c.classList.contains('ptr-indicator'));
     }, { passive: true });
     scrollEl.addEventListener('touchmove', (e) => {
-      if (!active || refreshing) return;
+      if (!active || refreshing || brLoading) return;
       const delta = e.touches[0].clientY - startY;
       if (!pulling) {
         if (delta > 0 && scrollEl.scrollTop <= 0) pulling = true;
