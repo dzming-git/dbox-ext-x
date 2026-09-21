@@ -6568,6 +6568,11 @@
       brLoading = false;
       // 预览定位不到锚点时遮住的列表在此恢复显示（权威定位已在上方 anchorTo 落地）。
       revealBrowseList();
+      // 终极兜底：整表加载结束后若列表里一张卡都没有，绝不留白屏——给一条可操作提示
+      // （下拉刷新会强制重拉最新）。此前的「全白屏」就是种子内容取不到时行模型为空所致。
+      if (!isOlder && brList && !brList.querySelector('.bm-card') && !brList.querySelector('.bm-empty')) {
+        brList.innerHTML = '<div class="bm-empty">暂无可用内容，请下拉刷新重试</div>';
+      }
       // 整表重置加载期结束（真实内容已重建并按锚点定位落地）：解除锚点写入冻结与框架自动采集。
       // 此后用户的滚动才是真实阅读进度，应正常回写。
       if (brResetLoading) {
