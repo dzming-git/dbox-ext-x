@@ -6413,8 +6413,11 @@
         }
         if (_pa && _pa.id) anchorTo(_pa.id, _pa.offset);
       }
-      if (openMode) showBgLoading(true);
-      else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
+      // 顶部「正在后台加载最新推文…」横幅：旧「打开即秒开 + 后台拉最新」设计的遗留。
+      // 现在 loadBrowse 是缓存优先（/timeline 不带 force，命中缓存即返回、不主动打 X），
+      // 并没有"在后台拉最新"这回事；更关键的是 switchView('browse') 每次切回关注流都会
+      // 走到这里，横幅因此反复出现、还暗示会跳到最新——纯误导，直接不再显示。
+      if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
       setBrBottom('loading');   // 自动加载也常驻显示转圈动画
     }
