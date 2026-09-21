@@ -5205,18 +5205,13 @@
       // 行模型不完整、锚点排名偏小（1 而非 12）→ 首次定位偏上，网络补齐后猛跳约 3900px。
       // 改为回退到成员记录本身（带 timeline_at，可正确排序定位）。
       const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id) || it);
-      // 续读锚点可能本地内容残缺（@unknown 壳条目被清洗、预览阶段未就绪）导致被上面的
-      // tweetCacheGet 过滤、不在 list 里，于是预览无法渲染该卡、定位失败、刷新先闪到顶部。
-      // 这里把锚点的「成员记录」强制补回（带 timeline_at、不过滤作者），让预览也能展开到
-      // 正确天数并渲染该卡以定位；网络返回后会用有效内容覆盖它，不会留下 @unknown。
-      const la = loadLocalAnchor();
-      if (la && la.id) {
-        const sid = String(la.id);
-        if (!list.some((x) => String(x.tweet_id || x.id) === sid)) {
-          const mem = feedItemById(la.id);
-          if (mem) list.push(mem);
-        }
-      }
+      // 【不再把锚点卡强行补进预览】
+      // 预览＝「本地镜像＝最新 N 条的连续块」，只有「锚点卡本来就在镜像范围内」时它的落点
+      // 才是正确的。以前这里会把超出镜像的锚点成员强行 push 进来，于是预览【有】锚点卡、
+      // 却被塞在镜像 80 条之后、位置是错的：`_ac` 非空 → 遮罩不触发 → 预定位按错误位置落点，
+      // 权威数据到了再跳到真锚点——正是反馈的「先看到错位内容、再跳到锚点」。
+      // 去掉后：锚点在镜像内 → 预览落点正确、照常秒开；超出镜像 → 预览无该卡 → 遮罩生效、
+      // 静默等 loadBrowse 的权威定位，不再暴露错位画面。
       if (!list.length) return false;
       rebuildBrowseList(list);
       brCursor = null;
@@ -6447,7 +6442,11 @@
           if (!_ac && !brUserScrolled) cloakBrowseList();
         }
       }
-      if (openMode) showBgLoading(true);
+      // 顶部「正在后台加载最新推文」横幅是旧「秒开 + 后台拉最新」设计的遗留：现在的打开流程
+      // 是「先直接定位到锚点所在天」、并不拉最新，亮这条横幅会让用户以为要跳到最新（正是
+      // 反馈的「一刷新就显示正在后台加载最新推文，然后才跳到锚点」）。故仅在「没有可恢复
+      // 锚点、确实要加载最新」时才显示；有锚点时由遮罩静默定位到锚点、不打扰。
+      if (openMode && !pickAnchor()) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
       setBrBottom('loading');   // 自动加载也常驻显示转圈动画
