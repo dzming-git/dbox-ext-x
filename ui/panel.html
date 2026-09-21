@@ -6485,15 +6485,18 @@
         //   ② 再后台补齐锚点天【之上】的所有天，rebuild 时内部 buildScrollAnchorRef /
         //      restoreScrollAnchor 会把锚点卡钉回原视口像素 → 视觉零位移（不跳）。
         const aday = dayOfTweetId(anchorTid);
-        // ① 锚点天：命中服务端该天缓存即返回（fetchDay 不带 force，不打 X）。
+        // ① 首屏种子＝「最新一天」＋「锚点所在天」，两者都要：
+        //    ⚠️ 绝不能只放锚点天——若锚点天服务端缓存被 LRU 淘汰、且现拉失败/限流，列表会
+        //    几乎为空甚至整片空白（比"停在最新"更糟，实测踩到）。保留最新一天即保证首屏非空。
+        //    最新一天在锚点【之上】（时间更晚），会被排到模型顶部、落在视口之外，用户看不到；
+        //    锚点卡的视口落点由 anchorTo 按它在 DOM 里的真实位置算，与上方内容无关，故不影响
+        //    落点。② 再后台把最新天与锚点天之间缺的天补齐（rebuild 时锚点补偿，视觉零位移）。
         const firstBatch = [];
+        (d.items || []).forEach((it) => firstBatch.push(it));
+        if (d.day) brLoadedDays.add(d.day);
         if (aday) {
           try { const ai = await fetchDay(aday); (ai || []).forEach((it) => firstBatch.push(it)); } catch (_) {}
           brLoadedDays.add(aday);
-        } else {
-          // 拿不到锚点天（无锚点/内容未就绪）：退回最新一天兜底首屏
-          (d.items || []).forEach((it) => firstBatch.push(it));
-          if (d.day) brLoadedDays.add(d.day);
         }
         // 锚点卡兜底：无论该天缓存是否命中，都从本地镜像/成员记录注入锚点卡，保证有定位目标
         if (anchorTid && !firstBatch.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
@@ -6503,6 +6506,9 @@
         const items0 = mergeTweets(firstBatch);
         brResetLoading = true;
         rebuildBrowseList(items0);
+        // 终极兜底：万一「最新一天」与「锚点天」都取不到内容，也绝不把列表留成全白，
+        // 给一条可操作的提示（下拉刷新会强制重拉最新）。
+        if (!_rows.length) brList.innerHTML = '<div class="bm-empty">暂无可用内容，请下拉刷新重试</div>';
         ensureMounted(anchorTid);          // 确保锚点卡已挂载，下方才能测到真实像素 P
         const _pin = buildScrollAnchorRef();
         saveBrowseCache(items0, true);
