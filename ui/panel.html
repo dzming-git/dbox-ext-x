@@ -1565,6 +1565,7 @@
   let _navHashPending = false;  // navigate 正在设置内部 hash 时抑制 hashchange 监听器的冗余 SYNC   // 仅独立全屏页支持；小窗形态不动宿主 URL
   let routeInited = false;      // 初始路由是否已应用（宿主后到的 hash 走导航而非初始化）
   let promotedFromSmallWindow = false; // 是否由小窗升级为全屏：仅此情形才需把当前视图写回顶层 URL
+  let _lastModeHidden = null;          // 上次通报的显隐形态：宿主 boot 期会重复通报同一形态，去重避免重复对账/重铺
   window.addEventListener('message', (e) => {
     if (!e.data) return;
     if (e.data.type === 'DBOX_TOKEN' && e.data.token) {
@@ -1617,12 +1618,20 @@
       // 避免首条 DBOX_ROUTE 因 srcdoc 异步加载被丢弃、urlSyncEnabled 卡在 false
       // 而出现的「点了用户/推文详情，地址栏却不变」。
       if (e.data.fullscreen) urlSyncEnabled = true;
-      if (e.data.hidden) {
+      const hiddenNow = !!e.data.hidden;
+      if (hiddenNow) {
         // 面板被收起/最小化（小窗或全屏→hidden，DOM 变为 display:none）：显式暂停内联视频，
         // 否则 display:none 不会自动停掉媒体，声音会继续播（同时销毁 hls 实例避免泄漏）。
+        _lastModeHidden = true;
         if (_inlineVid) stopInlineVideo(_inlineVid);
         return;
       }
+      // ⚠️ 宿主在 boot 期会把同一形态重复通报多次（实测 3 次），旧代码每次都跑一遍完整对账
+      // （XLEDGER.refresh → SDK.pull，单次 265ms~1.1s）+ 自检 + 重铺。形态没变就没有要处理
+      // 的事：直接返回。既省掉重复的 /user-state 对账（「打开要等 1~2 秒」的大头），
+      // 也避免重复重铺（brAutoFill/resize）扰动刚定位好的滚动位置。
+      if (_lastModeHidden === false) return;
+      _lastModeHidden = false;
       // 面板重新显示：与服务端对账主控权（可能已被其它设备接管），刷新状态灯
       if (XLEDGER) XLEDGER.refresh().then(updateMasterLight);
       // 重开面板只切 CSS、不会重跑启动自检，这里补一次复检，让网络恢复后的旧告警消失
@@ -6343,19 +6352,38 @@
   // ⚠️ 存在的理由：首屏**绝不能只给最新一天** —— 续读锚点可能在更早的某天，
   // 只加载最新一天会让锚点卡不在列表里、anchorTo 定位失败 → 阅读位置被冲掉
   // （表现为「一打开就跳到最新」）。所以必须一直加载到锚点所在天为止。
+  // 提速：把「一天一次串行往返」换成「一批并发往返」（服务端按天缓存、命中即返回）。
+  // 并发只在**抓取**层面；条目仍严格按「新→旧」顺序入列，且仍命中锚点天/够一屏即停，
+  // 因此列表顺序与定位语义与串行版完全一致，深锚点时少等 N×(单次往返 RTT)。
+  const DAYS_PER_BATCH = 6;
   async function loadDaysThrough(targetDay, dayOut, maxDays = 60) {
     if (!brDayIndex.length) return;
     let n = 0;
+    const todo = [];
     for (const e of brDayIndex) {
       const day = e && e.day;
       if (!day || brLoadedDays.has(day)) continue;
-      const items = await fetchDay(day);
-      brLoadedDays.add(day);
-      (items || []).forEach((it) => dayOut.push(it));
-      n++;
-      if (targetDay && day === targetDay) break;
-      if (!targetDay && dayOut.length >= 40) break;   // 无锚点：够填满首屏即可
-      if (n >= maxDays) break;
+      todo.push(day);
+      if (todo.length >= maxDays) break;
+    }
+    for (let i = 0; i < todo.length; i += DAYS_PER_BATCH) {
+      let k = Math.min(DAYS_PER_BATCH, todo.length - i);
+      // 锚点天落在本批内时，本批只抓到它为止（不抓多余的天，与串行版逐天即停一致）
+      if (targetDay) {
+        const ti = todo.indexOf(targetDay, i);
+        if (ti >= i && ti < i + k) k = ti - i + 1;
+      }
+      const batch = todo.slice(i, i + k);
+      const got = await Promise.all(batch.map((day) => fetchDay(day).catch(() => [])));
+      for (let j = 0; j < batch.length; j++) {
+        const day = batch[j];
+        brLoadedDays.add(day);
+        (got[j] || []).forEach((it) => dayOut.push(it));
+        n++;
+        if (targetDay && day === targetDay) return;
+        if (!targetDay && dayOut.length >= 40) return;   // 无锚点：够填满首屏即可
+        if (n >= maxDays) return;
+      }
     }
   }
 
