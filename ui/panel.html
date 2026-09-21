@@ -1229,7 +1229,7 @@
   <!-- 浏览（首页·关注流）视图 -->
   <div id="view-browse-wrap">
     <div class="view" id="view-browse">
-      <div id="br-list" class="bm-list"><div class="bm-empty">下拉刷新加载你关注的人的最新推文。</div></div>
+      <div id="br-list" class="bm-list"><div class="bm-empty">正在加载关注流…</div></div>
       <div class="bm-loadmore" id="br-loadmore" style="display:none"><button id="br-more">加载更多</button></div>
     </div>
     <!-- D：跳到某天（常驻日期胶囊 + 日历卡片） -->
@@ -5195,6 +5195,19 @@
     if (!t) return;
     tweetCachePut([t]);
   }
+  // 「预览能否在锚点处给出正确落点」：预览＝本地镜像（最新 N 条的**连续块**），只有「锚点卡
+  // 本来就在镜像范围内」时它的落点才正确；锚点超出镜像时预览给不出正确落点——表现就是
+  // 「一进来先停在错位处（看着像最新/别处），过一会儿才跳到阅读位置」。此时宁可不做预览
+  // （由调用方显示中性占位，等权威定位落地后再显示），也不要先暴露一个错误位置。
+  // 无锚点（首次进入）时预览即最新，永远正确。
+  function _canPreviewAtAnchor() {
+    const la = loadLocalAnchor();
+    if (!la || !la.id) return true;
+    try {
+      const mem = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || [];
+      return mem.some((x) => String(x.tweet_id || x.id) === String(la.id));
+    } catch (_) { return true; }
+  }
   function renderCachedBrowse() {
     try {
       // 只存成员镜像；内容回查全局单缓存 XTWEETS（一处内容，所有视图共享）
@@ -6385,7 +6398,7 @@
       // 但取锚点定位前必须等它落地（见下方 await syncP），否则用的是本机旧锚点。
       syncP = acquireMaster();
       setBrBottom('hidden');
-      preview = renderCachedBrowse();
+      preview = _canPreviewAtAnchor() ? renderCachedBrowse() : false;
       // 有预览＝本地缓存命中、已是真实内容：加载期允许用户滚动并记录新位置，不冻结；
       // 无预览＝纯骨架：全程冻结，避免骨架顶部被写成阅读进度（原始「跳最新」根因）。
       brResetLoading = !preview;
@@ -9206,7 +9219,7 @@
      仅在初始路由判定为「首页」时渲染，避免非首页深链下多画一次关注流。 */
   try {
     const _boot0 = initialRoute();
-    if (_boot0 && _boot0.name === 'browse' && renderCachedBrowse()) {
+    if (_boot0 && _boot0.name === 'browse' && _canPreviewAtAnchor() && renderCachedBrowse()) {
       const _la0 = loadLocalAnchor();
       if (_la0 && _la0.id) anchorTo(_la0.id, _la0.offset);
     }
