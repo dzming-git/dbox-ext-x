@@ -5205,13 +5205,18 @@
       // 行模型不完整、锚点排名偏小（1 而非 12）→ 首次定位偏上，网络补齐后猛跳约 3900px。
       // 改为回退到成员记录本身（带 timeline_at，可正确排序定位）。
       const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id) || it);
-      // 【不再把锚点卡强行补进预览】
-      // 预览＝「本地镜像＝最新 N 条的连续块」，只有「锚点卡本来就在镜像范围内」时它的落点
-      // 才是正确的。以前这里会把超出镜像的锚点成员强行 push 进来，于是预览【有】锚点卡、
-      // 却被塞在镜像 80 条之后、位置是错的：`_ac` 非空 → 遮罩不触发 → 预定位按错误位置落点，
-      // 权威数据到了再跳到真锚点——正是反馈的「先看到错位内容、再跳到锚点」。
-      // 去掉后：锚点在镜像内 → 预览落点正确、照常秒开；超出镜像 → 预览无该卡 → 遮罩生效、
-      // 静默等 loadBrowse 的权威定位，不再暴露错位画面。
+      // 续读锚点可能本地内容残缺（@unknown 壳条目被清洗、预览阶段未就绪）导致被上面的
+      // tweetCacheGet 过滤、不在 list 里，于是预览无法渲染该卡、定位失败、刷新先闪到顶部。
+      // 这里把锚点的「成员记录」强制补回（带 timeline_at、不过滤作者），让预览也能展开到
+      // 正确天数并渲染该卡以定位；网络返回后会用有效内容覆盖它，不会留下 @unknown。
+      const la = loadLocalAnchor();
+      if (la && la.id) {
+        const sid = String(la.id);
+        if (!list.some((x) => String(x.tweet_id || x.id) === sid)) {
+          const mem = feedItemById(la.id);
+          if (mem) list.push(mem);
+        }
+      }
       if (!list.length) return false;
       rebuildBrowseList(list);
       brCursor = null;
@@ -5382,24 +5387,6 @@
   // 注意 brRestoring 只覆盖前 2.5s（BR_RESTORE_MAX_MS），而占位渲染到网络返回常超过这个
   // 时长，必然露出无保护空档，所以必须用这个覆盖整段加载期的独立标志。
   let brResetLoading = false;
-  // 预览定位不到锚点时遮住列表（见 loadBrowse / 首帧预渲染处的说明）。用模块级而非
-  // loadBrowse 局部：首帧预渲染（脚本求值处）也要置位，由 loadBrowse 的 finally 恢复。
-  let brCloaked = false;
-  let _brCloakTimer = null;
-  function cloakBrowseList() {
-    if (!brList) return;
-    brCloaked = true;
-    brList.style.visibility = 'hidden';
-    if (_brCloakTimer) clearTimeout(_brCloakTimer);
-    // 兜底：即便后续流程异常未走到 reveal，也最多遮 6s，绝不永久遮住
-    _brCloakTimer = setTimeout(revealBrowseList, 6000);
-  }
-  function revealBrowseList() {
-    if (_brCloakTimer) { clearTimeout(_brCloakTimer); _brCloakTimer = null; }
-    if (!brCloaked) return;
-    brCloaked = false;
-    if (brList) brList.style.visibility = '';
-  }
   let brRestoring = false;   // 程序化定位（恢复锚点）期间抑制「滚动事件＝用户操作」误判，
                              // 避免重定位把 scrollTop 改到顶部后误把"顶部"当成用户位置写回服务端
   let _brRestoreToken = 0;   // 抑制窗口令牌：reanchor 会被 ResizeObserver / 图片 load 反复
@@ -6317,18 +6304,9 @@
     return d.items || [];
   }
 
-  // 下一个还没加载的「更旧」的一天（天索引由新到旧）。
-  // ⚠️ 不能返回「索引里第一个未加载的天」：首屏现在只加载「锚点天」（已加载集合不再是
-  // 「最新→锚点」的前缀），索引第一个未加载的其实是【更新】的天，会被当成「更旧」追加到
-  // 列表底部、时间顺序错乱。必须取「已加载的最旧一天的紧邻下一天」。
+  // 下一个还没加载的更旧的一天（天索引由新到旧）
   function nextOlderDay() {
-    let oldest = -1;
-    for (let i = 0; i < brDayIndex.length; i++) {
-      const e = brDayIndex[i];
-      if (e && e.day && brLoadedDays.has(e.day)) oldest = i;
-    }
-    for (let i = oldest + 1; i < brDayIndex.length; i++) {
-      const e = brDayIndex[i];
+    for (const e of brDayIndex) {
       if (e && e.day && !brLoadedDays.has(e.day)) return e.day;
     }
     return null;
@@ -6433,20 +6411,9 @@
           const _lac = { id: String(_la.id), offset: _la.offset, at: Number(_la.at) || 0 };
           if (!_pa || _lac.at > _pa.at) _pa = _lac;
         }
-        if (_pa && _pa.id) {
-          anchorTo(_pa.id, _pa.offset);
-          // 预定位后锚点卡仍不在 DOM＝预览里的锚点卡缺失（超出本地镜像的「最新 N 条」），
-          // 预览会停在顶部（最新），须等权威数据加载锚点所在天才跳过去。这时先把列表遮住
-          // （visibility 隐藏保留布局，不改变滚动定位数学），权威定位落地后于 finally 恢复。
-          const _ac = brList ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(_pa.id))}"]`) : null;
-          if (!_ac && !brUserScrolled) cloakBrowseList();
-        }
+        if (_pa && _pa.id) anchorTo(_pa.id, _pa.offset);
       }
-      // 顶部「正在后台加载最新推文」横幅是旧「秒开 + 后台拉最新」设计的遗留：现在的打开流程
-      // 是「先直接定位到锚点所在天」、并不拉最新，亮这条横幅会让用户以为要跳到最新（正是
-      // 反馈的「一刷新就显示正在后台加载最新推文，然后才跳到锚点」）。故仅在「没有可恢复
-      // 锚点、确实要加载最新」时才显示；有锚点时由遮罩静默定位到锚点、不打扰。
-      if (openMode && !pickAnchor()) showBgLoading(true);
+      if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
     } else {
       setBrBottom('loading');   // 自动加载也常驻显示转圈动画
@@ -6476,42 +6443,45 @@
         if (syncP) { try { await syncP; } catch (_) {} }
         const _pa = pickAnchor();
         const anchorTid = _pa ? _pa.id : null;
-        // 【架构改动：打开流程拆成两段】
-        // 旧流程是「先渲染最新一天（缓存预览）→ 从最新一路【串行】加载到锚点所在天 →
-        // 整表重建再定位」。因为列表是「一条按时间倒序的连续文档」，要停在锚点就必然要先把
-        // 它【之上】的所有天都加载进来——于是"最新"必然先出现、加载完再整表重建跳走，
-        // 就是「一打开先看到最新、然后刷新跳到阅读位置」。改两段后：
-        //   ① 先只取「锚点所在天」这一个缓存单元（1 个请求），首屏直接渲染并定位到锚点；
-        //   ② 再后台补齐锚点天【之上】的所有天，rebuild 时内部 buildScrollAnchorRef /
-        //      restoreScrollAnchor 会把锚点卡钉回原视口像素 → 视觉零位移（不跳）。
+        // ⚠️ 首屏绝不能只给「最新一天」：续读锚点可能在更早的某天，只加载最新一天会让
+        // 锚点卡不在列表里、anchorTo 定位失败 → 阅读位置被冲掉（表现为打开就跳到最新）。
+        // 因此从最新一天一路加载到「锚点所在天」，保证锚点卡一定在列表中。
+        const collected = (d.items || []).slice();
+        // ① 锚点天若已从服务端天索引淘汰（LRU 字节预算会清掉不常访问的老天），
+        //    原 loadDaysThrough 会一路向下加载全部天（逐个现爬 X，且永远到不了锚点）
+        //    → 停在最新、丢失记录。改为：锚点天仍在索引就按原逻辑加载到那天；
+        //    否则只定向拉那一天的缓存（当天也淘汰时 fetchDay 才现爬，且仅爬那一天，
+        //    不波及其它天）。fetchDay 不带 force，命中缓存即返回、不打 X。
+        // ② 锚点卡兜底：无论服务端那天是否仍在缓存，都从本地镜像/成员记录注入锚点卡，
+        //    保证 anchorTo 永远有目标，绝不因「锚点天被淘汰」而停在最新。
         const aday = dayOfTweetId(anchorTid);
-        // ① 首屏种子＝「最新一天」＋「锚点所在天」，两者都要：
-        //    ⚠️ 绝不能只放锚点天——若锚点天服务端缓存被 LRU 淘汰、且现拉失败/限流，列表会
-        //    几乎为空甚至整片空白（比"停在最新"更糟，实测踩到）。保留最新一天即保证首屏非空。
-        //    最新一天在锚点【之上】（时间更晚），会被排到模型顶部、落在视口之外，用户看不到；
-        //    锚点卡的视口落点由 anchorTo 按它在 DOM 里的真实位置算，与上方内容无关，故不影响
-        //    落点。② 再后台把最新天与锚点天之间缺的天补齐（rebuild 时锚点补偿，视觉零位移）。
-        const firstBatch = [];
-        (d.items || []).forEach((it) => firstBatch.push(it));
-        if (d.day) brLoadedDays.add(d.day);
-        if (aday) {
-          try { const ai = await fetchDay(aday); (ai || []).forEach((it) => firstBatch.push(it)); } catch (_) {}
-          brLoadedDays.add(aday);
+        const dayInIndex = aday && brDayIndex.some((e) => e && e.day === aday);
+        if (dayInIndex) {
+          await loadDaysThrough(aday, collected);
+        } else if (aday) {
+          try {
+            const ai = await fetchDay(aday);
+            (ai || []).forEach((it) => collected.push(it));
+            brLoadedDays.add(aday);
+          } catch (_) {}
         }
-        // 锚点卡兜底：无论该天缓存是否命中，都从本地镜像/成员记录注入锚点卡，保证有定位目标
-        if (anchorTid && !firstBatch.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
+        if (anchorTid && !collected.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
           const mem = feedItemById(anchorTid);
-          if (mem) firstBatch.push(mem);
+          if (mem) collected.push(mem);
         }
-        const items0 = mergeTweets(firstBatch);
+        // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
+        const items = mergeTweets(collected);
+        // 整表按时间重建再定位锚点：不能走 prepend——这批横跨新与旧，而 prepend 的
+        // 语义是「这一批全是新推文」，会把更旧的部分插到最新上面、时间顺序错乱，
+        // 且一次性插入大量卡片会把锚点定位冲掉（「刷新后位置被强制刷到最新」的根因）。
+        // 重建期间再次冻结锚点写入：此刻列表正在被整表替换，位置是中间态，不应记录。
         brResetLoading = true;
-        rebuildBrowseList(items0);
-        // 终极兜底：万一「最新一天」与「锚点天」都取不到内容，也绝不把列表留成全白，
-        // 给一条可操作的提示（下拉刷新会强制重拉最新）。
-        if (!_rows.length) brList.innerHTML = '<div class="bm-empty">暂无可用内容，请下拉刷新重试</div>';
+        rebuildBrowseList(items);
+        // rebuildBrowseList 已用 restoreScrollAnchor 把锚点钉在「缓存时看到的同一像素位置 P」
+        // （buildScrollAnchorRef 现已改为测真实像素，而非把 0.7 当像素弹到视口顶部）。
         ensureMounted(anchorTid);          // 确保锚点卡已挂载，下方才能测到真实像素 P
         const _pin = buildScrollAnchorRef();
-        saveBrowseCache(items0, true);
+        saveBrowseCache(items, true);
         if (anchorTid) {
           anchorTo(anchorTid, _pa ? _pa.offset : 0);   // 仍走框架 restore 以同步锚点状态
           // XFEED.restore 在深层卡未挂载场景会退化到视口最顶（0px），把刚钉好的 P 钉回 0px
@@ -6527,31 +6497,6 @@
         else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
-        // ② 后台补齐锚点天【之上】的所有天（newest→anchor），再整表重建：
-        //    rebuildBrowseList 会按当前锚点卡的视口像素重新钉位 → 上方内容补齐零位移。
-        //    用户若已接管滚动（brUserScrolled）或又有加载在跑则不打扰，交由 nextOlderDay 正常续拉。
-        if (aday) {
-          const _haveIds = new Set(items0.map((it) => String(it.tweet_id || it.id)));
-          (async () => {
-            try {
-              const _up = [];
-              for (const e of brDayIndex) {
-                const day = e && e.day;
-                if (!day) continue;
-                if (day === aday) break;               // 到达锚点天即停（只补它之上的天）
-                if (brLoadedDays.has(day)) continue;
-                let ai = [];
-                try { ai = await fetchDay(day); } catch (_) { ai = []; }
-                brLoadedDays.add(day);
-                (ai || []).forEach((it) => _up.push(it));
-              }
-              const _neu = mergeTweets(_up).filter((it) => !_haveIds.has(String(it.tweet_id || it.id)));
-              if (_neu.length && !brUserScrolled && !brLoading && activeView === 'browse') {
-                rebuildBrowseList(mergeTweets(_up.concat(items0)));
-              }
-            } catch (_) {}
-          })();
-        }
       } else {
         // 上拉加载更旧：优先「加载上一天」（服务端按天缓存，命中即返回，不去打 X）；
         // 天索引用尽才回退到 X 游标翻页继续向更旧爬（爬到的同样会按天入桶）。
@@ -6566,13 +6511,6 @@
     } finally {
       if (openMode) showBgLoading(false);
       brLoading = false;
-      // 预览定位不到锚点时遮住的列表在此恢复显示（权威定位已在上方 anchorTo 落地）。
-      revealBrowseList();
-      // 终极兜底：整表加载结束后若列表里一张卡都没有，绝不留白屏——给一条可操作提示
-      // （下拉刷新会强制重拉最新）。此前的「全白屏」就是种子内容取不到时行模型为空所致。
-      if (!isOlder && brList && !brList.querySelector('.bm-card') && !brList.querySelector('.bm-empty')) {
-        brList.innerHTML = '<div class="bm-empty">暂无可用内容，请下拉刷新重试</div>';
-      }
       // 整表重置加载期结束（真实内容已重建并按锚点定位落地）：解除锚点写入冻结与框架自动采集。
       // 此后用户的滚动才是真实阅读进度，应正常回写。
       if (brResetLoading) {
@@ -9267,14 +9205,7 @@
     const _boot0 = initialRoute();
     if (_boot0 && _boot0.name === 'browse' && renderCachedBrowse()) {
       const _la0 = loadLocalAnchor();
-      if (_la0 && _la0.id) {
-        anchorTo(_la0.id, _la0.offset);
-        // 本机锚点卡不在首帧预览里（超出本地镜像的最新 N 条）时才遮：否则首帧会先闪一下
-        // 列表顶部（最新），等 bootRoute/loadBrowse 把锚点所在天加载进来才跳过去。遮住后
-        // 由 loadBrowse 的 finally 恢复（含 6s 兜底，绝不永久遮住）。
-        const _ac = brList ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(_la0.id))}"]`) : null;
-        if (!_ac) cloakBrowseList();
-      }
+      if (_la0 && _la0.id) anchorTo(_la0.id, _la0.offset);
     }
   } catch (_) {}
 </script>
