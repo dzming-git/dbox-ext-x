@@ -1613,6 +1613,10 @@
       }
     }
     if (e.data.type === 'DBOX_MODE') {
+      // 进入全屏形态即允许同步浏览器地址栏：独立于 DBOX_ROUTE 握手，
+      // 避免首条 DBOX_ROUTE 因 srcdoc 异步加载被丢弃、urlSyncEnabled 卡在 false
+      // 而出现的「点了用户/推文详情，地址栏却不变」。
+      if (e.data.fullscreen) urlSyncEnabled = true;
       if (e.data.hidden) {
         // 面板被收起/最小化（小窗或全屏→hidden，DOM 变为 display:none）：显式暂停内联视频，
         // 否则 display:none 不会自动停掉媒体，声音会继续播（同时销毁 hls 实例避免泄漏）。
