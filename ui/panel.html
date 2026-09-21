@@ -5387,6 +5387,24 @@
   // 注意 brRestoring 只覆盖前 2.5s（BR_RESTORE_MAX_MS），而占位渲染到网络返回常超过这个
   // 时长，必然露出无保护空档，所以必须用这个覆盖整段加载期的独立标志。
   let brResetLoading = false;
+  // 预览定位不到锚点时遮住列表（见 loadBrowse / 首帧预渲染处的说明）。用模块级而非
+  // loadBrowse 局部：首帧预渲染（脚本求值处）也要置位，由 loadBrowse 的 finally 恢复。
+  let brCloaked = false;
+  let _brCloakTimer = null;
+  function cloakBrowseList() {
+    if (!brList) return;
+    brCloaked = true;
+    brList.style.visibility = 'hidden';
+    if (_brCloakTimer) clearTimeout(_brCloakTimer);
+    // 兜底：即便后续流程异常未走到 reveal，也最多遮 6s，绝不永久遮住
+    _brCloakTimer = setTimeout(revealBrowseList, 6000);
+  }
+  function revealBrowseList() {
+    if (_brCloakTimer) { clearTimeout(_brCloakTimer); _brCloakTimer = null; }
+    if (!brCloaked) return;
+    brCloaked = false;
+    if (brList) brList.style.visibility = '';
+  }
   let brRestoring = false;   // 程序化定位（恢复锚点）期间抑制「滚动事件＝用户操作」误判，
                              // 避免重定位把 scrollTop 改到顶部后误把"顶部"当成用户位置写回服务端
   let _brRestoreToken = 0;   // 抑制窗口令牌：reanchor 会被 ResizeObserver / 图片 load 反复
@@ -6411,7 +6429,14 @@
           const _lac = { id: String(_la.id), offset: _la.offset, at: Number(_la.at) || 0 };
           if (!_pa || _lac.at > _pa.at) _pa = _lac;
         }
-        if (_pa && _pa.id) anchorTo(_pa.id, _pa.offset);
+        if (_pa && _pa.id) {
+          anchorTo(_pa.id, _pa.offset);
+          // 预定位后锚点卡仍不在 DOM＝预览里的锚点卡缺失（超出本地镜像的「最新 N 条」），
+          // 预览会停在顶部（最新），须等权威数据加载锚点所在天才跳过去。这时先把列表遮住
+          // （visibility 隐藏保留布局，不改变滚动定位数学），权威定位落地后于 finally 恢复。
+          const _ac = brList ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(_pa.id))}"]`) : null;
+          if (!_ac && !brUserScrolled) cloakBrowseList();
+        }
       }
       if (openMode) showBgLoading(true);
       else if (!preview) brList.innerHTML = '<div class="bm-empty">正在加载关注流…</div>';
@@ -6511,6 +6536,8 @@
     } finally {
       if (openMode) showBgLoading(false);
       brLoading = false;
+      // 预览定位不到锚点时遮住的列表在此恢复显示（权威定位已在上方 anchorTo 落地）。
+      revealBrowseList();
       // 整表重置加载期结束（真实内容已重建并按锚点定位落地）：解除锚点写入冻结与框架自动采集。
       // 此后用户的滚动才是真实阅读进度，应正常回写。
       if (brResetLoading) {
@@ -9205,7 +9232,14 @@
     const _boot0 = initialRoute();
     if (_boot0 && _boot0.name === 'browse' && renderCachedBrowse()) {
       const _la0 = loadLocalAnchor();
-      if (_la0 && _la0.id) anchorTo(_la0.id, _la0.offset);
+      if (_la0 && _la0.id) {
+        anchorTo(_la0.id, _la0.offset);
+        // 本机锚点卡不在首帧预览里（超出本地镜像的最新 N 条）时才遮：否则首帧会先闪一下
+        // 列表顶部（最新），等 bootRoute/loadBrowse 把锚点所在天加载进来才跳过去。遮住后
+        // 由 loadBrowse 的 finally 恢复（含 6s 兜底，绝不永久遮住）。
+        const _ac = brList ? brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(_la0.id))}"]`) : null;
+        if (!_ac) cloakBrowseList();
+      }
     }
   } catch (_) {}
 </script>
