@@ -6443,9 +6443,10 @@
         const d = await r.json();
         if (d && Array.isArray(d.days) && d.days.length) brDayIndex = d.days;
         if (d && d.day) brLoadedDays.add(d.day);
-        // 关注流首次/重置加载：记下缓存时间，展示「缓存于 X前」（未过期则来自缓存，不重打 X）
+        // 关注流首次/重置加载：只记下缓存时间（未过期则来自缓存，不重打 X）。
+        // ⚠️ 徽标显示统一挪到本分支末尾（finally）：若在此处就显示，它会比「整表重建 + 锚点
+        // 定位」早一步单独冒出来，用户会看到「占位 → 徽标 → 内容」三段闪烁。
         brCacheMeta = { fetched_at: d.fetched_at, cached: d.cached, stale: d.stale };
-        showCacheBadge('#view-browse', brCacheMeta);
         if (!d.success) {
           if (reset && !brList.querySelector('.bm-card'))
             brList.innerHTML = `<div class="bm-empty err">加载失败: ${esc2(d.message || '未知错误')}</div>`;
@@ -6527,6 +6528,9 @@
     } finally {
       if (openMode) showBgLoading(false);
       brLoading = false;
+      // 缓存时效徽标：等「整表重建 + 锚点定位」落地后再显示，与内容一起出现
+      // （不再比内容早一步单独闪出，避免「占位 → 徽标 → 内容」三段）。
+      if (reset && brCacheMeta) showCacheBadge('#view-browse', brCacheMeta);
       // 整表重置加载期结束（真实内容已重建并按锚点定位落地）：解除锚点写入冻结与框架自动采集。
       // 此后用户的滚动才是真实阅读进度，应正常回写。
       if (brResetLoading) {
