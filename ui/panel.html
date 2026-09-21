@@ -6322,9 +6322,18 @@
     return d.items || [];
   }
 
-  // 下一个还没加载的更旧的一天（天索引由新到旧）
+  // 下一个还没加载的「更旧」的一天（天索引由新到旧）。
+  // ⚠️ 不能返回「索引里第一个未加载的天」：首屏现在只加载「锚点天」（已加载集合不再是
+  // 「最新→锚点」的前缀），索引第一个未加载的其实是【更新】的天，会被当成「更旧」追加到
+  // 列表底部、时间顺序错乱。必须取「已加载的最旧一天的紧邻下一天」。
   function nextOlderDay() {
-    for (const e of brDayIndex) {
+    let oldest = -1;
+    for (let i = 0; i < brDayIndex.length; i++) {
+      const e = brDayIndex[i];
+      if (e && e.day && brLoadedDays.has(e.day)) oldest = i;
+    }
+    for (let i = oldest + 1; i < brDayIndex.length; i++) {
+      const e = brDayIndex[i];
       if (e && e.day && !brLoadedDays.has(e.day)) return e.day;
     }
     return null;
@@ -6468,45 +6477,36 @@
         if (syncP) { try { await syncP; } catch (_) {} }
         const _pa = pickAnchor();
         const anchorTid = _pa ? _pa.id : null;
-        // ⚠️ 首屏绝不能只给「最新一天」：续读锚点可能在更早的某天，只加载最新一天会让
-        // 锚点卡不在列表里、anchorTo 定位失败 → 阅读位置被冲掉（表现为打开就跳到最新）。
-        // 因此从最新一天一路加载到「锚点所在天」，保证锚点卡一定在列表中。
-        const collected = (d.items || []).slice();
-        // ① 锚点天若已从服务端天索引淘汰（LRU 字节预算会清掉不常访问的老天），
-        //    原 loadDaysThrough 会一路向下加载全部天（逐个现爬 X，且永远到不了锚点）
-        //    → 停在最新、丢失记录。改为：锚点天仍在索引就按原逻辑加载到那天；
-        //    否则只定向拉那一天的缓存（当天也淘汰时 fetchDay 才现爬，且仅爬那一天，
-        //    不波及其它天）。fetchDay 不带 force，命中缓存即返回、不打 X。
-        // ② 锚点卡兜底：无论服务端那天是否仍在缓存，都从本地镜像/成员记录注入锚点卡，
-        //    保证 anchorTo 永远有目标，绝不因「锚点天被淘汰」而停在最新。
+        // 【架构改动：打开流程拆成两段】
+        // 旧流程是「先渲染最新一天（缓存预览）→ 从最新一路【串行】加载到锚点所在天 →
+        // 整表重建再定位」。因为列表是「一条按时间倒序的连续文档」，要停在锚点就必然要先把
+        // 它【之上】的所有天都加载进来——于是"最新"必然先出现、加载完再整表重建跳走，
+        // 就是「一打开先看到最新、然后刷新跳到阅读位置」。改两段后：
+        //   ① 先只取「锚点所在天」这一个缓存单元（1 个请求），首屏直接渲染并定位到锚点；
+        //   ② 再后台补齐锚点天【之上】的所有天，rebuild 时内部 buildScrollAnchorRef /
+        //      restoreScrollAnchor 会把锚点卡钉回原视口像素 → 视觉零位移（不跳）。
         const aday = dayOfTweetId(anchorTid);
-        const dayInIndex = aday && brDayIndex.some((e) => e && e.day === aday);
-        if (dayInIndex) {
-          await loadDaysThrough(aday, collected);
-        } else if (aday) {
-          try {
-            const ai = await fetchDay(aday);
-            (ai || []).forEach((it) => collected.push(it));
-            brLoadedDays.add(aday);
-          } catch (_) {}
+        // ① 锚点天：命中服务端该天缓存即返回（fetchDay 不带 force，不打 X）。
+        const firstBatch = [];
+        if (aday) {
+          try { const ai = await fetchDay(aday); (ai || []).forEach((it) => firstBatch.push(it)); } catch (_) {}
+          brLoadedDays.add(aday);
+        } else {
+          // 拿不到锚点天（无锚点/内容未就绪）：退回最新一天兜底首屏
+          (d.items || []).forEach((it) => firstBatch.push(it));
+          if (d.day) brLoadedDays.add(d.day);
         }
-        if (anchorTid && !collected.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
+        // 锚点卡兜底：无论该天缓存是否命中，都从本地镜像/成员记录注入锚点卡，保证有定位目标
+        if (anchorTid && !firstBatch.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
           const mem = feedItemById(anchorTid);
-          if (mem) collected.push(mem);
+          if (mem) firstBatch.push(mem);
         }
-        // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
-        const items = mergeTweets(collected);
-        // 整表按时间重建再定位锚点：不能走 prepend——这批横跨新与旧，而 prepend 的
-        // 语义是「这一批全是新推文」，会把更旧的部分插到最新上面、时间顺序错乱，
-        // 且一次性插入大量卡片会把锚点定位冲掉（「刷新后位置被强制刷到最新」的根因）。
-        // 重建期间再次冻结锚点写入：此刻列表正在被整表替换，位置是中间态，不应记录。
+        const items0 = mergeTweets(firstBatch);
         brResetLoading = true;
-        rebuildBrowseList(items);
-        // rebuildBrowseList 已用 restoreScrollAnchor 把锚点钉在「缓存时看到的同一像素位置 P」
-        // （buildScrollAnchorRef 现已改为测真实像素，而非把 0.7 当像素弹到视口顶部）。
+        rebuildBrowseList(items0);
         ensureMounted(anchorTid);          // 确保锚点卡已挂载，下方才能测到真实像素 P
         const _pin = buildScrollAnchorRef();
-        saveBrowseCache(items, true);
+        saveBrowseCache(items0, true);
         if (anchorTid) {
           anchorTo(anchorTid, _pa ? _pa.offset : 0);   // 仍走框架 restore 以同步锚点状态
           // XFEED.restore 在深层卡未挂载场景会退化到视口最顶（0px），把刚钉好的 P 钉回 0px
@@ -6522,6 +6522,31 @@
         else if (!brUserScrolled) { holdBrRestoring(200); viewBrowse.scrollTop = 0; }
         restoreBrowseScroll();   // 锚点已跨设备同步；卡片延后渲染时由重试兜底定位
         brCursor = d.next_cursor || null;
+        // ② 后台补齐锚点天【之上】的所有天（newest→anchor），再整表重建：
+        //    rebuildBrowseList 会按当前锚点卡的视口像素重新钉位 → 上方内容补齐零位移。
+        //    用户若已接管滚动（brUserScrolled）或又有加载在跑则不打扰，交由 nextOlderDay 正常续拉。
+        if (aday) {
+          const _haveIds = new Set(items0.map((it) => String(it.tweet_id || it.id)));
+          (async () => {
+            try {
+              const _up = [];
+              for (const e of brDayIndex) {
+                const day = e && e.day;
+                if (!day) continue;
+                if (day === aday) break;               // 到达锚点天即停（只补它之上的天）
+                if (brLoadedDays.has(day)) continue;
+                let ai = [];
+                try { ai = await fetchDay(day); } catch (_) { ai = []; }
+                brLoadedDays.add(day);
+                (ai || []).forEach((it) => _up.push(it));
+              }
+              const _neu = mergeTweets(_up).filter((it) => !_haveIds.has(String(it.tweet_id || it.id)));
+              if (_neu.length && !brUserScrolled && !brLoading && activeView === 'browse') {
+                rebuildBrowseList(mergeTweets(_up.concat(items0)));
+              }
+            } catch (_) {}
+          })();
+        }
       } else {
         // 上拉加载更旧：优先「加载上一天」（服务端按天缓存，命中即返回，不去打 X）；
         // 天索引用尽才回退到 X 游标翻页继续向更旧爬（爬到的同样会按天入桶）。
