@@ -3509,7 +3509,12 @@
     // 几倍流量，而列表中根本看不出差别。
     // 放大查看（灯箱）仍走原图（不传 size），保证放大后的清晰度。
     const size = opts && opts.size;
-    if (size && !/name=/.test(u)) {
+    // 尺寸变体只对**图片**成立。视频地址（.mp4/.m3u8）拼上 format=jpg&name=... 会被
+    // X CDN 直接拒绝——实测「存入 DBox」失败就是这条：
+    //   .../vid/avc1/1920x1080/xxx.mp4?tag=29&format=jpg&name=900x900 → 下载失败(3次后)
+    // 该坏 URL 还会被写进推文缓存，后端拿到后下载/代理同样失败。
+    const _isVid = (type === 'video') || /\.(mp4|m3u8)(\?|$)/i.test(u);
+    if (size && !_isVid && !/name=/.test(u)) {
       u += (u.includes('?') ? '&' : '?') + 'format=jpg&name=' + size;
     }
     let s = `${API}/media?u=${encodeURIComponent(u)}&type=${type || 'image'}&v=${MEDIA_CACHE_BUST}`;
