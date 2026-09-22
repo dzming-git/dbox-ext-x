@@ -1446,6 +1446,14 @@
   //   active_view lww         以后一次点击为准
   //   feed:main:anchor lww    浏览滚动锚点（条目 id + 卡内偏移），由框架 feed() 管理，同步跨设备
   const XSTATE = (window.DBoxState && window.DBoxState.init({ ns: 'x' })) || null;
+  // 跨设备对账只传「控制键」（锚点/游标/租约/主控…）：内容镜像与搜索缓存体积很大
+  // （实测整包 4.4MB，其中 feed:*:items ~2.3MB、search:kw:* ~1MB、cache ~0.3MB），
+  // 而它们本机已持久化、内容权威源本就是服务端按天缓存，完全没必要每次打开来回传
+  // 2~3 遍（单次 300ms+，后端串行处理还会连带拖慢同期其它请求）。
+  // 只排除纯缓存；history:list / like:list 这类用户数据仍照常跨设备同步。
+  if (XSTATE && XSTATE.setHeavyKeys) XSTATE.setHeavyKeys([
+    'feed:tweets:items', 'feed:main:items', 'feed:user:*', 'search:kw:*', 'cache',
+  ]);
   function xSet(key, value, opts) { if (XSTATE) try { XSTATE.set(key, value, opts); } catch (_) {} }
 
   // 主控租约：多设备同时滚动时，只有主控设备把「精确浏览位置」推到服务端，
