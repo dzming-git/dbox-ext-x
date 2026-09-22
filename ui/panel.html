@@ -8689,6 +8689,12 @@
     userCurName = screenName;
     userCursor = null;
     userEl.classList.add('active');
+    // 根治「详情里点作者 → 用户列表 → 再点推文打不开（地址栏变了、界面不变、得刷新）」：
+    // 进用户页必须收起详情层。否则 #detail 的 active 会残留（被用户页盖住），
+    // 之后 openTweetDetail 读到 wasActive=true → 走 navigate(replace+silent)：
+    // 只 replaceState 改地址栏、跳过 applyRoute，界面不动；刷新后从 hash 重放路由才正常。
+    // applyRoute 里虽有 hideDetailLayer 兜底，但 replace+silent 这条路径根本不经过它。
+    hideDetailLayer();
     enterDrill('user', true);
     userLoadmoreEl.style.display = 'none';
     // 跨设备缓存预渲染：先 pull 对账，再尝试用本地/服务端缓存（user_id_of 别名 →
