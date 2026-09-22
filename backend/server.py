@@ -2868,7 +2868,11 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 收藏失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts,
+        # data 可能是 dict，也可能是条目数组（xrun.list_bookmarks 直接返回 list）：
+        # 直接 **data 会在 list 上抛 TypeError → 500（「我的-收藏」同步失败的真正原因，
+        # 与 Cookie 无关）。两种形状都兜住，统一以 items 暴露。
+        _p = dict(data) if isinstance(data, dict) else {'items': data}
+        return jsonify({'success': True, **_p, 'cached': cached, 'fetched_at': ts,
                         'stale': stale, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/likes', methods=['GET'])
@@ -2894,7 +2898,9 @@ def create_blueprint(host):
         except Exception as e:
             return jsonify({'success': False,
                             'message': '拉取 X 喜欢失败: ' + str(e)}), 502
-        return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts,
+        # 同 bookmarks：data 可能是 list，**data 会抛 TypeError → 500（「我的-喜欢」同样的坑）
+        _p = dict(data) if isinstance(data, dict) else {'items': data}
+        return jsonify({'success': True, **_p, 'cached': cached, 'fetched_at': ts,
                         'stale': stale, 'budget_bytes': _unified_budget_bytes()})
 
     @bp.route('/cache/stats', methods=['GET'])
