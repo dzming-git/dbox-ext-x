@@ -8832,6 +8832,10 @@
     // 进来，同一条推文都是同一个 URL，且不带任何来源参数。
     const wasActive = dtEl.classList.contains('active');
     if (!wasActive) enterDrill('detail', false);   // 历史项由下面的 navigate 压入
+    // 详情是覆盖层，但用户页/列表层若同时 active 会画在它之上（实测：从用户列表点推文后
+    // 地址栏变了、列表还在、还能继续滑动点别的推文，详情层虽 active 且有内容却看不见，
+    // F5 后没有下层就正常）。所以打开详情前必须先收掉用户层。
+    try { const _ul = document.getElementById('user'); if (_ul) _ul.classList.remove('active'); } catch (_) {}
     dtEl.classList.add('active');
     // 尽量带上作者 screen_name，使 URL 与 x.com 真实结构对齐
     // （#/<seg>/<screen_name>/status/<id>）；拿不到时回退到中立的 #/tweet/<id>
