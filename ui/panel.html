@@ -8839,19 +8839,6 @@
     if (!sn) { const c = dtCacheGet(tweetId); if (c && c.tweet && c.tweet.author) sn = c.tweet.author.screen_name || null; }
     const wantHash = buildHash(sn ? { name: 'tweet', id: tweetId, screen_name: sn }
                                  : { name: 'tweet', id: tweetId });
-    // 承载面过矮（停靠条 / 小窗，实测只有 1251x249）：推文详情需要整页承载面。
-    // 详情层是 position:fixed;inset:0，在 249px 高的容器里只能占一条细带，
-    // 用户看到的就是「点了没打开 / URL 变了但界面没变」。这里请求宿主把该扩展切到
-    // 独立全屏页（/ext/<id>，同一 iframe 切形态、不重建文档），详情随即在整页里渲染。
-    // 全屏页的高度足够，条件自然不再成立，不会重复请求。
-    if (window.innerHeight < 480) {
-      try {
-        window.parent.postMessage({
-          type: 'DBOX_NAVIGATE', extId: 'x',
-          path: '/ext/x' + wantHash, keepPanel: true,
-        }, '*');
-      } catch (_) {}
-    }
     // 详情内跳到另一条推文（如点引用的原推）用 replace：详情始终只占一条历史
     if (location.hash !== wantHash) {
       navigate(sn ? { name: 'tweet', id: tweetId, screen_name: sn }
