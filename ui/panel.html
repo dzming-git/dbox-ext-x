@@ -1570,7 +1570,13 @@
   // 深链到对应子页面，并把内部路由变化回写过去（让地址栏/刷新/分享都能用）。
   let hostHash = '';
   let urlSyncEnabled = false;
-  let _navHashPending = false;  // navigate 正在设置内部 hash 时抑制 hashchange 监听器的冗余 SYNC   // 仅独立全屏页支持；小窗形态不动宿主 URL
+  let _navHashPending = false;  // navigate 正在设置内部 hash 时抑制 hashchange 监听器的冗余 SYNC
+  // 面板自己刚发起的导航意图（hash + 时刻）。宿主的 DBOX_ROUTE 是异步回声、其 route.hash
+  // 会滞后于本次导航（实测回声里带的还是上一个路由），若照单全收会把面板「拽回上一页」：
+  // 表现为点推文后地址栏已是推文、面板却退回列表，且要靠刷新恢复（刷新时无回声）。
+  let _selfNavHash = '';
+  let _selfNavAt = 0;
+  const SELF_NAV_GRACE = 2000;  // 这段时间内，与本次意图不同的宿主回声一律不采纳
   let routeInited = false;      // 初始路由是否已应用（宿主后到的 hash 走导航而非初始化）
   let promotedFromSmallWindow = false; // 是否由小窗升级为全屏：仅此情形才需把当前视图写回顶层 URL
   let _lastModeHidden = null;          // 上次通报的显隐形态：宿主 boot 期会重复通报同一形态，去重避免重复对账/重铺
@@ -1605,10 +1611,19 @@
           try { console.log('[DBG-PANEL] DBOX_ROUTE -> bootRoute() deep link'); } catch (_) {}
           bootRoute();   // 深链已到：立即落地，不必再等启动超时
         } else if (r && buildHash(r) !== location.hash) {
-          _navHashPending = true;
-          try { console.log('[DBG-PANEL] DBOX_ROUTE apply r=' + r.name + ' build=' + buildHash(r) + ' loc=' + location.hash); } catch (_) {}
-          try { history.replaceState(null, '', buildHash(r)); } catch (_) { location.hash = buildHash(r); }
-          applyRoute(r, { fromUrl: true });
+          const _bh = buildHash(r);
+          // 丢弃滞后回声：面板刚自己导航过（2 秒内），而宿主回声带的还是【别的】路由。
+          // 宿主的 route.hash 由 Vue Router 异步更新，早于它完成时发出的 DBOX_ROUTE
+          // 带的是上一个路由；若照单全收，会把面板从刚打开的推文拽回列表——
+          // 表现为「地址栏已是推文、面板却停在列表，得刷新一次才恢复」（刷新无回声）。
+          if (Date.now() - _selfNavAt < SELF_NAV_GRACE && _selfNavHash && _bh !== _selfNavHash) {
+            try { console.log('[DBG-PANEL] DBOX_ROUTE 丢弃滞后回声 build=' + _bh + ' 本机意图=' + _selfNavHash); } catch (_) {}
+          } else {
+            _navHashPending = true;
+            try { console.log('[DBG-PANEL] DBOX_ROUTE apply r=' + r.name + ' build=' + _bh + ' loc=' + location.hash); } catch (_) {}
+            try { history.replaceState(null, '', _bh); } catch (_) { location.hash = _bh; }
+            applyRoute(r, { fromUrl: true });
+          }
         }
       } else if (firstLink && routeInited && promotedFromSmallWindow) {
         // 首次连上宿主且确由小窗升级为全屏：把面板当前所在页面补写到顶层 URL，
@@ -3163,6 +3178,7 @@
     }
     if (location.hash === hash) { if (!opts.silent) applyRoute(route, opts); return; }
     _navHashPending = true;
+    _selfNavHash = hash; _selfNavAt = Date.now();   // 记下本次意图，供 DBOX_ROUTE 回声比对
     location.hash = hash;   // 触发 hashchange → applyRoute
   }
 
