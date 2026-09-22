@@ -3414,6 +3414,19 @@
     _navHashPending = false;
     const r = parseRoute(location.hash);
     if (r) applyRoute(r, { fromUrl: true });
+    // 临时探针：打印「路由应用之后」详情层的真实可见性，用来分清
+    // 「层没开」/「层开了但被盖住或尺寸为 0」/「层开了但内容没渲染」。
+    try {
+      const _d = document.getElementById('detail'), _u = document.getElementById('user');
+      const _b = document.getElementById('dt-body');
+      const _rc = _d ? _d.getBoundingClientRect() : null;
+      console.log('[DBG-VIS] route=' + (r ? r.name : '(none)')
+        + ' dtActive=' + !!(_d && _d.classList.contains('active'))
+        + ' dtDisplay=' + (_d ? getComputedStyle(_d).display : '?')
+        + ' dtSize=' + (_rc ? Math.round(_rc.width) + 'x' + Math.round(_rc.height) : '?')
+        + ' userActive=' + !!(_u && _u.classList.contains('active'))
+        + ' bodyLen=' + (_b ? (_b.innerText || '').length : -1));
+    } catch (_) {}
   });
 
   // 推文正文里的 @提及：点击跳到 DBox 内用户页（与作者名/头像资料链接行为一致）。
