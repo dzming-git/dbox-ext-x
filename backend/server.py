@@ -3166,6 +3166,23 @@ def create_blueprint(host):
         # 用于「某张图被坏缓存（旧 bug 期写入的空/残缺响应）卡住、怎么刷新都不出」时，
         # 以推文为单位重新获取——前端给该媒体 URL 追加 &force=1 即可覆盖坏缓存。
         force = request.args.get('force') in ('1', 'true', 'yes')
+        # ── 缓存键归一化：format/name 只是「向上游取图的尺寸档」，不属于资源身份 ──
+        # 任务侧 extensions/x/run.py 的「缓存即下载」按 md5(原始URL) 查同一个媒体缓存目录
+        # （_cache_hit_path）。此前本端点用带尺寸参数的 URL 作键，两边键永远不一致 →
+        # 任务永远查不中 → 每次都要回源重新下载（于是撞上代理/外网而整单失败，
+        # 也就是「面板明明已经缓存过、存入 DBox 却失败」的真因）。
+        # 这里把尺寸参数摘掉，使「预览缓存」与「存入复用」共用同一个键：
+        # 键、以及后面的取图 URL 都归一到原始 URL。代价是取图不再是缩略档尺寸
+        # （上游返回原图，流量略增）；换来的是预览过的媒体可以直接本地拷贝入库、完全不出网。
+        try:
+            _sp = urllib.parse.urlsplit(url)
+            if _sp.query:
+                _q = [(k, v) for k, v in urllib.parse.parse_qsl(_sp.query, keep_blank_values=True)
+                      if k not in ('format', 'name')]
+                url = urllib.parse.urlunsplit(
+                    (_sp.scheme, _sp.netloc, _sp.path, urllib.parse.urlencode(_q), ''))
+        except Exception:
+            pass
         # 命中缓存：直接用本地文件响应（send_file 自动支持 Range）
         if not force:
             hit = _cache_get(url)
