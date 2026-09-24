@@ -2572,6 +2572,9 @@ def create_blueprint(host):
         def worker():
             n = len(keywords)
             done = 0
+            ok_n = 0            # 真的抓到数据的词数
+            fail_n = 0          # 一个词都没抓到的词数
+            fail_reason = ''    # 首个失败原因（用于最终状态文案）
             try:
                 for q in keywords:
                     kk = _kw_key(q)
@@ -2585,34 +2588,56 @@ def create_blueprint(host):
                         continue
                     top_items, top_cur = [], None
                     latest_items, latest_cur = [], None
+                    q_err = ''
                     try:
                         top_items, top_cur = xrun.search_tweets(
                             cookie, q, 50, None, 'Top', txid_func=_txid)
-                    except Exception:
+                    except Exception as _e:
                         top_cur = None
+                        q_err = str(_e)
                     try:
                         latest_items, latest_cur = xrun.search_tweets(
                             cookie, q, 50, None, 'Latest', txid_func=_txid)
-                    except Exception:
+                    except Exception as _e:
                         latest_cur = None
+                        q_err = q_err or str(_e)
+                    got_any = bool(top_items or latest_items)
                     merged = [_merge_tweet(it) for it in ((top_items or []) + (latest_items or []))]
                     if merged:
                         # 与前端 XTWEETS 同一份内容缓存：feed('tweets') 在 UserState 的键是 feed:tweets:items
                         _bg_state_put('feed:tweets:items', merged, strategy='union_by_id', cap=1500,
                                       auth=auth, device=device)
-                    err = '' if (top_items or latest_items) else '未返回结果'
-                    _bg_state_put('search:kw:' + kk,
-                                  {'q': q, 'top': (top_items or []), 'latest': (latest_items or []),
-                                   'cursorTop': top_cur, 'cursorLatest': latest_cur,
-                                   'ts': int(time.time() * 1000), 'err': err},
-                                  strategy='lww', auth=auth, device=device)
+                    # ⚠️ 抓失败时【绝不能】把空结果写回：那是 lww 覆盖，会把上一次抓到的好数据
+                    # 冲掉或让词条停在旧值，同时却报「已爬取」。只有真拿到数据才写缓存。
+                    if got_any:
+                        _bg_state_put('search:kw:' + kk,
+                                      {'q': q, 'top': (top_items or []), 'latest': (latest_items or []),
+                                       'cursorTop': top_cur, 'cursorLatest': latest_cur,
+                                       'ts': int(time.time() * 1000), 'err': ''},
+                                      strategy='lww', auth=auth, device=device)
+                        ok_n += 1
+                    else:
+                        fail_n += 1
+                        if not fail_reason:
+                            fail_reason = q_err or '未返回结果'
                     done += 1
                     pct = int(done / n * 100)
-                    _report_task(task_id, progress=pct, stage='爬取中', detail='已爬取: ' + q)
-                    _progress_store.update(resource_key, percent=pct, message='已爬取: ' + q)
-                _report_task(task_id, status='completed', progress=100, stage='完成',
-                             detail='全部关键词已爬取')
-                _progress_store.mark_completed(resource_key, '全部关键词已爬取')
+                    _msg = ('已爬取: ' + q) if got_any else (
+                        '失败: ' + q + '（' + (q_err or '未返回结果')[:50] + '）')
+                    _report_task(task_id, progress=pct, stage='爬取中', detail=_msg)
+                    _progress_store.update(resource_key, percent=pct, message=_msg)
+                # 状态必须反映真实结果：一个词都没抓到就是失败，不能一律 completed。
+                # 这正是「全部重搜不报错、显示已完成、却一条都没更新」的来源。
+                if ok_n == 0:
+                    _report_task(task_id, status='failed', progress=100, stage='失败',
+                                 detail='%d 个关键词全部抓取失败：%s' % (n, fail_reason[:140]))
+                    _progress_store.mark_failed(resource_key,
+                                                '全部抓取失败：' + fail_reason[:100])
+                else:
+                    _report_task(task_id, status='completed', progress=100, stage='完成',
+                                 detail='成功 %d 个 / 失败 %d 个' % (ok_n, fail_n))
+                    _progress_store.mark_completed(resource_key,
+                                                   '成功 %d 个 / 失败 %d 个' % (ok_n, fail_n))
             except Exception as e:
                 _report_task(task_id, status='failed', detail=str(e))
                 _progress_store.mark_failed(resource_key, str(e))
