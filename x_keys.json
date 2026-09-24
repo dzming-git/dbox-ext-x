@@ -1,0 +1,202 @@
+{
+  "_doc": "X 插件持久化键的唯一声明处（跨设备 user_state）。改这里后跑 `node scripts/x_guard.js --fix` 把内联块同步进 ui/panel.html，再跑 `node scripts/x_guard.js` 校验。字段：name(键名，prefix=true 时为前缀)、prefix、strategy(合并语义)、heavy(是否登记为跨设备对账的重键)、producer(server=后台任务产出/需显式取回；client=本机产生；both；none=无读写方)、fetchVia(该键的值从哪条路回到本地：pullProduced / plugin-api / pull)、writers、legacy(历史遗留)、desc。",
+  "ns": "x",
+  "keys": [
+    {
+      "name": "feed:main:items",
+      "strategy": "union_by_id",
+      "heavy": true,
+      "producer": "server",
+      "fetchVia": "plugin-api",
+      "writers": ["server"],
+      "desc": "关注流内容镜像。注意：本键被排除在对账外，但它不是前端的取数路径——关注流内容走插件自己的按天缓存 API（/api/ext/x/timeline?date=），服务端为权威源；这份 user_state 镜像只用于跨设备连续性。"
+    },
+    {
+      "name": "feed:tweets:items",
+      "strategy": "union_by_id",
+      "heavy": true,
+      "producer": "server",
+      "fetchVia": "plugin-api",
+      "writers": ["server", "client"],
+      "desc": "推文详情单缓存。前端 XTWEETS 为派生视图（另见 panel.html:5064/5082/5152 的清洗逻辑）。"
+    },
+    {
+      "name": "feed:user:",
+      "prefix": true,
+      "strategy": "union_by_id",
+      "heavy": true,
+      "producer": "server",
+      "fetchVia": "pullProduced",
+      "writers": ["server"],
+      "desc": "某用户的成员列表缓存（键 = feed:user:<uid>）。由后台抓取产出，用户页需显式取回。"
+    },
+    {
+      "name": "search:kw:",
+      "prefix": true,
+      "strategy": "lww",
+      "heavy": true,
+      "producer": "server",
+      "fetchVia": "pullProduced",
+      "writers": ["server"],
+      "desc": "每关键词结果缓存（键 = search:kw:<hash>，含 top/latest/游标/时间戳）。由后台重搜任务产出；重搜完成与打开搜索页都必须显式取回，否则表现为「提示已完成、页面无变化」。"
+    },
+    {
+      "name": "cache",
+      "strategy": "union_by_id",
+      "heavy": true,
+      "producer": "none",
+      "fetchVia": "none",
+      "writers": [],
+      "legacy": true,
+      "desc": "历史遗留：2026-09-24 全仓检索确认代码中已无任何读写方（'cache' 仅作为视图名 VIEW_ROUTES:3033 与 SQLite 文件名 server.py:161 出现）。仍留在重键名单里以继续屏蔽它的对账传输；待后端清理该数据后再摘除。"
+    },
+    {
+      "name": "feed:main:cursor",
+      "strategy": "max",
+      "heavy": false,
+      "producer": "server",
+      "fetchVia": "pull",
+      "writers": ["server"],
+      "desc": "关注流向更旧翻页的游标（只前进）。"
+    },
+    {
+      "name": "feed:stars:items",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "both",
+      "fetchVia": "pull",
+      "writers": ["client", "server"],
+      "desc": "dbox 星标收藏列表（server.py:3055-3064）。注意后端是用变量 key 间接引用的，人工清点键名时极易漏掉——本轮就是靠 x_guard 的字面量扫描才发现它。当前未登记为重键（随对账传输）；若体积增长到 like:list 量级，应考虑登记为 heavy。"
+    },
+    {
+      "name": "feed:main:anchor",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["framework"],
+      "desc": "关注流滚动锚点（条目 id + 卡内偏移），由框架 feed() 管理。"
+    },
+    {
+      "name": "feed:main:read_at",
+      "strategy": "max",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["framework"],
+      "legacy": true,
+      "desc": "原「已读边界」（功能已下线，框架仍会拼出该键名）。"
+    },
+    {
+      "name": "feed:search:",
+      "prefix": true,
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["framework"],
+      "desc": "搜索流锚点（键 = feed:search:<hash>:anchor）。"
+    },
+    {
+      "name": "search:kwlist",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "关键词清单（顺序/条数/最后更新时间）。"
+    },
+    {
+      "name": "search:filter",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "搜索结果筛选条件。"
+    },
+    {
+      "name": "search:presets",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "搜索方案（收藏起来的搜索）。"
+    },
+    {
+      "name": "search:last",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "legacy": true,
+      "desc": "旧版单关键词残留，仅用于一次性迁移（panel.html:7565 附近）。"
+    },
+    {
+      "name": "bm:list",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "both",
+      "fetchVia": "pull",
+      "writers": ["client", "server"],
+      "desc": "书签成员列表：前端追加 + 后端合并（server.py:1773）。注意这是「一个键两个写者」的高风险点，两端合并语义必须一致。"
+    },
+    {
+      "name": "like:list",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "both",
+      "fetchVia": "pull",
+      "writers": ["client", "server"],
+      "desc": "喜欢成员列表：前端追加 + 后端合并（server.py:1793）。同 bm:list 的风险。"
+    },
+    {
+      "name": "history:list",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "浏览历史（本机产生、跨设备同步）。"
+    },
+    {
+      "name": "users:",
+      "prefix": true,
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "server",
+      "fetchVia": "pull",
+      "writers": ["server"],
+      "desc": "用户元数据（键 = users:<uid>，server.py:2805/3101 写入）。"
+    },
+    {
+      "name": "user_id_of:",
+      "prefix": true,
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "screen_name → uid 别名（键 = user_id_of:<name>），用户页据此解析出 feed:user:<uid>。"
+    },
+    {
+      "name": "active_view",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "上次所在视图，启动时恢复。"
+    }
+  ],
+  "localStorage": [
+    { "name": "xd_job", "desc": "下载任务句柄（进程内，重启失效）panel.html:1437" },
+    { "name": "xd_rk", "desc": "下载任务 resource_key（持久句柄）panel.html:1438" },
+    { "name": "x_browse_mirror_v1", "desc": "关注流本地镜像 panel.html:5184" },
+    { "name": "x_br_anchor_v1", "desc": "关注流本机锚点（与框架锚点并存，三层锚点之一）panel.html:5360" },
+    { "name": "x:tw:ts:v1", "desc": "推文缓存时间戳 panel.html:8471" },
+    { "name": "xsearch_rk", "desc": "重搜任务 resource_key panel.html:7777" }
+  ]
+}
