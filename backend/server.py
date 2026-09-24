@@ -2249,6 +2249,12 @@ def create_blueprint(host):
         _t0 = _time.time()
         _feed_migrate_from_state()
         _t1 = _time.time()
+        # 读之前先探一次锁：拿到≈无争用（那变慢就出在 SQLite 或 json.loads），
+        # 拿不到≈有别人持锁。零副作用，见 CacheStore.probe_lock 的说明。
+        try:
+            _probe = _cache.probe_lock()
+        except Exception:
+            _probe = None
         try:
             payload, _ts, _age = _cache.get(_FEED_DAY_KIND, _FEED_INDEX_NS, 'days')
         except Exception:
@@ -2268,6 +2274,7 @@ def create_blueprint(host):
         days = (payload or {}).get('days') or [] if isinstance(payload, dict) else []
         return jsonify({'success': True, 'days': days, 't': {
             'mig': round((_t1 - _t0) * 1000, 1),
+            'probe': _probe,
             'get': round((_t2 - _t1) * 1000, 1),
             'reindexed': reindexed,
             'reidx': round((_t3 - _t2) * 1000, 1),
