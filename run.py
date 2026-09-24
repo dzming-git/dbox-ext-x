@@ -444,6 +444,33 @@ _RATE_LIMIT_UNTIL = 0.0
 _RATE_LIMIT_DEFAULT = 60.0    # X 未返回 reset 时的缺省冷却
 _RATE_LIMIT_MAX = 900.0       # 冷却上限，避免异常值把功能卡死
 
+# —— 全局节流闸门（所有 X 请求共用）——
+# 背景：实测日志里 TweetDetail 单项占 96%+（2817 次 vs SearchTimeline 105 次），
+# 来源是详情预取按可视区域成片拉；超过 X 的读取配额即被 429，而冷却期又被后续请求
+# 续期，导致搜索/存入等前台操作永远排在自家流量之后。
+# 这里加一个"不区分调用方"的最小间隔闸门，把 X 请求吞吐压到可持续范围
+# （默认 1.2s/次 ≈ 50 次/分钟）：前台一次点击最多多等一秒余，预取自然降速——
+# 对用户可接受，对 X 也不再是滥用。可用环境变量 X_MIN_INTERVAL 调整（0 关闭）。
+_X_MIN_INTERVAL = 1.2
+try:
+    _X_MIN_INTERVAL = float(os.environ.get('X_MIN_INTERVAL') or 1.2)
+except Exception:
+    _X_MIN_INTERVAL = 1.2
+_X_GATE_LOCK = threading.Lock()
+_X_LAST_AT = 0.0
+
+
+def _throttle_gate():
+    """所有 X 请求共用的最小间隔闸门（进程内串行，含必要的等待）。"""
+    global _X_LAST_AT
+    if _X_MIN_INTERVAL <= 0:
+        return
+    with _X_GATE_LOCK:
+        wait = _X_MIN_INTERVAL - (time.time() - _X_LAST_AT)
+        if wait > 0:
+            time.sleep(wait)
+        _X_LAST_AT = time.time()
+
 
 class XRateLimited(Exception):
     """X 正在限流且仍在冷却期内（调用方应提示用户稍后再试）。"""
@@ -549,6 +576,7 @@ def fetch_text(url, opener, headers, timeout=60, max_retries=3, retry_base=1.0):
     for attempt in range(max_retries):
         try:
             _check_rate_limit(url)
+            _throttle_gate()   # 全局最小间隔：把 X 请求吞吐压到可持续范围，避免被 429
             _throttle_x(url)
             # 优先走连接复用；requests 不可用时自动回退到原来的 urllib 路径
             sess = _http_session()
