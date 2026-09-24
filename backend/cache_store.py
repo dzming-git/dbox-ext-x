@@ -144,6 +144,29 @@ class CacheStore(object):
             finally:
                 conn.close()
 
+    def probe_lock(self, timeout=0.2):
+        """诊断用：试拿一次锁，用来判断「读变慢」是等锁还是等 SQLite/解析。
+
+        为什么不直接给 get() 加计时：get() 是所有读的必经路，改动它有风险；
+        而从**外面**观察又分不清在等什么。这里只做一次带短超时的尝试拿锁：
+          · acquired=True 且 ms≈0  → 此刻无争用（那读慢就出在 SQLite 或 json.loads）
+          · acquired=False 且 ms≈200 → 有别人持锁 ≥200ms（即为锁争用）
+        零副作用（拿到就立刻释放），不改任何既有逻辑。
+        """
+        t0 = time.time()
+        got = False
+        try:
+            got = self._lock.acquire(timeout=timeout)
+        except Exception:
+            got = False
+        ms = round((time.time() - t0) * 1000, 2)
+        if got:
+            try:
+                self._lock.release()
+            except Exception:
+                pass
+        return {'acquired': bool(got), 'ms': ms}
+
     def get_any(self, kind, ns, key):
         """同 get，但不刷新 LRU（用于异常降级读取旧缓存）。"""
         with self._lock:
