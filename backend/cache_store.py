@@ -40,6 +40,9 @@ def _norm_key(params):
 class CacheStore(object):
     """SQLite 支撑的 LRU 缓存（线程安全）。"""
 
+    # 近似 LRU 的写回间隔（秒）：读命中不每次都写 last_access，见 get() 的说明。
+    _TOUCH_INTERVAL = 300.0
+
     def __init__(self, db_path, ttl_overrides=None):
         self._path = db_path
         self._lock = threading.RLock()
@@ -49,17 +52,23 @@ class CacheStore(object):
         d = os.path.dirname(self._path)
         if d:
             os.makedirs(d, exist_ok=True)
+        # ⚠️ 不在这里执行 PRAGMA journal_mode=WAL。
+        # journal_mode 是**数据库文件的持久属性**，建库时设一次即可；而它每次执行都要
+        # 取一次排他锁——只要有别的连接在写事务里（如 /sync、后台抓取落盘），这次连接就
+        # 得排队等待。实测症状：页面里并发出现时，本该 12ms 的缓存读变成 130~150ms
+        # （单独串行请求时同样是 12ms，所以容易误判为"端点自己慢"）。
         conn = sqlite3.connect(self._path, timeout=15)
-        try:
-            conn.execute('PRAGMA journal_mode=WAL')
-        except Exception:
-            pass
         return conn
 
     def _init_db(self):
         with self._lock:
             conn = self._conn()
             try:
+                # WAL 只需在建库时设一次（写入数据库文件头，之后一直有效）
+                try:
+                    conn.execute('PRAGMA journal_mode=WAL')
+                except Exception:
+                    pass
                 conn.execute('''CREATE TABLE IF NOT EXISTS cache (
                     kind TEXT NOT NULL,
                     ns   TEXT NOT NULL,
@@ -116,10 +125,18 @@ class CacheStore(object):
                 if not row:
                     return (None, None, None)
                 now = time.time()
+                # 近似 LRU：读路径不再每次都写回访问时间。
+                # 原先这里无条件 UPDATE，但连接未 BEGIN/COMMIT，close() 会把它回滚——
+                # 于是这次写「既无效」又让每次命中读多背一个写事务（SQLite 在 Windows 下
+                # 要写 WAL/落盘），命中即返回的读因此要几十毫秒；首屏要连读好几处
+                # （天索引 + 当天条目 + 游标），叠加起来就是上百毫秒。
+                # 现在：距上次记录访问超过 _TOUCH_INTERVAL 才写一次，并显式 commit 使其真正生效。
                 try:
-                    conn.execute(
-                        'UPDATE cache SET last_access=? WHERE kind=? AND ns=? AND key=?',
-                        (now, kind, ns, key))
+                    if now - float(row[2] or 0) >= self._TOUCH_INTERVAL:
+                        conn.execute(
+                            'UPDATE cache SET last_access=? WHERE kind=? AND ns=? AND key=?',
+                            (now, kind, ns, key))
+                        conn.commit()
                 except Exception:
                     pass
                 fetched_at = float(row[1])

@@ -2219,17 +2219,20 @@ def create_blueprint(host):
         if _feed_migrated[0]:
             return
         _feed_migrated[0] = True
+        # 先查本地是否已有「按天」数据（本地 SQLite，微秒级）；有就直接结束，
+        # 不去读远端的 feed:main:items——那是一次跨进程 HTTP 调用，实测让「进程内第一次
+        # /timeline/days」多花 100~250ms，而它恰好是每个请求都会先走一遍的入口。
+        try:
+            if _cache.keys(_FEED_DAY_KIND, _FEED_DAY_NS):
+                return          # 已有按天数据就不再覆盖（也不需要再读旧状态）
+        except Exception:
+            pass
         try:
             cur = host.state.get('feed:main:items')
         except Exception:
             return
         if not isinstance(cur, list) or not cur:
             return
-        try:
-            if _cache.keys(_FEED_DAY_KIND, _FEED_DAY_NS):
-                return          # 已有按天数据就不再覆盖
-        except Exception:
-            pass
         _feed_days_put(cur)
 
     @bp.route('/timeline/days', methods=['GET'])
