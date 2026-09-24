@@ -7816,6 +7816,14 @@
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
           // 最终统一替换：拉最新状态 → 重载各词缓存 → 重算融合流 → 整体重渲染一次
           try { if (XSTATE && XSTATE.pull) await XSTATE.pull(); } catch (_) {}
+          // ⚠️ 重搜的结果**只存在于服务端**（后台爬完才写回），而 search:kw:* 已登记为
+          // heavyKeys、不在对账范围内 —— 上面那次 pull 取不回新结果，于是会「提示已完成、
+          // 页面毫无变化」。这里按清单**定向取回**每个关键词的缓存键。
+          try {
+            if (XSTATE && XSTATE.pullKeys && srchKwList.length) {
+              await XSTATE.pullKeys(srchKwList.map((e) => KW_CACHE_PFX + e.key));
+            }
+          } catch (_) {}
           srchKwList.forEach((e) => loadKwCache(e.key));
           if (srchActiveKey === ALL_KEY) rebuildMerged();
           if (srchActiveKey) { renderSrchProduct(); resetSearchPos(); updateSrchBottom(); }
@@ -7902,6 +7910,13 @@
     try { await XSTATE.pull(); } catch (_) {}
     loadKwList();
     migrateLegacySearch();     // 旧版 search:last → 作为第一个关键词导入
+    // ⚠️ 同上：search:kw:* 是 heavyKeys，不在对账里，上面那次 pull 拿不到各词结果
+    // （换设备打开会看到空列表 / 陈旧条数）。按清单定向取回每个关键词的缓存。
+    try {
+      if (XSTATE.pullKeys && srchKwList.length) {
+        await XSTATE.pullKeys(srchKwList.map((e) => KW_CACHE_PFX + e.key));
+      }
+    } catch (_) {}
     // 每个关键词的缓存都读一遍：chip 上要显示条数与「最后更新」。
     // 内容已随各关键词缓存完整落库（见 searchKeyword / loadMergedOlder），融合流渲染
     // 直接用本地内容，无需再把桩注入共享 XTWEETS——旧版那条 tweetCachePut 会把
@@ -8737,6 +8752,12 @@
     userCachedShown = false;
     if (XSTATE) {
       try { await XSTATE.pull(); } catch (_) {}
+      // ⚠️ feed:user:* 是 heavyKeys，不在对账范围内 —— 上面那次 pull 取不回该用户的
+      // 成员列表，换设备/刷新后读到的仍是本地旧缓存（或空）。按别名解析出 uid 后定向取回。
+      try {
+        const _uid = XSTATE.get('user_id_of:' + screenName);
+        if (_uid && XSTATE.pullKeys) await XSTATE.pullKeys(['feed:user:' + _uid]);
+      } catch (_) {}
       userCachedShown = renderUserCache(screenName);
     }
     if (!userCachedShown) {
