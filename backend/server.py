@@ -2238,41 +2238,9 @@ def create_blueprint(host):
     @bp.route('/timeline/days', methods=['GET'])
     @host.login_required
     def timeline_days():
-        """首页按天分页的「天索引」：有哪些天、每天多少条、何时拉取的。
-
-        ⚠️ 分段计时（临时诊断，不改行为）：本端点实测 122ms ↔ 3729ms（24 倍波动），
-        首卡耗时被它直接限住。这里按「迁移 / 取索引 / 重建索引 / 再取」分段返回 t，
-        用于分辨「重建慢」还是「在等锁」。逻辑与 _feed_days_list() 完全一致，
-        只是把中间步骤摊开计时；定位完后可移除 t 字段。
-        """
-        import time as _time
-        _t0 = _time.time()
+        """首页按天分页的「天索引」：有哪些天、每天多少条、何时拉取的。"""
         _feed_migrate_from_state()
-        _t1 = _time.time()
-        try:
-            payload, _ts, _age = _cache.get(_FEED_DAY_KIND, _FEED_INDEX_NS, 'days')
-        except Exception:
-            payload = None
-        _t2 = _time.time()
-        reindexed = not (isinstance(payload, dict) and isinstance(payload.get('days'), list))
-        if reindexed:
-            _feed_days_reindex()
-            _t3 = _time.time()
-            try:
-                payload, _ts, _age = _cache.get(_FEED_DAY_KIND, _FEED_INDEX_NS, 'days')
-            except Exception:
-                payload = None
-        else:
-            _t3 = _t2
-        _t4 = _time.time()
-        days = (payload or {}).get('days') or [] if isinstance(payload, dict) else []
-        return jsonify({'success': True, 'days': days, 't': {
-            'mig': round((_t1 - _t0) * 1000, 1),
-            'get': round((_t2 - _t1) * 1000, 1),
-            'reindexed': reindexed,
-            'reidx': round((_t3 - _t2) * 1000, 1),
-            'get2': round((_t4 - _t3) * 1000, 1),
-            'total': round((_t4 - _t0) * 1000, 1)}})
+        return jsonify({'success': True, 'days': _feed_days_list()})
 
     @bp.route('/timeline', methods=['GET'])
     @host.login_required
