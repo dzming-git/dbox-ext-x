@@ -8498,8 +8498,37 @@
 
 
   // 把详情主体 + 评论区一次性画出来（缓存命中与网络取回共用同一条渲染路径）
+  // 回复线程补全：本条是回复时，向上收集祖先帖（父帖 → … → 根帖），按「根在最上」返回。
+  // 只用本地缓存（dtCacheGet / TWEET_STORE），命中即用、缺失即止——不联网、零等待，
+  // 符合「点开就能第一时间看到完整推文，不用再点『查看完整帖子』」。
+  function ancestorChainOf(t) {
+    const out = [];
+    const seen = new Set([String((t && (t.tweet_id || t.id)) || '')]);
+    let cur = t;
+    for (let i = 0; i < 4; i++) {                     // 层数上限，避免超长线程把详情撑爆
+      const pid = cur && cur.in_reply_to && (cur.in_reply_to.tweet_id || cur.in_reply_to.id);
+      if (!pid) break;
+      const key = String(pid);
+      if (seen.has(key)) break;                       // 环保护
+      seen.add(key);
+      let anc = null;
+      try {
+        const hit = dtCacheGet(key);
+        if (hit && hit.tweet) anc = hit.tweet;
+        else if (TWEET_STORE && TWEET_STORE.get) anc = TWEET_STORE.get(key) || null;
+      } catch (_) { anc = null; }
+      if (!anc) break;                                // 本地没有就不再往上找（宁缺不卡）
+      out.unshift(anc);                               // 先收到的更靠近本条 → 往前插，最终根在最上
+      cur = anc;
+    }
+    return out;
+  }
+
   function paintDetail(tweet, replies, cursor) {
     dtBody.innerHTML = '';
+    // 回复：先把祖先帖按「根 → … → 父」补在当前推文上方，打开即见完整线程。
+    // 卡片里那条「↩ 回复 @xxx / 查看完整帖子」仍保留，作为祖先未被缓存时的兜底跳转。
+    ancestorChainOf(tweet).forEach((anc) => dtBody.appendChild(renderTweetDetailCard(anc)));
     dtBody.appendChild(renderTweetDetailCard(tweet));
     dtReplies.innerHTML = (replies && replies.length)
       ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
