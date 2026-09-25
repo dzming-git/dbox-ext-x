@@ -3543,6 +3543,12 @@ def main():
     # 媒体缓存目录（server 传入）：下载时优先复用本地缓存（P0-2 缓存即下载）
     global _MEDIA_CACHE_DIR
     _MEDIA_CACHE_DIR = context.get('media_cache_dir') or None
+    # 面板已缓存的媒体/文案（server 传入，取自 user_state）：有就不必再抓 X 页面解析。
+    # 背景：接口结构化返回里的 amplify_video 直链，页面/GraphQL 解析常取不到，
+    # 会出现「缓存成功、下载却报未找到媒体」（实测推文 <推文ID>）。
+    global _CACHED_TWEET_MEDIA, _CACHED_TWEET_TEXT
+    _CACHED_TWEET_MEDIA = context.get('tweet_media') or []
+    _CACHED_TWEET_TEXT = context.get('tweet_text') or ''
     url = (params.get('url') or '').strip()
     simulate = bool(params.get('simulate'))
     # 目标资源库：前端放在顶层 body.library_id（与 params 平级），也可能在 params 里
@@ -3582,7 +3588,34 @@ def main():
             media = simulate_media()
             tweet_text = '这是演示推文的文字内容（演示模式）。'
         else:
-            media, tweet_text, tweet_author = extract_media(url, cookie_header, proxy_cfg)
+            # 快路径：面板已缓存媒体（接口结构化返回，含 amplify_video 直链）→ 直接用，
+            # 跳过 X 页面/GraphQL 解析（那条路对这类新结构常取不到，会误报"未找到媒体"）。
+            # 没有缓存才走原三条路，行为不变。
+            media = list(_CACHED_TWEET_MEDIA or [])
+            if media:
+                # 字段归一化：缓存条目来自接口结构化返回（{url,type,cover,w,h}），而下载器
+                # 自己的解析结果还带 label（日志与文件名要用）。缺 label 会在「解析到 N 个
+                # 媒体」处 KeyError —— 实测踩到，故这里补齐并保底 type。
+                _norm = []
+                for _i, _it in enumerate(media):
+                    if not isinstance(_it, dict):
+                        continue
+                    _m = dict(_it)
+                    if not _m.get('type'):
+                        _m['type'] = 'photo'
+                    if not _m.get('label'):
+                        _m['label'] = ('视频' if _m.get('type') == 'video' else '图片') + str(_i + 1)
+                    _norm.append(_m)
+                media = _norm
+                # 缓存文本可能含**孤立代理项**（X 文本里的表情被截断时会产生，JSON 能原样存），
+                # 而 json.dumps(ensure_ascii=False) 写 stdout 时会 UnicodeEncodeError
+                # —— 实测踩到。这里剔除 U+D800–U+DFFF，只留合法码位。
+                tweet_text = ''.join(
+                    _c for _c in (_CACHED_TWEET_TEXT or '')
+                    if not (0xD800 <= ord(_c) <= 0xDFFF))
+                log(f'命中面板已缓存媒体 {len(media)} 项，跳过页面解析')
+            else:
+                media, tweet_text, tweet_author = extract_media(url, cookie_header, proxy_cfg)
     except Exception as e:
         error(str(e))
         sys.exit(1)

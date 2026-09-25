@@ -1178,6 +1178,30 @@ def create_blueprint(host):
         else:
             _append_log(job_id, '[Cookie 诊断] vault.get 返回空（未配置或解密失败）')
 
+        # 面板已缓存的推文记录（user_state feed:tweets:items）。
+        # 为什么需要：面板抓取时拿到的是**接口结构化返回**，视频为 amplify_video 直链；
+        # 而 run.py 侧「游客页 → 带 Cookie → GraphQL」的解析路径对这类新结构常取不到，
+        # 于是出现「缓存里有 mp4 直链，下载却报『未在该推文中找到任何图片或视频』」
+        # （实测推文 <推文ID> 即如此）。这里按推文 id 查出并注入，
+        # run.py 有则直接用、跳过网络解析，没有则完全走原路径（兜底不变）。
+        def _cached_tweet_for_job(_p):
+            try:
+                _m = re.search(r'/status/(\d+)', str((_p or {}).get('url') or ''))
+                if not _m:
+                    return None
+                _tid = _m.group(1)
+                _items = host.state.get('feed:tweets:items') or []
+                if not isinstance(_items, list):
+                    return None
+                for _it in _items:
+                    if isinstance(_it, dict) and str(_it.get('tweet_id') or _it.get('id') or '') == _tid:
+                        return _it
+            except Exception:
+                return None
+            return None
+
+        _ct = _cached_tweet_for_job(params)
+
         context = {
             'working_dir': wd,
             'notify': {
@@ -1189,6 +1213,9 @@ def create_blueprint(host):
             # 媒体缓存目录：下载时若 twimg URL 已缓存（用户预览时已下载），
             # 直接复用本地字节，不再重复访问 twimg（P0-2 缓存即下载）
             'media_cache_dir': _CACHE_LRU_DIR,
+            # 面板已缓存的媒体/文案（与上一条同一思路：本地/已有数据优先，别重复去 X 取）
+            'tweet_media': (_ct or {}).get('media') or [],
+            'tweet_text': (_ct or {}).get('text') or '',
         }
         payload = {'params': params, 'context': context}
 
