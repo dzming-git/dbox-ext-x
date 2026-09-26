@@ -1040,7 +1040,15 @@ def create_blueprint(host):
                     hidden=hid, meta=meta, owner_id=job['owner_id'],
                 )
                 if isinstance(res, dict) and not res.get('success', True):
-                    _append_log(job_id, '入库失败: ' + str(res.get('message', res)))
+                    _fail_msg = '入库失败: ' + str(res.get('message', res))
+                    _append_log(job_id, _fail_msg)
+                    # ⚠️ 此前这里**只写日志**：任务状态仍是「成功」，用户在界面上完全看不到，
+                    # 于是出现「提示下载成功、帖子界面却找不到」——失败被吞掉了。
+                    # 现在同时写进任务状态，让失败可见（帖子也不会被创建，更要如实告知）。
+                    try:
+                        job['error'] = _fail_msg
+                    except Exception:
+                        pass
                     continue
                 _append_log(job_id, '已入库: ' + os.path.basename(path))
                 ri_id = res.get('resource_index_id') if isinstance(res, dict) else None
@@ -1048,7 +1056,12 @@ def create_blueprint(host):
                     g = post_groups.setdefault(f['group'], _group_meta(f))
                     g.setdefault('resource_index_ids', []).append(ri_id)
             except Exception as e:
-                _append_log(job_id, '入库失败: ' + str(e))
+                _fail_msg = '入库失败: ' + str(e)
+                _append_log(job_id, _fail_msg)
+                try:
+                    job['error'] = _fail_msg     # 同上：失败必须可见，不能只躺日志里
+                except Exception:
+                    pass
 
         # 入库完成后，按 group 聚合资源生成帖子（帖子的资源默认不进其他库，
         # 与帖子绑定紧密；通过 library_id 限定仅在所属库可见）
