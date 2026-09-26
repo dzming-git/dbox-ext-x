@@ -3131,10 +3131,21 @@ def create_blueprint(host):
                     return rid
         return None
 
+    # 资料卡的持久缓存字段：本端点写、用户页也写，两处形状必须一致
+    # （否则「缓存命中」与「回源」两种返回给前端的字段不同，资料卡会缺项）。
+    _ME_FIELDS = ('rest_id', 'screen_name', 'name', 'avatar', 'bio', 'verified',
+                  'statuses_count', 'following_count', 'followers_count')
+
     @bp.route('/me', methods=['GET'])
     @host.login_required
     def me():
-        """返回登录用户（我）的资料卡数据。"""
+        """返回登录用户（我）的资料卡数据。
+
+        缓存优先：本端点此前每次都联网打 X，却从不读自己刚写下的 users:<rest_id>
+        （它是跨设备共享的 UserState 键，用户页也在写）。换设备或清了本机
+        localStorage 后，user_state 里其实已经有这份资料，仍要白等一次外网往返。
+        现在先读 users:<rest_id>；只有 force=1（用户在资料卡显式刷新）才强制回源。
+        """
         cookie = _x_cookie_header()
         if not cookie:
             return jsonify({'success': False, 'message': '未配置 x.com 登录 Cookie'}), 400
@@ -3142,16 +3153,23 @@ def create_blueprint(host):
         if not rest_id:
             return jsonify({'success': False,
                             'message': '无法从 Cookie 识别登录用户，请重新登录 X 或刷新凭证'}), 400
+        ckey = 'users:' + str(rest_id)
+        force = (request.args.get('force') or '').lower() in ('1', 'true', 'yes')
+        if not force:
+            try:
+                cached = host.state.get(ckey)
+            except Exception:
+                cached = None
+            if isinstance(cached, dict) and cached.get('screen_name'):
+                return jsonify({'success': True, 'user': cached, 'cached': True})
         try:
             profile = xrun.user_by_rest_id(cookie, rest_id)
         except Exception as e:
             return jsonify({'success': False, 'message': '获取个人资料失败: ' + str(e)}), 502
         if profile:
             try:
-                umeta = {k: profile.get(k) for k in (
-                    'rest_id', 'screen_name', 'name', 'avatar', 'bio', 'verified',
-                    'statuses_count', 'following_count', 'followers_count')}
-                host.state.put('users:' + str(rest_id), umeta, strategy='lww')
+                umeta = {k: profile.get(k) for k in _ME_FIELDS}
+                host.state.put(ckey, umeta, strategy='lww')
             except Exception:
                 pass
         return jsonify({'success': True, 'user': profile})

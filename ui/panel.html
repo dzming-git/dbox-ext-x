@@ -4123,7 +4123,9 @@
     }
     meProfile.innerHTML = '<div class="bm-empty">资料加载中…</div>';
     try {
-      const r = await req(`${API}/me`);
+      // force 必须透传给后端：服务端现在也是缓存优先（读跨设备的 users:<rest_id>），
+      // 不带上这个标记，「刷新」会拿到同一份缓存、看起来像按钮失效。
+      const r = await req(`${API}/me${force ? '?force=1' : ''}`);
       const d = await r.json();
       if (!d.success || !d.user) {
         if (cached) { renderMeProfile(cached.user); updateMeCacheAge(); return; }
