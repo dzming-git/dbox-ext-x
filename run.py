@@ -3617,6 +3617,22 @@ def write_sim_placeholder(working_dir, index, mtype):
     return dest
 
 
+# ---------------- 媒体类型归一 ----------------
+# 面板缓存里的媒体来自 X 的接口结构化返回，type 用的是 X 自己的说法（photo / video /
+# amplified / animated_gif），而下载器内部只认 image / video / document。
+# 不做归一的后果不是「少个分支」而是**整单静默失败**：图片条目落进视频分支，
+# 于是把一张 pbs.twimg.com 的图片地址当 m3u8 播放列表去解析（实测报
+# 「HTTP Error 400」或「Invalid IPv6 URL」），用户看到的是「任务完成、什么都没有」。
+# 未识别的类型保持原有的「按视频处理」语义，避免影响既有解析路径。
+def canon_media_type(t):
+    t = str(t or '').strip().lower()
+    if t in ('image', 'photo', 'picture', '图片'):
+        return 'image'
+    if t in ('document', 'pdf', '文档'):
+        return 'document'
+    return 'video'
+
+
 # ---------------- 主流程 ----------------
 def main():
     raw = sys.stdin.read() if not sys.stdin.isatty() else '{}'
@@ -3691,10 +3707,12 @@ def main():
                     if not isinstance(_it, dict):
                         continue
                     _m = dict(_it)
-                    if not _m.get('type'):
-                        _m['type'] = 'photo'
+                    # 类型必须归一成下载器认识的名字（photo→image 等），否则会走错下载分支
+                    # ——图片被当视频解析 m3u8，整单失败。缺失时按图片（与原 'photo' 的意图一致）。
+                    _m['type'] = canon_media_type(_m.get('type') or 'image')
                     if not _m.get('label'):
-                        _m['label'] = ('视频' if _m.get('type') == 'video' else '图片') + str(_i + 1)
+                        _m['label'] = ('视频' if _m['type'] == 'video'
+                                       else ('文档' if _m['type'] == 'document' else '图片')) + str(_i + 1)
                     _norm.append(_m)
                 media = _norm
                 # 缓存文本可能含**孤立代理项**（X 文本里的表情被截断时会产生，JSON 能原样存），
@@ -3842,7 +3860,10 @@ def main():
         file_progress(0, 1)
 
         try:
-            if item['type'] == 'image':
+            # 分支判定再归一一次（不只依赖解析阶段的写法）：任何来源的条目都不该因为
+            # type 用了别名（photo/amplified…）而走错下载器。
+            _mtype = canon_media_type(item.get('type'))
+            if _mtype == 'image':
                 if simulate:
                     path = write_sim_placeholder(working_dir, idx, 'image')
                     file_progress(1, 1)
@@ -3851,7 +3872,7 @@ def main():
                                           proxy_cfg, guest_token, progress_cb=file_progress)
                 image_files.append((path, item.get('label')))
                 log(f'已下载图片: {os.path.basename(path)}')
-            elif item['type'] == 'document':
+            elif _mtype == 'document':
                 if simulate:
                     path = write_sim_placeholder(working_dir, idx, 'document')
                     file_progress(1, 1)
