@@ -1196,6 +1196,19 @@ def create_blueprint(host):
                 for _it in _items:
                     if isinstance(_it, dict) and str(_it.get('tweet_id') or _it.get('id') or '') == _tid:
                         return _it
+                # ⚠️ 以上依赖推文仍在 feed:tweets:items 的**滚动窗口**内（实测会漏：
+                # 窗口一滚就查不到 → 快路径失效 → 回落到网络解析，一旦环境不可达就整单失败）。
+                # 持久源：/tweet/<id> 的单条推文详情缓存，key 是明文 'cursor=|id=<tid>'
+                # （实测 cache.db 里 941 条），与滚动窗口无关。命中则从各可能形状里取本体。
+                try:
+                    _rec = _cache.get('item', 'tweet', 'cursor=|id=' + _tid)
+                    _pl = _rec[0] if isinstance(_rec, tuple) else None
+                except Exception:
+                    _pl = None
+                if isinstance(_pl, dict):
+                    for _cand in (_pl.get('tweet'), _pl.get('post'), _pl.get('data'), _pl):
+                        if isinstance(_cand, dict) and (_cand.get('media') or _cand.get('media_entities')):
+                            return _cand
             except Exception:
                 return None
             return None
