@@ -65,8 +65,8 @@
       "heavy": false,
       "producer": "both",
       "fetchVia": "pull",
-      "writers": ["client", "server"],
-      "desc": "dbox 星标收藏列表（server.py:3055-3064）。注意后端是用变量 key 间接引用的，人工清点键名时极易漏掉——本轮就是靠 x_guard 的字面量扫描才发现它。当前未登记为重键（随对账传输）；若体积增长到 like:list 量级，应考虑登记为 heavy。"
+      "writers": ["server"],
+      "desc": "dbox 星标收藏列表（server.py:3055-3064，POST 加入 / DELETE 移除，服务端读回后按 tweet_id 去重再 lww 整表覆盖）。前端不直接写该键——只调 /stars 接口，写入全部由服务端完成（原先声明 writers 含 client 是错的，由 x_guard 的 writers 检查发现）。注意后端是用变量 key 间接引用的，人工清点键名时极易漏掉——本轮就是靠 x_guard 的字面量扫描才发现它。当前未登记为重键（随对账传输）；若体积增长到 like:list 量级，应考虑登记为 heavy。"
     },
     {
       "name": "feed:main:anchor",
@@ -76,6 +76,15 @@
       "fetchVia": "pull",
       "writers": ["framework"],
       "desc": "关注流滚动锚点（条目 id + 卡内偏移），由框架 feed() 管理。"
+    },
+    {
+      "name": "feed:main:lease",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["framework"],
+      "desc": "关注流「主控租约」（XSTATE.lease('main')，panel.html:1735/1787）。多设备同时滚动时只有主控设备把精确位置推服务端，故它以普通 UserState 键存在；同样由守卫 H 的「真产出 ⊆ 注册表」抓出。"
     },
     {
       "name": "feed:main:read_at",
@@ -123,6 +132,16 @@
       "fetchVia": "pull",
       "writers": ["client"],
       "desc": "搜索方案（收藏起来的搜索）。"
+    },
+    {
+      "name": "search:preset:",
+      "prefix": true,
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "client",
+      "fetchVia": "pull",
+      "writers": ["client"],
+      "desc": "单个搜索方案的明细（键 = search:preset:<id>，panel.html:8319 pstKey）。此前只登记了 search:presets 清单，明细键是守卫 H 检查「服务端真产出 ⊆ 注册表」时抓出来的未登记键。"
     },
     {
       "name": "search:last",
@@ -189,6 +208,46 @@
       "fetchVia": "pull",
       "writers": ["client"],
       "desc": "上次所在视图，启动时恢复。"
+    },
+    {
+      "name": "cursor",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "none",
+      "fetchVia": "none",
+      "writers": [],
+      "legacy": true,
+      "desc": "历史遗留：全仓已无任何读写方（疑似早期版本的游标键）。登记只为让守卫 H「服务端真产出 ⊆ 注册表」保持严格——库里存在却无人认领的键必须显式登记为残留，否则真漂移会被淹没在噪声里。确认无用后可删数据并摘除本条。"
+    },
+    {
+      "name": "read_at",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "none",
+      "fetchVia": "none",
+      "writers": [],
+      "legacy": true,
+      "desc": "历史遗留：现役键是 feed:main:read_at（框架拼出），这个不带前缀的裸键无任何读写方。同 cursor 的处置。"
+    },
+    {
+      "name": "scroll_tid",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "none",
+      "fetchVia": "none",
+      "writers": [],
+      "legacy": true,
+      "desc": "历史遗留：全仓无读写方（早期版本的滚动位置键）。同 cursor 的处置。"
+    },
+    {
+      "name": "x:filter:cfg",
+      "strategy": "lww",
+      "heavy": false,
+      "producer": "none",
+      "fetchVia": "none",
+      "writers": [],
+      "legacy": true,
+      "desc": "历史遗留：全仓无读写方（早期版本的筛选配置键，现役为 search:filter）。同 cursor 的处置。"
     }
   ],
   "localStorage": [
@@ -197,6 +256,7 @@
     { "name": "x_browse_mirror_v1", "desc": "关注流本地镜像 panel.html:5184" },
     { "name": "x_br_anchor_v1", "desc": "关注流本机锚点（与框架锚点并存，三层锚点之一）panel.html:5360" },
     { "name": "x:tw:ts:v1", "desc": "推文缓存时间戳 panel.html:8471" },
+    { "name": "x:me:cache:v1", "desc": "「我的」页各子标签的本地缓存（资料/关注/收藏…，含时间戳）panel.html:3782" },
     { "name": "xsearch_rk", "desc": "重搜任务 resource_key panel.html:7777" }
   ]
 }
