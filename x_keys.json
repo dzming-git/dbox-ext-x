@@ -18,7 +18,7 @@
       "producer": "server",
       "fetchVia": "plugin-api",
       "writers": ["server", "client"],
-      "desc": "推文详情单缓存。前端 XTWEETS 为派生视图（另见 panel.html:5064/5082/5152 的清洗逻辑）。"
+      "desc": "推文内容的**唯一权威源**（阶段 3.2 结论）：凡是推文内容都写这一份，服务端后台任务（书签/喜欢/搜索）与前端 XTWEETS 都是它。前端 XTWEETS 是派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。注意不要与另两者混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬）——前者不重复存正文，后者根本不是内容存储。"
     },
     {
       "name": "feed:user:",
@@ -57,7 +57,7 @@
       "producer": "server",
       "fetchVia": "pull",
       "writers": ["server"],
-      "desc": "关注流向更旧翻页的游标（只前进）。"
+      "desc": "关注流向更旧翻页的游标（只前进）。阶段 3.3 结论：全仓的 5 处「游标」**不是重复实现**，不值得抽公共工具——其中 4 处（brCursor / srchCursor 及 keyword 的 cursorTop/cursorLatest / userCursor）是各视图各自持有的**不透明服务端令牌**，用法一律是 `= d.next_cursor || null` 原样赋值，压根没有可收敛的算法；若强行抽成「大值前进」的 helper 反而会改变语义（令牌是字符串，比较大小无意义）。真正的「只前进」只发生在本键这一处，由 state 层的 strategy=max 承担。"
     },
     {
       "name": "feed:stars:items",
@@ -254,7 +254,7 @@
     { "name": "xd_job", "desc": "下载任务句柄（进程内，重启失效）panel.html:1437" },
     { "name": "xd_rk", "desc": "下载任务 resource_key（持久句柄）panel.html:1438" },
     { "name": "x_browse_mirror_v1", "desc": "关注流本地镜像 panel.html:5184" },
-    { "name": "x_br_anchor_v1", "desc": "关注流本机锚点（与框架锚点并存，三层锚点之一）panel.html:5360" },
+    { "name": "x_br_anchor_v1", "desc": "关注流本机锚点 panel.html:5360。三层锚点各自用途（阶段 3.3 结论：**不做合并**，跨设备语义不同，合并风险高于收益）：①框架 feed:*:anchor = 服务端权威、跨设备续读的「条目 id + 卡内偏移」；②本键 = 本机兜底，服务端锚点尚未拉回/不可用时先按它预定位，避免两段式跳变；③feed:search:<hash>:anchor = 每个搜索关键词各自的位置（作用域不同）。" },
     { "name": "x:tw:ts:v1", "desc": "推文缓存时间戳 panel.html:8471" },
     { "name": "x:me:cache:v1", "desc": "「我的」页各子标签的本地缓存（资料/关注/收藏…，含时间戳）panel.html:3782" },
     { "name": "xsearch_rk", "desc": "重搜任务 resource_key panel.html:7777" }

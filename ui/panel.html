@@ -1475,7 +1475,7 @@
           "server",
           "client"
         ],
-        "desc": "推文详情单缓存。前端 XTWEETS 为派生视图（另见 panel.html:5064/5082/5152 的清洗逻辑）。"
+        "desc": "推文内容的**唯一权威源**（阶段 3.2 结论）：凡是推文内容都写这一份，服务端后台任务（书签/喜欢/搜索）与前端 XTWEETS 都是它。前端 XTWEETS 是派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。注意不要与另两者混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬）——前者不重复存正文，后者根本不是内容存储。"
       },
       {
         "name": "feed:user:",
@@ -1520,7 +1520,7 @@
         "writers": [
           "server"
         ],
-        "desc": "关注流向更旧翻页的游标（只前进）。"
+        "desc": "关注流向更旧翻页的游标（只前进）。阶段 3.3 结论：全仓的 5 处「游标」**不是重复实现**，不值得抽公共工具——其中 4 处（brCursor / srchCursor 及 keyword 的 cursorTop/cursorLatest / userCursor）是各视图各自持有的**不透明服务端令牌**，用法一律是 `= d.next_cursor || null` 原样赋值，压根没有可收敛的算法；若强行抽成「大值前进」的 helper 反而会改变语义（令牌是字符串，比较大小无意义）。真正的「只前进」只发生在本键这一处，由 state 层的 strategy=max 承担。"
       },
       {
         "name": "feed:stars:items",
@@ -1762,7 +1762,7 @@
       },
       {
         "name": "x_br_anchor_v1",
-        "desc": "关注流本机锚点（与框架锚点并存，三层锚点之一）panel.html:5360"
+        "desc": "关注流本机锚点 panel.html:5360。三层锚点各自用途（阶段 3.3 结论：**不做合并**，跨设备语义不同，合并风险高于收益）：①框架 feed:*:anchor = 服务端权威、跨设备续读的「条目 id + 卡内偏移」；②本键 = 本机兜底，服务端锚点尚未拉回/不可用时先按它预定位，避免两段式跳变；③feed:search:<hash>:anchor = 每个搜索关键词各自的位置（作用域不同）。"
       },
       {
         "name": "x:tw:ts:v1",
@@ -5397,11 +5397,21 @@
   // 跨设备同步。feed 实例在 srchFeed(key) 里懒创建——关键词是运行时增删的，无法预先建死。
   // 仅在该关键词「内容缓存更新（重搜 / 切模式）」时清空锚点；切换关键词时各自保留自己的位置。
 
-  // ===== 全局单缓存：所有视图与详情页共享的唯一推文内容权威副本 =====
+  // ===== 全局单缓存：所有视图与详情页共享的唯一推文内容副本 =====
   // 此前首页(XFEED)、搜索(search:last)、收藏(bm:list)各自存一份完整推文对象，详情又有一份
   // DT_CACHE(localStorage)——同一条推文散在多处以致互相分叉（正是此前的 bug 根因）。
   // 现在全推文内容只登记在 XTWEETS 这一处（框架 feed()，union_by_id、服务端权威、跨设备），
   // 各视图只保留「成员 tweet_id + 位置锚点」，渲染时回查这份单缓存；详情页也只读写这一份。
+  //
+  // ---- 权威源边界（阶段 3.2 的结论，别再引入第二份）----
+  //  · 权威源 = 服务端 UserState 的 feed:tweets:items（union_by_id，跨设备）。
+  //    服务端后台任务（书签/喜欢/搜索）全部都写这一份；XTWEETS 只是它在面板内的**派生视图**。
+  //  · 面板侧允许的操作：读、merge 补全、以及下面明确标注的「派生层修复」；
+  //    任何新增的推文内容缓存都必须写进这里，不得另开一份。
+  //  · search:kw:<hash> 不是内容副本，而是「每个关键词各自的分页结果快照」（含 top/latest
+  //    与游标），生命周期按关键词走；它引用的推文内容仍取这一份，不重复存正文。
+  //  · 服务端 sqlite 的 ns='search' 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬），
+  //    与上面两者层次不同：它是「别重复打 X」，不是「内容存哪」。
   const XTWEETS = XSTATE ? XSTATE.feed('tweets', {
     idAttr: 'data-tid', idKeys: ['tweet_id', 'id'], orderKey: 'timeline_at',
     cap: 1500, throttle: 200, autoBind: false,
@@ -5412,13 +5422,19 @@
     if (!XTWEETS) return;
     try { XTWEETS.merge(mergeTweets(list || [])); } catch (_) {}
   }
-  // ---- 服务端脏数据清洗 ----
+  // ---- 服务端脏数据清洗（**派生层修复**，见上「权威源边界」）----
   // 旧代码 dtCacheDrop 的 lww 推送已在服务端 user_state 表留下大量残缺推文条目
   // （有 tweet_id 但 author.screen_name 缺失 → 渲染为 @unknown）。
   // SDK.pull() 每次以服务端为权威整体替换本地缓存 → 脏数据持续回染。
   //
   // 本函数在 pull 完成后调用：遍历 XTWEETS.items() 检测残缺条目，过滤后用 lww 整组
   // 覆盖写回服务端（一次性根治）。清洗是幂等的：干净数据不会触发写入。
+  //
+  // ⚠️ 为什么它「写回服务端」不算破坏权威源：脏数据是**同一条内容缺字段**，不是另一份副本；
+  //    这里仍是写同一个键 feed:tweets:items，只是把残缺条目剔除。触发条件限死为
+  //    「有 tweet_id 但 author.screen_name 缺失」（旧 dtCacheDrop 竞态的特征），
+  //    且仅在 pull 之后、检测到脏条目时才写。除此之外不得在此追加任何清洗规则——
+  //    启发式清洗一旦扩张，就会变成第二份「内容形状」的定义，与权威源分叉。
   let _scrubPending = false;
   function scrubTweetsCache() {
     if (!XTWEETS) return Promise.resolve(0);
@@ -5487,9 +5503,10 @@
       return mem.find((x) => String(x.tweet_id || x.id) === sid) || null;
     } catch (_) { return null; }
   }
-  // 详情页补全后回写：直接覆盖该推文的内容（正文/媒体）+ 评论分页 + 游标，确保
-  // 「详情拉到的全文」压过列表里的截断版——union_by_id 按 created_at 同序时不会覆盖，
-  // 故这里整数组 lww 落盘，只替换/追加这一条，其余条目原样保留。
+  // 详情页补全后回写（**派生层补全**，写的是同一个权威键 feed:tweets:items，不是第二份副本）：
+  // 只替换/追加目标这一条（正文/媒体 + 评论分页 + 游标），其余条目原样保留。
+  // 触发的必要条件是「详情拉到了更全的内容」：union_by_id 在同一 created_at 下不覆盖，
+  // 若不走这条 lww 精确替换，列表里的截断版会把详情全文钉死（历史坑）。
   function tweetCachePutDetail(tweet, replies, cursor) {
     if (!XTWEETS || !tweet) return;
     const id = String(tweet.tweet_id || tweet.id || '');
