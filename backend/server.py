@@ -1254,13 +1254,21 @@ def create_blueprint(host):
         payload = {'params': params, 'context': context, 'library_id': library_id}
 
         try:
+            # 子进程的 stdio 必须也按 UTF-8：父侧这里写了 encoding='utf-8'，但那只决定**父侧**
+            # 怎么编解码管道；子进程自己默认用系统区域编码（中文 Windows = GBK），
+            # 于是「父写 UTF-8、子按 GBK 读」——推文正文里的中日文/emoji 全部变成
+            # 「锛氱祩鏂奸枊...」这类乱码并原样存进帖子（实测：<日文示例> → <乱码示例>，
+            # 与 utf-8 字节按 gbk 解码的结果逐字一致）。这里用环境变量把子进程也钉成 UTF-8。
+            _env = dict(os.environ)
+            _env['PYTHONIOENCODING'] = 'utf-8'
+            _env['PYTHONUTF8'] = '1'
             proc = subprocess.Popen(
                 [sys.executable, 'run.py'],
                 cwd=plugin_root,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True, encoding='utf-8', bufsize=1,
+                text=True, encoding='utf-8', bufsize=1, env=_env,
             )
         except Exception as e:
             return jsonify({'success': False, 'message': '启动子进程失败: ' + str(e)}), 500

@@ -3974,17 +3974,17 @@ def main():
 
 
 if __name__ == '__main__':
-    # 子进程 stdout 被父进程（manager.py）以 encoding='utf-8' 读取，
-    # 但 Windows 下 stdout 为管道时 Python 会按 locale（GBK）编码，
-    # 导致中文日志在父进程被误判为 UTF-8 而乱码。强制 UTF-8 输出。
-    if isinstance(sys.stdout, io.TextIOWrapper):
-        try:
-            sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
-        except Exception:
-            pass
-    if isinstance(sys.stderr, io.TextIOWrapper):
-        try:
-            sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
-        except Exception:
-            pass
+    # 子进程三个流都必须显式钉成 UTF-8：父进程（插件宿主）以 encoding='utf-8' 读写管道，
+    # 而 Windows 下管道方向如果交给 Python 按 locale（GBK）处理，就会「一边 UTF-8 一边 GBK」。
+    #   · stdout/stderr 漏掉 → 中文日志在父进程侧乱码；
+    #   · **stdin 漏掉（本次的坑）→ 推文正文在入口就被按 GBK 读坏**，原样存进帖子：
+    #     实测「<日文示例>」变成「<乱码示例>」，与「UTF-8 字节按 gbk 解码」逐字一致，
+    #     且部分序列不可逆（emoji 直接丢字）。修 stdout 却漏 stdin，正是这类问题反复的原因。
+    for _stream in ('stdin', 'stdout', 'stderr'):
+        _s = getattr(sys, _stream, None)
+        if isinstance(_s, io.TextIOWrapper):
+            try:
+                _s.reconfigure(encoding='utf-8', line_buffering=(_stream != 'stdin'))
+            except Exception:
+                pass
     main()
