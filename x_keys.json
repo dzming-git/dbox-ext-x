@@ -18,7 +18,7 @@
       "producer": "server",
       "fetchVia": "plugin-api",
       "writers": ["server", "client"],
-      "desc": "推文内容的**唯一权威源**（阶段 3.2 结论）：凡是推文内容都写这一份，服务端后台任务（书签/喜欢/搜索）与前端 XTWEETS 都是它。前端 XTWEETS 是派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。注意不要与另两者混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬）——前者不重复存正文，后者根本不是内容存储。"
+      "desc": "推文内容的**权威源**（阶段 3.2 结论）：服务端后台任务（书签/喜欢/搜索）都写这一份，前端 XTWEETS 是它的派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。与另两者不要混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期、不重复存正文），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬、不是内容存储）。⚠️ **已知缺口（实测）**：关注流的内容走服务端**按天缓存**（feed:main:<day>，/timeline?date=）并在渲染时直接消费，不经过 XTWEETS——实测打开关注流后 660 张内容卡里只有约 19 张能在 XTWEETS 查到。即「唯一内容源」目前只对搜索/收藏/详情/用户页成立，关注流是第二条内容载体；收敛（或明确分工）属阶段 4.2/4.4。"
     },
     {
       "name": "feed:user:",

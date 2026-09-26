@@ -1475,7 +1475,7 @@
           "server",
           "client"
         ],
-        "desc": "推文内容的**唯一权威源**（阶段 3.2 结论）：凡是推文内容都写这一份，服务端后台任务（书签/喜欢/搜索）与前端 XTWEETS 都是它。前端 XTWEETS 是派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。注意不要与另两者混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬）——前者不重复存正文，后者根本不是内容存储。"
+        "desc": "推文内容的**权威源**（阶段 3.2 结论）：服务端后台任务（书签/喜欢/搜索）都写这一份，前端 XTWEETS 是它的派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。与另两者不要混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期、不重复存正文），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬、不是内容存储）。⚠️ **已知缺口（实测）**：关注流的内容走服务端**按天缓存**（feed:main:<day>，/timeline?date=）并在渲染时直接消费，不经过 XTWEETS——实测打开关注流后 660 张内容卡里只有约 19 张能在 XTWEETS 查到。即「唯一内容源」目前只对搜索/收藏/详情/用户页成立，关注流是第二条内容载体；收敛（或明确分工）属阶段 4.2/4.4。"
       },
       {
         "name": "feed:user:",
@@ -5404,7 +5404,7 @@
   // 各视图只保留「成员 tweet_id + 位置锚点」，渲染时回查这份单缓存；详情页也只读写这一份。
   //
   // ---- 权威源边界（阶段 3.2 的结论，别再引入第二份）----
-  //  · 权威源 = 服务端 UserState 的 feed:tweets:items（union_by_id，跨设备）。
+  //  · 内容权威源 = 服务端 UserState 的 feed:tweets:items（union_by_id，跨设备）。
   //    服务端后台任务（书签/喜欢/搜索）全部都写这一份；XTWEETS 只是它在面板内的**派生视图**。
   //  · 面板侧允许的操作：读、merge 补全、以及下面明确标注的「派生层修复」；
   //    任何新增的推文内容缓存都必须写进这里，不得另开一份。
@@ -5412,6 +5412,11 @@
   //    与游标），生命周期按关键词走；它引用的推文内容仍取这一份，不重复存正文。
   //  · 服务端 sqlite 的 ns='search' 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬），
   //    与上面两者层次不同：它是「别重复打 X」，不是「内容存哪」。
+  //  ⚠️ 已知缺口（实测，别被上面的「一处」骗了）：**关注流**的内容走的是服务端**按天缓存**
+  //    （feed:main:<day>，/timeline?date=），渲染时直接消费，并不经过 XTWEETS——
+  //    实测打开关注流后 660 张内容卡里只有 ~19 张能在 XTWEETS 查到。也就是说「唯一权威源」
+  //    目前只对搜索/收藏/详情/用户页成立，关注流是第二条内容载体。把关注流也收进来
+  //    （或明确二者分工）属于阶段 4.2/4.4 的范围，别在这里顺手改渲染路径。
   const XTWEETS = XSTATE ? XSTATE.feed('tweets', {
     idAttr: 'data-tid', idKeys: ['tweet_id', 'id'], orderKey: 'timeline_at',
     cap: 1500, throttle: 200, autoBind: false,
