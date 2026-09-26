@@ -2562,8 +2562,8 @@ def create_blueprint(host):
         rec['tweet_id'] = str(tid)
         return rec
 
-    def _bg_state_put(key, value, strategy=None, cap=None, auth=None, device=None):
-        """后台线程写 UserState：请求上下文已丢，需显式带鉴权头（代理默认读 flask.request）。"""
+    def _bg_state_put_legacy(key, value, strategy=None, cap=None, auth=None, device=None):
+        """旧实现（直连平台 HTTP）：仅在宿主 SDK 不支持显式身份时兜底，见 _bg_state_put。"""
         try:
             base = host.state._base()
             ns = host.state._ns
@@ -2584,8 +2584,8 @@ def create_blueprint(host):
         except Exception:
             pass
 
-    def _bg_state_get(key, auth=None, device=None):
-        """后台线程读 UserState（与 _bg_state_put 配套的显式鉴权版本）。"""
+    def _bg_state_get_legacy(key, auth=None, device=None):
+        """旧实现（直连平台 HTTP）：仅在宿主 SDK 不支持显式身份时兜底。"""
         try:
             base = host.state._base()
             ns = host.state._ns
@@ -2601,6 +2601,28 @@ def create_blueprint(host):
             return data.get('value')
         except Exception:
             return None
+
+    # ---- 后台线程的状态读写 ----
+    # 方向性依赖修正：此前这里自己拼 URL、自己发 HTTP 去写平台的状态接口，等于在插件里
+    # 复制了一份「状态访问」实现（与 host.state.* 并行）。两份实现必然分叉——漏传
+    # cap/strategy 就会静默丢掉合并语义，且请求头要手工维护。现在统一走 SDK 入口
+    # （host.state.put/get 支持显式 auth/device）；SDK 过旧时回退到上面的直连实现，
+    # 保证混版本期间仍可工作。
+    def _bg_state_put(key, value, strategy=None, cap=None, auth=None, device=None):
+        """后台线程写 UserState：请求上下文已丢，需显式带身份（不再自己发 HTTP）。"""
+        try:
+            return host.state.put(key, value, strategy=strategy, cap=cap,
+                                  auth=auth, device=device)
+        except TypeError:
+            return _bg_state_put_legacy(key, value, strategy=strategy, cap=cap,
+                                        auth=auth, device=device)
+
+    def _bg_state_get(key, auth=None, device=None):
+        """后台线程读 UserState：与 _bg_state_put 对称，走 SDK 显式身份入口。"""
+        try:
+            return host.state.get(key, auth=auth, device=device)
+        except TypeError:
+            return _bg_state_get_legacy(key, auth=auth, device=device)
 
     def _kw_cached(kk, auth=None, device=None):
         """该关键词是否已有**可用**缓存（断点续跑时据此跳过）。
