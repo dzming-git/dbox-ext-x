@@ -2536,11 +2536,24 @@ def create_blueprint(host):
     # UserState 缓存（search:kw:<key> + tweets feed），用户关掉浏览器任务仍继续，
     # 回来按持久 resource_key 轮询进度即可。前端 searchKeyword 写入的就是这两个键。
     _B36 = '0123456789abcdefghijklmnopqrstuvwxyz'
+
+    def _kw_units(s):
+        """把字符串按 **UTF-16 代码单元** 展开（与前端 charCodeAt 逐单元一致）。
+
+        前端 kwKey 用 s.charCodeAt(i) 遍历，拿到的是 UTF-16 代码单元；本函数是与之对齐的
+        唯一办法——按 Unicode 码位（ord）遍历在 BMP 内等价，但 emoji 这类非 BMP 字符前端
+        会拆成两个代理项（0xD800–0xDFFF），两边就会算出不同的 key。表现是「关键词在清单
+        里、点开却永远没有结果」：前端按自己的 key 找、后端按自己的 key 写。
+        （x_guard 的哈希契约检查 F 用含 emoji 的 fixture 抓到了这处分叉。）
+        """
+        raw = s.encode('utf-16-le', 'surrogatepass')
+        return [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw) - 1, 2)]
+
     def _kw_key(q):
         s = ' '.join(str(q).strip().lower().split())  # trim + 折叠空白，与前端 kwKey 一致
         h = 5381
-        for ch in s:
-            h = ((h << 5) + h + ord(ch)) & 0xffffffff  # >>> 0 无符号 32 位
+        for cu in _kw_units(s):
+            h = ((h << 5) + h + cu) & 0xffffffff  # >>> 0 无符号 32 位
         n = h
         if n == 0:
             return '0'
