@@ -3174,22 +3174,64 @@ def extract_media(url, cookie_header, proxy_cfg):
 _MEDIA_CACHE_DIR = None
 
 
+def _norm_cache_url(url):
+    """归一化媒体缓存键：与 server.py /media 端点的键归一化保持一致。
+
+    /media 在落盘前会摘掉 format / name 两个「尺寸档」查询参数（它们只影响向上游取的
+    尺寸，不构成资源身份）。关键的是**键必须两边一致**：否则预览写的是
+    <md5(归一化URL)><ext>，而下载侧按原始 URL 去查，永远查不中 → 明明缓存过还要回源。
+    """
+    try:
+        sp = urllib.parse.urlsplit(url)
+        if not sp.query:
+            return url
+        q = [(k, v) for k, v in urllib.parse.parse_qsl(sp.query, keep_blank_values=True)
+             if k not in ('format', 'name')]
+        return urllib.parse.urlunsplit((sp.scheme, sp.netloc, sp.path,
+                                        urllib.parse.urlencode(q), ''))
+    except Exception:
+        return url
+
+
 def _cache_hit_path(url, allowed_exts):
-    """返回本地媒体缓存中匹配 url 的文件路径；无缓存或扩展名不符返回 None。"""
+    """返回本地媒体缓存中匹配 url 的文件路径；无缓存或扩展名不符返回 None。
+
+    先按原始 URL 查（与 panel 传给 /media 的 u 参数一致），再按归一化 URL 查
+    （与 /media 落盘时摘掉 format/name 后的键一致）。两个都试，命中任一个即复用。
+    """
     if not _MEDIA_CACHE_DIR or not os.path.isdir(_MEDIA_CACHE_DIR):
         return None
+    keys = []
+    for u in (url, _norm_cache_url(url)):
+        k = hashlib.md5(u.encode('utf-8')).hexdigest()
+        if k not in keys:
+            keys.append(k)
     try:
-        key = hashlib.md5(url.encode('utf-8')).hexdigest()
-        for fn in os.listdir(_MEDIA_CACHE_DIR):
-            if fn.startswith(key):
-                ext = os.path.splitext(fn)[1].lower()
-                if allowed_exts and ext not in allowed_exts:
-                    continue
-                p = os.path.join(_MEDIA_CACHE_DIR, fn)
-                if os.path.isfile(p):
-                    return p
+        files = os.listdir(_MEDIA_CACHE_DIR)
     except Exception:
         return None
+    for key in keys:
+        for fn in files:
+            if not fn.startswith(key):
+                continue
+            ext = os.path.splitext(fn)[1].lower()
+            if allowed_exts and ext not in allowed_exts:
+                continue
+            p = os.path.join(_MEDIA_CACHE_DIR, fn)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def _cache_hit_any(urls, allowed_exts):
+    """在一组「指向同一份媒体」的候选 URL 里找本地缓存命中（视频：m3u8 与 mp4 直链
+    是两个不同 URL，只查其中一个会白白漏掉另一形态写下的缓存）。"""
+    for u in (urls or []):
+        if not u:
+            continue
+        hit = _cache_hit_path(u, allowed_exts)
+        if hit:
+            return hit
     return None
 
 
@@ -3365,7 +3407,8 @@ def download_fmp4_stream(stream_url, prefix, working_dir, opener, headers, seg_p
     return out_path
 
 
-def download_video(m3u8_url, cookie_header, working_dir, tweet_id, proxy_cfg, guest_token=None, progress_cb=None):
+def download_video(m3u8_url, cookie_header, working_dir, tweet_id, proxy_cfg, guest_token=None,
+                   progress_cb=None, alt_urls=None):
     """下载 X 视频。X 视频为 fMP4，且音视频分离：
        1) 解析 master -> 选最高分辨率视频流 + 对应音频流；
        2) 各自下载 init+分片，ffmpeg concat 协议拼为 mp4；
@@ -3374,13 +3417,18 @@ def download_video(m3u8_url, cookie_header, working_dir, tweet_id, proxy_cfg, gu
 
     progress_cb(done, total) 在下载过程中按文件内分片粒度回调，多次调用；
     done/total ∈ [0, total]，其中 total 默认 1（即 done ∈ [0, 1]）。
+
+    alt_urls：指向同一条视频的其它 URL（典型是推文实体里的 mp4 直链）。解析出的媒体
+    形态在不同来源并不统一——有的把 url 填成 m3u8，有的填成 mp4 直链，而 /media 预览
+    缓存按「用户当时请求的那个 URL」落盘。只查 m3u8 会漏掉 mp4 形态写下的缓存，故两者
+    一起查（命中即本地复制，不出网）。
     """
     # 缓存即下载（与 download_image 同款）：面板预览播放时，/media 已把该视频字节写入
-    # 同一个托管缓存分区（键 = md5(原始URL)，两边已统一），命中就直接复制——不再走
+    # 同一个托管缓存分区（键 = md5(URL)，两边约定已统一），命中就直接复制——不再走
     # SOCKS 代理把整段重下一遍（实测一条 1080p 视频 66MB，重下又慢又易撞风控）。
     # 未命中则完全走原逻辑，行为不变。
     try:
-        _cached_v = _cache_hit_path(m3u8_url, {'.mp4'})
+        _cached_v = _cache_hit_any([m3u8_url] + list(alt_urls or []), {'.mp4'})
     except Exception:
         _cached_v = None
     if _cached_v:
@@ -3488,6 +3536,25 @@ def download_document(media, cookie_header, working_dir, idx, proxy_cfg, guest_t
         candidates.append(f'https://pbs.twimg.com/document/{media_id}/{media_id}?format=pdf&name=orig')
     if media.get('url'):
         candidates.append(media['url'])
+
+    # 缓存即下载（与 download_image / download_video 同款）：面板若预览过该文档
+    # （/media 已按 md5(URL) 落盘），直接本地复制，不再回源。
+    _DOC_EXTS = {'.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.zip', '.bin'}
+    try:
+        _cached_d = _cache_hit_any(candidates, _DOC_EXTS)
+    except Exception:
+        _cached_d = None
+    if _cached_d:
+        try:
+            import shutil as _shutil_d
+            _ext_d = os.path.splitext(_cached_d)[1].lower() or '.pdf'
+            _dest_d = os.path.join(working_dir, f'doc_{idx}{_ext_d}')
+            _shutil_d.copyfile(_cached_d, _dest_d)
+            log(f'文档命中本地缓存，直接复用：{os.path.basename(_cached_d)}')
+            _safe_cb(1, 1)
+            return _dest_d
+        except Exception as _e:
+            log(f'复用本地文档缓存失败，改为回源下载：{_e}', level='warn')
 
     last_err = None
     for u in candidates:
@@ -3805,8 +3872,13 @@ def main():
                     path = write_sim_placeholder(working_dir, idx, 'video')
                     file_progress(1, 1)
                 else:
-                    path = download_video(item['url'], cookie_header, working_dir, tweet_id,
-                                          proxy_cfg, guest_token, progress_cb=file_progress)
+                    # 下载地址取 url，缺失时退回 mp4 直链（解析来源不同，形态不统一）；
+                    # alt_urls 带上另一形态，供「缓存即下载」两条键都查一遍。
+                    _v_url = item.get('url') or item.get('mp4') or ''
+                    _v_alt = [item.get('mp4')] if item.get('mp4') else None
+                    path = download_video(_v_url, cookie_header, working_dir, tweet_id,
+                                          proxy_cfg, guest_token, progress_cb=file_progress,
+                                          alt_urls=_v_alt)
                 # 视频：始终进 video + post 实体（数据完整，便于取消隐藏即时恢复），
                 # 是否对普通用户可见由 hidden 标志控制（默认隐藏，不进视频库列表）
                 modes = ['video', 'post']
