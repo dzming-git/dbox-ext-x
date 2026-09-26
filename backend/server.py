@@ -1017,6 +1017,9 @@ def create_blueprint(host):
                 'source_url': f.get('source_url'),
                 'author_name': f.get('author_name'),
                 'author_url': f.get('author_url'),
+                # 目标库一并记进组信息：建帖要用它，而不能再读循环变量 f
+                # （多个文件属于不同库时，泄漏的 f 只会指向最后一个文件）
+                'library_id': f.get('library_id') or job.get('library_id'),
             }
 
         for f in (files or []):
@@ -1076,7 +1079,7 @@ def create_blueprint(host):
                     author_name=g.get('author_name'),
                     author_url=g.get('author_url'),
                     source_url=g.get('source_url'),
-                    library_id=f.get('library_id') or job['library_id'],
+                    library_id=g.get('library_id'),
                 )
                 if isinstance(r, dict) and r.get('success'):
                     _append_log(job_id, '已生成帖子(group=%s)' % group)
@@ -1243,7 +1246,12 @@ def create_blueprint(host):
             'tweet_media': (_ct or {}).get('media') or [],
             'tweet_text': (_ct or {}).get('text') or '',
         }
-        payload = {'params': params, 'context': context}
+        # library_id 必须**平级**放进 payload：run.py 读的是 payload['library_id']（其次 params），
+        # 而面板把它放在请求体顶层（与 params 平级）。此前这里只透传 params/context，
+        # run.py 便拿到空串，每个文件条目里的 library_id 也是空——入库/建帖全靠宿主侧
+        # 用 job['library_id'] 兜底才勉强对。但「脚本自己不知道目标库」还会连带
+        # 落盘目录、文件归集等判断失真，故直接补齐，让两侧看到同一个值。
+        payload = {'params': params, 'context': context, 'library_id': library_id}
 
         try:
             proc = subprocess.Popen(
