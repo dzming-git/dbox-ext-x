@@ -3375,6 +3375,29 @@ def download_video(m3u8_url, cookie_header, working_dir, tweet_id, proxy_cfg, gu
     progress_cb(done, total) 在下载过程中按文件内分片粒度回调，多次调用；
     done/total ∈ [0, total]，其中 total 默认 1（即 done ∈ [0, 1]）。
     """
+    # 缓存即下载（与 download_image 同款）：面板预览播放时，/media 已把该视频字节写入
+    # 同一个托管缓存分区（键 = md5(原始URL)，两边已统一），命中就直接复制——不再走
+    # SOCKS 代理把整段重下一遍（实测一条 1080p 视频 66MB，重下又慢又易撞风控）。
+    # 未命中则完全走原逻辑，行为不变。
+    try:
+        _cached_v = _cache_hit_path(m3u8_url, {'.mp4'})
+    except Exception:
+        _cached_v = None
+    if _cached_v:
+        _dest_v = os.path.join(working_dir, f'x_video_{tweet_id}.mp4')
+        try:
+            import shutil as _shutil
+            _shutil.copyfile(_cached_v, _dest_v)
+            log(f'视频命中本地缓存，直接复用：{os.path.basename(_cached_v)}')
+            if progress_cb:
+                try:
+                    progress_cb(1, 1)
+                except Exception:
+                    pass
+            return _dest_v
+        except Exception as _e:
+            # 复制失败（占位/权限）→ 静默退回原下载路径，不让"优化"变成新的失败点
+            log(f'复用本地视频缓存失败，改为回源下载：{_e}', level='warn')
     opener = make_opener(proxy_cfg)
     headers = build_headers(cookie_header, guest_token=guest_token)
     log('解析视频播放列表（m3u8）…')
