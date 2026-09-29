@@ -1,0 +1,33 @@
+name: X Guard
+
+# 这份守卫原本挂在核心仓库（dbox）的 CI 上，但那里根本拿不到插件文件
+# （核心仓库的 .gitignore 整层忽略 extensions/），于是那一步必然 ENOENT 崩掉——
+# 门是坏的，只是没人看。工具搬到插件仓库后，门跟着代码走，这里才是它该跑的地方。
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 静态部分：--offline 跳过需要本机 dev 服务的那一项（H）
+      - name: Run contract guard
+        run: node scripts/x_guard.js --offline
+
+      - name: Run contract tests
+        run: python -m unittest tests.test_x_contracts
