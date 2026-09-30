@@ -52,7 +52,7 @@ class CacheStore(object):
         d = os.path.dirname(self._path)
         if d:
             os.makedirs(d, exist_ok=True)
-        # ⚠️ 不在这里执行 PRAGMA journal_mode=WAL。
+        # 不在这里执行 PRAGMA journal_mode=WAL。
         # journal_mode 是**数据库文件的持久属性**，建库时设一次即可；而它每次执行都要
         # 取一次排他锁——只要有别的连接在写事务里（如 /sync、后台抓取落盘），这次连接就
         # 得排队等待。实测症状：页面里并发出现时，本该 12ms 的缓存读变成 130~150ms

@@ -5,7 +5,7 @@
  * 把本 session 反复手写的那套样板固化下来：登录取 token → 注入 localStorage →
  * 无头浏览器 → 定位面板 frame → 抓请求时序 → 等「网络安静」再计时。
  *
- * ⚠️ 两条测量铁律（见计划 0.1，各有一次误判为代价）：
+ * 两条测量铁律（见计划 0.1，各有一次误判为代价）：
  *   1. 结果要分清「单独串行」与「页面并发」——同一端点在两种情形下能差 10 倍；
  *   2. 改 extensions/ 下文件会触发扩展宿主热重载，重载窗口内请求 502/503 且耗时 2s+，
  *      **必须先 waitStable() 再计时**，否则测到的是重载噪声。
@@ -64,7 +64,7 @@ async function login(user = process.env.X_E2E_USER || 'root', pass = process.env
 async function openBrowser(tok, opts = {}) {
   const pw = playwright();
   const browser = await pw.chromium.launch({ channel: opts.channel || 'msedge', headless: opts.headless !== false });
-  // ⚠️ opts.mobile=false 时关掉移动端模拟：isMobile/hasTouch 下 Chromium **忽略 mouse.wheel**
+  // opts.mobile=false 时关掉移动端模拟：isMobile/hasTouch 下 Chromium **忽略 mouse.wheel**
   // （触屏视口靠触摸手势滚动），凡需要真实滚轮的用例都必须用桌面上下文。
   const mobile = opts.mobile !== false;
   const context = await browser.newContext({

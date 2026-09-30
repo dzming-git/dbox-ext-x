@@ -1045,7 +1045,7 @@ def create_blueprint(host):
                 if isinstance(res, dict) and not res.get('success', True):
                     _fail_msg = '入库失败: ' + str(res.get('message', res))
                     _append_log(job_id, _fail_msg)
-                    # ⚠️ 此前这里**只写日志**：任务状态仍是「成功」，用户在界面上完全看不到，
+                    # 此前这里**只写日志**：任务状态仍是「成功」，用户在界面上完全看不到，
                     # 于是出现「提示下载成功、帖子界面却找不到」——失败被吞掉了。
                     # 现在同时写进任务状态，让失败可见（帖子也不会被创建，更要如实告知）。
                     try:
@@ -1212,7 +1212,7 @@ def create_blueprint(host):
                 for _it in _items:
                     if isinstance(_it, dict) and str(_it.get('tweet_id') or _it.get('id') or '') == _tid:
                         return _it
-                # ⚠️ 以上依赖推文仍在 feed:tweets:items 的**滚动窗口**内（实测会漏：
+                # 以上依赖推文仍在 feed:tweets:items 的**滚动窗口**内（实测会漏：
                 # 窗口一滚就查不到 → 快路径失效 → 回落到网络解析，一旦环境不可达就整单失败）。
                 # 持久源：/tweet/<id> 的单条推文详情缓存，key 是明文 'cursor=|id=<tid>'
                 # （实测 cache.db 里 941 条），与滚动窗口无关。命中则从各可能形状里取本体。
@@ -1627,7 +1627,7 @@ def create_blueprint(host):
     def _iso_order(ts):
         """把 X 的 created_at 转成 ISO 时间串（union_by_id 对 order 的契约）。
 
-        ⚠️ 为什么必须转换：core/state_merge 的 _sortable_ts 只认「数字 / 数字串 /
+        必须转换：core/state_merge 的 _sortable_ts 只认「数字 / 数字串 /
         ISO 时间串」，其余一律判为 -inf。X 的 created_at 形如
         'Sun Aug 30 11:00:03 +0000 2026' 三者都不是 → 所有条目排序键相同 →
         排序退化为插入序（旧条目在前、新追加的在后）→ 封顶 items[:cap] 恰好把
@@ -2714,7 +2714,7 @@ def create_blueprint(host):
                         # 与前端 XTWEETS 同一份内容缓存：feed('tweets') 在 UserState 的键是 feed:tweets:items
                         _bg_state_put('feed:tweets:items', merged, strategy='union_by_id', cap=1500,
                                       auth=auth, device=device)
-                    # ⚠️ 抓失败时【绝不能】把空结果写回：那是 lww 覆盖，会把上一次抓到的好数据
+                    # 抓失败时【绝不能】把空结果写回：那是 lww 覆盖，会把上一次抓到的好数据
                     # 冲掉或让词条停在旧值，同时却报「已爬取」。只有真拿到数据才写缓存。
                     if got_any:
                         _bg_state_put('search:kw:' + kk,

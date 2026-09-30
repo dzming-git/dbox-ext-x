@@ -54,7 +54,7 @@ function extractInline(src) {
   if (i < 0 || j < 0) return null;
   return src.slice(i + START.length, j);
 }
-// ⚠️ 行尾：panel.html 在本仓可能是 CRLF，而注册表生成的是 LF。若逐字节比较，
+// 行尾：panel.html 在本仓可能是 CRLF，而注册表生成的是 LF。若逐字节比较，
 // 任何编辑器/工具改写行尾都会让这里整天误报（本轮就误报过一次）。比较前统一成 LF，
 // 写回时沿用文件原有行尾，避免把文件搞成混行尾。
 const EOL = panel.indexOf('\r\n') >= 0 ? '\r\n' : '\n';
@@ -181,7 +181,7 @@ function scanLiterals(src, file) {
 /* ---------- F. 键哈希契约：kwKey(前端) 与 _kw_key(后端) 必须同源 ---------- */
 // 「同概念多实现」的第一号对象：关键词 key 的哈希前后端各写了一遍，只靠注释声明一致。
 // 这里把两份实现分别抽出来、喂同一批关键词（含中文/emoji/长串/大小写/空白）跑一遍比对。
-// ⚠️ 之所以必须真跑而不是比对源码：两者的差异是**语义**差异（UTF-16 代码单元 vs
+// 之所以必须真跑而不是比对源码：两者的差异是**语义**差异（UTF-16 代码单元 vs
 // Unicode 码位），源码看着一模一样，只有对非 BMP 字符（emoji）才会算出不同的 key——
 // 表现正是「关键词在清单里、点开却永远没有结果」。
 const KW_FIXTURES = [
@@ -231,7 +231,7 @@ function extractPyFunction(src, name, dedentToZero) {
       jsHashes = KW_FIXTURES.map((q) => fn(q));
     } catch (e) { why = '前端 kwKey 求值失败: ' + e.message; }
     const py = process.env.X_PYTHON || process.env.PYTHON || 'python';
-    // ⚠️ 输入输出一律走 UTF-8 文件，不走 stdin/stdout：Windows 上 Python 的
+    // 输入输出一律走 UTF-8 文件，不走 stdin/stdout：Windows 上 Python 的
     // sys.stdin/stdout 用系统代码页（cp936）解码，中文/重音字符会被解成另一个字符串，
     // 于是「比对」本身就把两边搞成不同输入——本轮就因此误报过一次「哈希不一致」。
     const tmp = require('os').tmpdir();

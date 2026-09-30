@@ -3459,7 +3459,7 @@ def download_video(m3u8_url, cookie_header, working_dir, tweet_id, proxy_cfg, gu
             pass
 
     # 直链 mp4（如某些 GIF）直接下载，无需 ffmpeg。
-    # ⚠️ 判定必须**去掉查询串**后再看扩展名：X 的直链几乎都带 ?tag=29 之类的参数
+    # 判定必须**去掉查询串**后再看扩展名：X 的直链几乎都带 ?tag=29 之类的参数
     # （如 .../720x1264/Gs5LdDzcFjYNFwG1.mp4?tag=29），用 endswith('.mp4') 会判成
     # 「不是 mp4」→ 继续按 m3u8 处理 → 把二进制 mp4 当文本播放列表逐行 urljoin，
     # 报出「Invalid IPv6 URL」这种与真正原因毫不相干的错，整单失败。
