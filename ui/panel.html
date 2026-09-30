@@ -2514,9 +2514,8 @@
         // 拒绝（连静音重试也不认），视频就一直停在 0:00。同步调一次后浏览器会
         // 自行缓冲、就绪即播。
         tryPlay();
-        // 致命错误有限自愈，且**不能静默**：此前灯箱没有错误监听，源出问题时
-        // 用户只能对着 0:00 一直转圈，看不到任何反馈。次数必须限——无条件
-        // startLoad 会在分片始终拿不到时无限重试（卡片侧已踩过这个坑）。
+        // 致命错误有限自愈，且不能静默：没有错误监听时用户只能对着 0:00 转圈、
+        // 看不到任何反馈。次数必须限——无条件 startLoad 会在分片始终拿不到时无限重试。
         let _lbNetErrs = 0, _lbMediaErrs = 0;
         hls.on(Hls.Events.ERROR, (evt, data) => {
           if (!data || !data.fatal) return;
@@ -2822,8 +2821,8 @@
     // 多资源网格里点播【严格原地播放】：不把该格撑成整行、不改网格、不改变高度——
     // 只把这一格自己的封面盒（下面会把宽高都冻结为封面尺寸）换成播放器，视频按
     // object-fit:contain 在该盒内呈现，四周不重排、邻格不动、窗口不变大。
-    // 此前做法是「占满整行 + 放大到屏幕 85%」，实测在手机端表现为「一点开窗口突然
-    // 变大、整条推文跟着重排跳动」，比困在小格子里更难受，故改回原地。
+    // 撑满整行 + 放大到屏幕 85% 的旧做法在手机端会「一点开窗口突然变大、整条推文
+    // 跟着重排跳动」，比困在小格子里更难受，故严格原地播放。
     const inGridEl = mediaEl.closest('.media.justified, .quoted .media.justified');
     // 冻结容器高度：单图/单视频（m1）的 .bm-media 高度是「由内容撑开」的，
     // 一旦 innerHTML 清空就塌陷，video 的 height:100% 失去基准 → 先黑成一条，
@@ -2963,9 +2962,9 @@
       const hls = new Hls({ enableWorker: true, capLevelToPlayerSize: false });
       hls.loadSource(m3u8); hls.attachMedia(v);
       hls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
-      // 致命错误自愈：网络错误有限重连、媒体错误有限恢复，**必须限次**——
-      // 此前无条件 startLoad() 会让 hls.js 在分片始终拿不到时无限重试，
-      // loadedmetadata 永不触发，用户被永久困在「黑屏转圈」里且看不到任何错误。
+      // 致命错误自愈：网络错误有限重连、媒体错误有限恢复，必须限次——无条件 startLoad()
+      // 会让 hls.js 在分片始终拿不到时无限重试，loadedmetadata 永不触发，用户被永久困在
+      // 黑屏转圈里且看不到任何错误。
       let _hlsNetErrs = 0, _hlsMediaErrs = 0;
       hls.on(Hls.Events.ERROR, (evt, data) => {
         if (!data.fatal) return;
@@ -3824,10 +3823,8 @@
   }
 
   // 把 twimg 媒体 URL 转成本地代理缓存接口：点开即缓存，回看命中本地字节。
-  // v=2 是缓存清除版本号：此前服务端给流式响应发过 max-age=86400，
-  // 失败的空 body 被浏览器当成有效图片缓存了 1 天，导致刷新也永远是空白。
-  // 换个 URL 即可让浏览器重新请求（服务端已改为流式 no-cache）。
-  // 若将来再出现同类缓存污染，把这里的数字 +1 即可。
+  // v=2 是缓存清除版本号：服务端流式响应的缓存策略若再变（历史上曾给长缓存，
+  // 失败的空 body 被浏览器缓存一天、刷新也空白），把这里的数字 +1 即可让浏览器重新请求。
   const MEDIA_CACHE_BUST = '2';
 
   function mediaUrl(url, type, opts) {
@@ -3857,9 +3854,8 @@
   function renderBmCard(item, inFolder) {
     const a = item.author || {};
     const medias = (item.media || []).slice(0, 4);
-    // 媒体渲染统一交给 cardMediaInner：浏览/搜索/用户列表/收藏夹/「刷新」
-    // 全部共用同一份逻辑，避免散落多处的副本相互偏离（此前用户列表就因没走
-    // cardMediaInner 而漏掉 .media.m1 包裹，导致视频 CSS 规则全部失效）。
+    // 媒体渲染统一交给 cardMediaInner：浏览/搜索/用户列表/收藏夹/「刷新」共用同一份逻辑，
+    // 各写一份必然偏离（漏掉 .media.m1 包裹会让视频 CSS 规则全部失效）。
     const mediaHtml = cardMediaInner(medias);
     const tid = item.tweet_id || '';
     const card = document.createElement('div');
@@ -3915,9 +3911,8 @@
     // dbox 收藏（跨设备星标）统一走 toggleStar / starSet，见各卡片 .star 按钮。
     // （旧「收藏夹」本地功能已移除，renderBmCard 不再使用 inFolder 分支。）
         // 刷新：与浏览卡片 / 详情页同一套——以推文为单位重拉完整内容（正文+媒体）。
-        // 此前这里只调 reloadCardMedia 刷媒体，且靠 setTimeout(1200) 假装完成（请求没结束
-        // 按钮就复原了），与浏览卡「重拉全文」也不一致。统一走 fetchTweetAndUpdateCard，
-        // 并传 renderBmCard 重建（不能用默认的 renderBrowseCard，会丢掉本视图的操作按钮）。
+        // 统一走 fetchTweetAndUpdateCard 并传 renderBmCard 重建；不能用默认的
+        // renderBrowseCard（会丢掉本视图的操作按钮），也不要只刷媒体 + setTimeout 假装完成。
         card.querySelectorAll('.refetch').forEach((b) => b.addEventListener('click', (e) => {
           e.stopPropagation();
           setRefreshBusy(b, true, '获取中…');
@@ -4157,7 +4152,7 @@
   });
   if (meRefreshBtn) meRefreshBtn.addEventListener('click', refreshMe);
   function refreshMe() {
-    // 统一忙碌态：此前个人页刷新完全没有忙碌反馈（只在缓存时间那行写字）
+    // 统一忙碌态：个人页刷新与其它刷新按钮一致（原先只在缓存时间那行写字）
     setRefreshBusy(meRefreshBtn, true, '刷新中…');
     const done = () => setRefreshBusy(meRefreshBtn, false, '刷新');
     loadMeProfile(true);
@@ -4426,10 +4421,9 @@
   }
 
   // ---- 详情预取：把「打开帖子」的等待移出点击路径 ----
-  // 实测（2026-09-17）：冷请求 /tweet/<id> 平均 5.4s（x.com 链路往返就要 5.8s，
-  // 优化空间在链路上、不在我们代码里），而命中服务端缓存只要 0.06s。
-  // 既然这 5 秒省不掉，就趁用户浏览、停顿时提前把详情取回来：点开时直接命中缓存。
-  // 量必须小 —— 取一条就要占用约 5~6 秒上游时间，贪多反而把自己推进限流。
+  // 冷请求 /tweet/<id> 的等待几乎全在上游链路上（我们这边省不掉），命中服务端缓存则接近即时。
+  // 于是趁用户浏览、停顿时提前把详情取回来，点开即命中缓存。
+  // 量必须小——取一条要占用数秒上游时间，贪多反而把自己推进限流。
   const _dtPrefetched = new Set();
   const _DT_PREFETCH_MAX = 2;        // 每次最多取几条
   let _dtPrefetchBusy = false;       // 串行取，避免并发突发
