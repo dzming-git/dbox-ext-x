@@ -4673,6 +4673,7 @@
     const cont = viewBrowse; if (!cont || !brList || _winBusy) return;
     _winBusy = true;
     try {
+      lsSample();     // 先采基准：本轮的挂载/卸载会改行高，ResizeObserver 触发时按它补偿
       const top = cont.scrollTop, vh = cont.clientHeight;
       const lo = top - _phBuf, hi = top + vh + _phBuf;
       // 用元素在「滚动容器内容坐标系」中的真实位置判定窗口：
@@ -6020,6 +6021,40 @@
     if (_saTimer) { clearTimeout(_saTimer); _saTimer = null; }
     _saRef = null;
   }
+  // ---- 布局稳定器：用户自己滚动期间的高度补偿 ----
+  // 必要性：窗口上下缘会把占位换成真实卡（行高从估值 340 变实测值），多图卡插入后还要再跑一次
+  // justified 重排——这些都在「视口上方」改变累计高度；而 armScrollAnchorWatch 在用户一滚动
+  // 就被 disarm（不抢用户手势），于是这段位移无人补偿：快滑时、以及停下后资源继续落位时，
+  // 正在看的内容被顶走若干行。
+  // 基准用**内容坐标系**（滚动内容里的绝对位置）：用户滚动只改 scrollTop、不改内容坐标，
+  // 所以基准采得早也不会被滚动带偏；只有布局高度变化才让基准卡的内容坐标移动，移动多少补多少。
+  let _lsRef = null;              // { tid, y }：y = 基准卡在内容坐标系里的位置
+  function lsSnapshot() {
+    if (!brList || !viewBrowse) return null;
+    const tv = topVisibleCard();
+    if (!tv || !tv.tid) return null;
+    const el = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(tv.tid))}"]`);
+    if (!el) return null;
+    const rCont = viewBrowse.getBoundingClientRect();
+    return { tid: String(tv.tid),
+             y: Math.round(viewBrowse.scrollTop + (el.getBoundingClientRect().top - rCont.top)) };
+  }
+  function lsSample() { _lsRef = lsSnapshot(); }
+  function lsApply(snap) {
+    if (!snap || !brList || !viewBrowse) return;
+    const el = brList.querySelector(`.bm-card[data-tid="${CSS.escape(String(snap.tid))}"]`);
+    if (!el) return;              // 基准卡已被回收：不猜落点，等下一次采样
+    const rCont = viewBrowse.getBoundingClientRect();
+    const y2 = Math.round(viewBrowse.scrollTop + (el.getBoundingClientRect().top - rCont.top));
+    const d = y2 - snap.y;
+    if (d) viewBrowse.scrollTop += d;
+  }
+  // 定位阶段（brRestoring / brAwaitingRestore）由 anchorTo / restore 那套负责，这里不叠加。
+  function lsCompensate() {
+    if (!brUserScrolled || brRestoring || brAwaitingRestore) return;
+    lsApply(_lsRef);
+    lsSample();                   // 补完即重采基准，同一位移不会被重复补偿
+  }
   // 整表渲染后：刷新锚点派生基线 + 重建天模型
   function afterBrowseRender() {
     const a = getBrowseAnchor();
@@ -6044,6 +6079,7 @@
   // 从 rows 模型重建分组头/折叠条/右轴（不改卡片内容，可重复调用）
   function refreshDayModel() {
     if (!brList) return;
+    const _ls = lsSnapshot();    // 重建前基准：整表重建会改行高，补回来避免阅读位置移动
     // 新拉到的更新可能比当前最新展开天还新：确保最新一天始终展开（否则顶部新推文被分块挡住）
     if (_revealDays && _revealDays.length && _allDays.length && _allDays[0] && !_revealDays.includes(_allDays[0])) {
       _revealDays.unshift(_allDays[0]);
@@ -6052,6 +6088,7 @@
     renderRowsDOM();
     _rebuildDayRail(true);    // 滚轮跳转：保留当前选中天，勿被 currentDayKey() 抢回
     updateDayFloat();
+    if (!brRestoring && !brAwaitingRestore) { lsApply(_ls); lsSample(); }
   }
   function toggleDayCollapse(k) {
     if (!k) return;
@@ -8603,6 +8640,7 @@
       }
       _rowOff = null;             // 实测高度变化，偏移表失效
       syncPlaceholderHeights();
+      lsCompensate();             // 列表高度变了：把用户正在看的那张卡按回原位（滚动期间也补）
     });
     _brRO.observe(brList);
   }
