@@ -383,23 +383,15 @@ def create_blueprint(host):
     # 完整下载完登记 LRU 缓存，之后走上面的 send_file 分支（同样支持 Range）。
     _media_dl_lock = threading.Lock()
     _media_dl_active = set()
-    # 失败记录：url -> 失败时刻。必须带 TTL，不能永久拉黑——
-    # 此前用 set 永久记录，且唯一的清除语句写死在 _start_media_download() 内，
-    # 而 media() 在调用它之前就先 return 502 了，那行永远执行不到，
-    # 结果是「URL 失败一次就永远 502」，代理后来恢复也再不会重试。
+    # 失败记录：url -> 失败时刻。带 TTL，不能永久拉黑（否则代理恢复后也不再重试）。
     _media_dl_err = {}                       # url -> float(timestamp)
     _MEDIA_ERR_TTL = 45.0                    # 失败 45 秒后允许再次尝试
     # url -> 上游声明的资源总字节数。下载期间供「边下边播」降级路径使用，
     # 让它可以给出正确的 Content-Range 总长（下载结束后即清除，不长期驻留）。
     _media_declared_size = {}
-    # 并发下载上限：代理（Clash 等）在突发并发下会 ERRNO2 / 10053，
-    # 故必须限流，不能放任一次性拉十几张。
-    #
-    # 但从 4 提到 10：4 路对「一屏图片」明显不够——实测 9 张并发时前 4 张 0.5s、
-    # 后 5 张要排到 1.0~1.5s，用户每滚一屏都要等一轮排队。而列表一次返回上千条、
-    # 后台定时预取只覆盖最新 60 张，其余全靠现拉，排队会一直持续。
-    # twimg 图片多为几十~几百 KB，实测 10 路并发稳定、未见掐断；
-    # 且视频已走独立闸门，不会与图片互相挤占。
+    # 图片并发上限：代理（Clash 等）突发并发下会 ERRNO2 / 10053，必须限流；
+    # 4 路对「一屏图片」不够（后几张要排队），10 路对 twimg 的几十~几百 KB 图片稳定，
+    # 且视频走独立闸门，不会互相挤占。
     _media_dl_sem = threading.Semaphore(10)
     # 视频/音频**单独一套闸门**，不与封面图共用。
     #
@@ -451,9 +443,8 @@ def create_blueprint(host):
     # 等「完整下载」的宽限期（秒）：够小文件下完即可，超过就转边下边播。
     # 设得短是为了让大文件也能立刻起播（画面秒出，后台继续下载并登记缓存）。
     _COMPLETE_GRACE_SEC = 3.0
-    # 等 HLS 清单（m3u8）下完的上限（秒）。m3u8 只是几 KB 的文本索引，
-    # 连接复用后通常不到 1 秒；此前写死 60 秒，一旦上游卡住，用户就要盯着
-    # 转圈等满一分钟才看到失败——而截断的清单本来也解析不出画面。
+    # 等 HLS 清单（m3u8）下完的上限（秒）。m3u8 只是几 KB 的文本索引，连接复用后
+    # 通常不到 1 秒；等太久只会让用户盯着转圈，而截断的清单也解析不出画面。
     _M3U8_WAIT_SEC = 12.0
     _M3U8_URL_RE = re.compile(r'(https?://[^\s"\']+)')
 
@@ -498,8 +489,7 @@ def create_blueprint(host):
     def _start_media_download(url, tmp_path, ext):
         """后台把上游 twimg 读到 .part，完成后登记 LRU 缓存；同一 url 并发只跑一个线程。
 
-        失败后可重试：代理在并发突发时会掐断连接，单次失败即永久放弃会让图片
-        长时间出不来（此前一次失败就永久拉黑）。
+        失败后可重试：代理在并发突发时会掐断连接，单次失败即永久放弃会让图片长时间出不来。
         """
         with _media_dl_lock:
             if url in _media_dl_active:
@@ -524,7 +514,7 @@ def create_blueprint(host):
                         with _sem:
                             cookie = _x_cookie_header()
                             headers = xrun.build_headers(cookie, with_bearer=True)
-                            # 优先走连接复用（实测 twimg 0.40s → 0.11s）；失败则回退 urllib
+                            # 优先走连接复用（twimg 取图明显更快）；失败则回退 urllib
                             up = None
                             resp = None
                             sess = xrun._media_session()
@@ -548,11 +538,9 @@ def create_blueprint(host):
                                         url, headers=headers), timeout=60)
                                 finally:
                                     xrun._restore_socks()
-                            # 记下上游声明的长度，用于事后校验完整性。
-                            # 代理（Clash 等）掐断连接时 up.read() 会提前返回空，
-                            # 若只凭「size>0」就判成功，残缺文件会被登记进 LRU 缓存
-                            # 并【永久污染】——该媒体此后永远只能拿到截断内容，
-                            # 怎么刷新都救不回来（实测 40MB 视频被截成 128KB 入库）。
+                            # 记下上游声明的长度，用于事后校验完整性：代理掐断连接时
+                            # up.read() 会提前返回空，只凭「size>0」判成功会把残缺文件
+                            # 永久写进 LRU 缓存。
                             try:
                                 _hdrs = (resp.headers if resp is not None
                                          else (up.headers if up is not None else {}))
@@ -588,10 +576,8 @@ def create_blueprint(host):
                         _got = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
                         # 只有「拿全了」才算成功；上游未给长度（chunked）时退化为原判定
                         if _got > 0 and (_declared is None or _got >= _declared):
-                            # 必须检查登记结果：_cache_put_file 在改名失败时返回 None
-                            # 且不抛异常，若不看返回值就当成功，.part 会永久残留、
-                            # 缓存永不生效 —— 此后每次请求都要重新下载
-                            # （实测图片因此加载极慢：直连 0.55s vs 经服务 40s+）。
+                            # 必须检查登记结果：_cache_put_file 改名失败时返回 None 且不抛异常，
+                            # 不看返回值就当成功会让 .part 永久残留、缓存永不生效。
                             if _cache_put_file(url, tmp_path, ext,
                                                keep_on_fail=True) is not None:
                                 last_err = None
@@ -612,7 +598,7 @@ def create_blueprint(host):
                             continue
             finally:
                 if last_err is not None:
-                    # 必须打日志——此前静默吞异常，媒体一律失败却在日志里毫无痕迹，无法定位
+                    # 必须打日志：静默吞异常会让媒体失败没有任何痕迹，无法定位
                     try:
                         print(f'[x.media] 媒体下载失败({_MEDIA_DL_TRIES}次后) url={url} '
                               f'tmp={tmp_path} err={type(last_err).__name__}: {last_err}',
@@ -645,14 +631,11 @@ def create_blueprint(host):
             end = int(rm.group(2)) if rm.group(2) else None
             waited = 0.0
             # 等待条件有两条，缺一不可：
-            # 1) 必须等「已有足够字节」，而不是只等文件出现——下载线程是连接建立后
-            #    才 open(tmp_path,'wb')，文件被创建的瞬间 size 仍为 0，首个 64KB chunk
-            #    要等网络送达；而 <video>/<img> 的首个请求必带 Range: bytes=0-，
-            #    只等 exists() 会撞上「文件已建、字节未到」的窗口 → cur==0 → 416。
-            # 2) 必须同时盯【正式缓存文件】——下载完成后 .part 会被 os.replace 改名
-            #    登记成正式文件，此后 tmp_path 已不存在，只盯 .part 会永远等不到，
-            #    硬等满 30 秒后必然 416（实测图片首次请求正是如此：等满 38 秒返 416，
-            #    紧接着的第二次请求命中缓存立即 206）。
+            # 1) 必须等「已有足够字节」而不是只等文件出现：文件刚被创建时 size 仍为 0，
+            #    而 <video>/<img> 首个请求带 Range: bytes=0-，只等 exists() 会撞上
+            #    「文件已建、字节未到」的窗口 → 416。
+            # 2) 必须同时盯【正式缓存文件】：下载完成后 .part 会被 os.replace 改名，
+            #    tmp_path 不再存在，只盯 .part 会等到超时仍是 416。
             _final_fp = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             while waited < 30:
                 if url in _media_dl_err:
@@ -688,9 +671,8 @@ def create_blueprint(host):
             def gen():
                 """定量发送 [start, start+total) 这段字节。
 
-                关键修复：中途 .part 被下载线程改名为正式缓存文件后，必须接着读
-                正式文件——此前一旦改名就 return，浏览器只拿到改名那一刻之前的
-                字节（实测出现 206 响应却是 0 字节）。
+                中途 .part 被下载线程改名为正式缓存文件后，必须接着读正式文件，
+                否则浏览器只拿到改名那一刻之前的字节。
                 """
                 f = None
                 cur_path = None
@@ -766,9 +748,8 @@ def create_blueprint(host):
                 if url in _media_dl_err:
                     return
                 time.sleep(0.1); waited += 0.1
-            # 下载完成后 .part 会被 os.replace 改名为正式缓存文件。
-            # 此时必须接着从正式文件把剩余字节读完再收尾——此前 .part 一消失
-            # 就 break，浏览器只拿到已读到的那部分，图片表现为半张/残缺。
+            # 下载完成后 .part 会被 os.replace 改名为正式缓存文件：必须接着从正式文件
+            # 把剩余字节读完再收尾，否则浏览器只拿到已读到的那部分（半张/残缺）。
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             pos = 0
             idle = 0.0
@@ -811,10 +792,9 @@ def create_blueprint(host):
                             and pos >= os.path.getsize(final_path):
                         break
                     # 当前已无新数据：必须主动关闭文件句柄再等待。
-                    # Windows 不允许对被打开的文件做 os.replace/remove，
-                    # 而下载线程写完后要靠 os.replace 把 .part 改名登记进缓存；
-                    # 此前句柄全程持有，改名必然失败，结果是文件下完了却永远
-                    # 停在 .part、缓存永远不生效（图片每次重下或直接空白）。
+                    # Windows 不允许对已打开的文件做 os.replace/remove，而下载线程写完
+                    # 要靠 os.replace 把 .part 改名登记进缓存：句柄不关，改名必然失败，
+                    # 文件会永远停在 .part、缓存永不生效。
                     if f is not None:
                         try:
                             f.close()
@@ -849,10 +829,9 @@ def create_blueprint(host):
             _declared_total = _media_declared_size.get(url)
         if _declared_total:
             resp.headers['Content-Length'] = str(_declared_total)
-        # 流式传输的是「正在增长的文件」，可能中途失败而只传出空/半个 body。
-        # 此前这里给的是 max-age=86400，浏览器会把那次失败的空响应缓存 1 天，
-        # 于是即便服务端后来修好了，用户刷新也永远是空白图。改为不缓存，
-        # 下次重新请求即可命中已下完的本地缓存（走上面 send_file 长缓存分支）。
+        # 流式传输的是「正在增长的文件」，可能中途失败而只传出空/半个 body：
+        # 不能给它长缓存（否则浏览器会把失败的空响应缓存住，刷新也是空白图）。
+        # 不缓存后，下次请求即可命中已下完的本地缓存（走上面 send_file 分支）。
         resp.headers['Cache-Control'] = 'no-cache'
         resp.headers['Content-Disposition'] = 'inline'
         return resp
@@ -1045,9 +1024,8 @@ def create_blueprint(host):
                 if isinstance(res, dict) and not res.get('success', True):
                     _fail_msg = '入库失败: ' + str(res.get('message', res))
                     _append_log(job_id, _fail_msg)
-                    # 此前这里**只写日志**：任务状态仍是「成功」，用户在界面上完全看不到，
-                    # 于是出现「提示下载成功、帖子界面却找不到」——失败被吞掉了。
-                    # 现在同时写进任务状态，让失败可见（帖子也不会被创建，更要如实告知）。
+                    # 除日志外必须同时写进任务状态：否则任务显示「成功」而帖子里找不到，
+                    # 失败被吞掉（帖子不会创建，更要如实告知）。
                     try:
                         job['error'] = _fail_msg
                     except Exception:
@@ -1135,7 +1113,7 @@ def create_blueprint(host):
 
         # 物化 cookie（插件按域名从保险库取，run.py 读取文件）
         # 直接通过 host.vault._vault.get_by_domain 拿原始 cookie 列表自行构建 Netscape 文本，
-        # 绕过 _VaultProxy.get 的 token 优先级 / 过期 _cache 逻辑（实测会丢失 auth_token/ct0）。
+        # 绕过 _VaultProxy.get 的 token 优先级 / 过期 _cache 逻辑（会丢失 auth_token/ct0）。
         cookies_ctx = {}
         cookie_str = ''
         try:
@@ -1198,7 +1176,7 @@ def create_blueprint(host):
         # 为什么需要：面板抓取时拿到的是**接口结构化返回**，视频为 amplify_video 直链；
         # 而 run.py 侧「游客页 → 带 Cookie → GraphQL」的解析路径对这类新结构常取不到，
         # 于是出现「缓存里有 mp4 直链，下载却报『未在该推文中找到任何图片或视频』」
-        # （实测推文 <推文ID> 即如此）。这里按推文 id 查出并注入，
+        # 。这里按推文 id 查出并注入，
         # run.py 有则直接用、跳过网络解析，没有则完全走原路径（兜底不变）。
         def _cached_tweet_for_job(_p):
             try:
@@ -1212,10 +1190,10 @@ def create_blueprint(host):
                 for _it in _items:
                     if isinstance(_it, dict) and str(_it.get('tweet_id') or _it.get('id') or '') == _tid:
                         return _it
-                # 以上依赖推文仍在 feed:tweets:items 的**滚动窗口**内（实测会漏：
-                # 窗口一滚就查不到 → 快路径失效 → 回落到网络解析，一旦环境不可达就整单失败）。
+                # 以上依赖推文仍在 feed:tweets:items 的滚动窗口内：窗口一滚就查不到，
+                # 快路径失效后会回落到网络解析（环境不可达即整单失败），故还需持久源。
                 # 持久源：/tweet/<id> 的单条推文详情缓存，key 是明文 'cursor=|id=<tid>'
-                # （实测 cache.db 里 941 条），与滚动窗口无关。命中则从各可能形状里取本体。
+                # ，与滚动窗口无关。命中则从各可能形状里取本体。
                 try:
                     _rec = _cache.get('item', 'tweet', 'cursor=|id=' + _tid)
                     _pl = _rec[0] if isinstance(_rec, tuple) else None
@@ -1246,19 +1224,15 @@ def create_blueprint(host):
             'tweet_media': (_ct or {}).get('media') or [],
             'tweet_text': (_ct or {}).get('text') or '',
         }
-        # library_id 必须**平级**放进 payload：run.py 读的是 payload['library_id']（其次 params），
-        # 而面板把它放在请求体顶层（与 params 平级）。此前这里只透传 params/context，
-        # run.py 便拿到空串，每个文件条目里的 library_id 也是空——入库/建帖全靠宿主侧
-        # 用 job['library_id'] 兜底才勉强对。但「脚本自己不知道目标库」还会连带
-        # 落盘目录、文件归集等判断失真，故直接补齐，让两侧看到同一个值。
+        # library_id 必须平级放进 payload：run.py 读的是 payload['library_id']（其次 params），
+        # 而面板把它放在请求体顶层。缺了它，脚本自己不知道目标库，落盘目录、文件归集等
+        # 判断都会失真（入库/建帖只能靠宿主侧兜底），故直接补齐，让两侧看到同一个值。
         payload = {'params': params, 'context': context, 'library_id': library_id}
 
         try:
-            # 子进程的 stdio 必须也按 UTF-8：父侧这里写了 encoding='utf-8'，但那只决定**父侧**
-            # 怎么编解码管道；子进程自己默认用系统区域编码（中文 Windows = GBK），
-            # 于是「父写 UTF-8、子按 GBK 读」——推文正文里的中日文/emoji 全部变成
-            # 「锛氱祩鏂奸枊...」这类乱码并原样存进帖子（实测：<日文示例> → <乱码示例>，
-            # 与 utf-8 字节按 gbk 解码的结果逐字一致）。这里用环境变量把子进程也钉成 UTF-8。
+            # 子进程的 stdio 也必须按 UTF-8：父侧的 encoding='utf-8' 只管父侧编解码，
+            # 子进程默认用系统区域编码（中文 Windows = GBK），于是「父写 UTF-8、子按 GBK 读」，
+            # 推文正文里的中日文/emoji 会变成乱码并原样存进帖子。这里用环境变量钉住子进程。
             _env = dict(os.environ)
             _env['PYTHONIOENCODING'] = 'utf-8'
             _env['PYTHONUTF8'] = '1'
@@ -1462,12 +1436,9 @@ def create_blueprint(host):
         'home_interval_min': 120,
         'home_pages': 3,              # 每次抓取页数（每页 50 条）
         'home_prefetch_media': True,
-        # 图片与视频分开限量：实测单张图片百 KB 级、单个视频可达 89MB。
-        # 若不分开控量，几段视频就能把已缓存的图片全挤掉——反而比不预取更慢。
-        # 图片体积小，是预取的主要收益来源。原为 60——但列表一次返回上千条，
-        # 60 张只够覆盖最新一屏多，用户稍一滚动就进入「现拉」区（每张都要等
-        # 一次网络往返，实测约 1.3s），这正是浏览时持续等图片的来源。
-        # 单张按百 KB 级估算，150 张约 15MB，远小于默认 2GB 缓存预算，安全。
+        # 图片与视频分开限量：单张图片百 KB 级、单个视频可达 89MB，不分开控量的话
+        # 几段视频就能把已缓存的图片全挤掉，反而比不预取更慢。图片是预取的主要收益来源，
+        # 150 张约 15MB，远小于缓存预算（列表一次返回上千条，限太少会很快进入「现拉」区）。
         'home_image_limit': 150,
         'home_video_limit': 3,        # 视频体积大，严格限量
         # ---- 书签 / 喜欢 后台同步 ----
@@ -1531,8 +1502,8 @@ def create_blueprint(host):
                     if isinstance(d, bool):
                         cfg[k] = bool(v)
                     elif isinstance(d, str):
-                        # 字符串型设置（如 ui_arc_side）：此前只还原 bool 与数值，
-                        # 字符串键即便写进了 settings.json 也读不回来，一重启就掉回默认值。
+                        # 字符串型设置（如 ui_arc_side）也要还原：只还原 bool/数值的话，
+                        # 字符串键写进 settings.json 也读不回来，一重启就掉回默认值。
                         cfg[k] = str(v)
                     elif isinstance(v, (int, float)) and not isinstance(v, bool):
                         cfg[k] = int(v)
@@ -1740,7 +1711,7 @@ def create_blueprint(host):
         return True, len(items), media_n, ''
 
     # ---- 书签 / 喜欢 后台同步 ----
-    # 这两个列表此前只能等用户打开对应标签才现拉（首次进入要转圈数秒，喜欢尤甚）。
+    # 这两个列表
     # 这里同样提供后台定时：内容进全局单缓存 feed:tweets:items（与首页/搜索/详情
     # 共用一份内容），成员 id 进 bm:list / like:list——正是前端读取的那两个键，
     # 因此后台跑过一轮后，用户点开书签/喜欢即为秒开。
@@ -1761,9 +1732,8 @@ def create_blueprint(host):
     def _merge_membership(key, items, limit=600):
         """把新抓到的成员并入既有成员列表（按 tweet_id 去重、时间倒序、封顶）。
 
-        绝不能直接 lww 整体覆盖：后台任务每次只翻 N 页（默认 2 页），抓到的是
-        「最近若干页」而非全量，覆盖式写入会把用户此前缓存的更旧条目整段抹掉，
-        列表反而越同步越短。故先读回既有列表再按 id 归并。
+        绝不能直接 lww 整体覆盖：后台任务每次只翻 N 页（默认 2 页），抓到的是「最近若干页」
+        而非全量，覆盖式写入会把更旧的条目整段抹掉，越同步越短。故先读回既有列表再按 id 归并。
         """
         cur = []
         try:
@@ -2289,8 +2259,8 @@ def create_blueprint(host):
             return
         _feed_migrated[0] = True
         # 先查本地是否已有「按天」数据（本地 SQLite，微秒级）；有就直接结束，
-        # 不去读远端的 feed:main:items——那是一次跨进程 HTTP 调用，实测让「进程内第一次
-        # /timeline/days」多花 100~250ms，而它恰好是每个请求都会先走一遍的入口。
+        # 不去读远端的 feed:main:items——那是跨进程 HTTP 调用，而这里恰好是每个请求
+        # 都会先走一遍的入口。
         try:
             if _cache.keys(_FEED_DAY_KIND, _FEED_DAY_NS):
                 return          # 已有按天数据就不再覆盖（也不需要再读旧状态）
@@ -2632,11 +2602,9 @@ def create_blueprint(host):
             return None
 
     # ---- 后台线程的状态读写 ----
-    # 方向性依赖修正：此前这里自己拼 URL、自己发 HTTP 去写平台的状态接口，等于在插件里
-    # 复制了一份「状态访问」实现（与 host.state.* 并行）。两份实现必然分叉——漏传
-    # cap/strategy 就会静默丢掉合并语义，且请求头要手工维护。现在统一走 SDK 入口
-    # （host.state.put/get 支持显式 auth/device）；SDK 过旧时回退到上面的直连实现，
-    # 保证混版本期间仍可工作。
+    # 后台线程的状态读写统一走 SDK 入口 host.state.put/get（支持显式 auth/device）：
+    # 自己拼 URL 发 HTTP 等于在插件里复制一份「状态访问」实现，漏传 cap/strategy 就会
+    # 静默丢掉合并语义。SDK 过旧时回退到上面的直连实现，保证混版本期间仍可工作。
     def _bg_state_put(key, value, strategy=None, cap=None, auth=None, device=None):
         """后台线程写 UserState：请求上下文已丢，需显式带身份（不再自己发 HTTP）。"""
         try:
@@ -2940,7 +2908,7 @@ def create_blueprint(host):
 
         def _fetch():
             # 与 /search 一致：带上 X 的反爬令牌（x-client-transaction-id）。
-            # 详情路径此前一直没带，被 X 判为机器人 → 大量 429（实测日志上万次）。
+            # 详情路径
             _home_headers = xrun.build_headers(cookie, with_bearer=False)
 
             def _txid(method, path):
@@ -3192,10 +3160,9 @@ def create_blueprint(host):
     def me():
         """返回登录用户（我）的资料卡数据。
 
-        缓存优先：本端点此前每次都联网打 X，却从不读自己刚写下的 users:<rest_id>
-        （它是跨设备共享的 UserState 键，用户页也在写）。换设备或清了本机
-        localStorage 后，user_state 里其实已经有这份资料，仍要白等一次外网往返。
-        现在先读 users:<rest_id>；只有 force=1（用户在资料卡显式刷新）才强制回源。
+        缓存优先：先读 users:<rest_id>（跨设备共享的 UserState 键，用户页也在写），
+        只有 force=1（用户在资料卡显式刷新）才强制回源——否则换设备或清了本机
+        localStorage 后仍要白等一次外网往返。
         """
         cookie = _x_cookie_header()
         if not cookie:
@@ -3317,13 +3284,10 @@ def create_blueprint(host):
         # 以推文为单位重新获取——前端给该媒体 URL 追加 &force=1 即可覆盖坏缓存。
         force = request.args.get('force') in ('1', 'true', 'yes')
         # ── 缓存键归一化：format/name 只是「向上游取图的尺寸档」，不属于资源身份 ──
-        # 任务侧 extensions/x/run.py 的「缓存即下载」按 md5(原始URL) 查同一个媒体缓存目录
-        # （_cache_hit_path）。此前本端点用带尺寸参数的 URL 作键，两边键永远不一致 →
-        # 任务永远查不中 → 每次都要回源重新下载（于是撞上代理/外网而整单失败，
-        # 也就是「面板明明已经缓存过、存入 DBox 却失败」的真因）。
-        # 这里把尺寸参数摘掉，使「预览缓存」与「存入复用」共用同一个键：
-        # 键、以及后面的取图 URL 都归一到原始 URL。代价是取图不再是缩略档尺寸
-        # （上游返回原图，流量略增）；换来的是预览过的媒体可以直接本地拷贝入库、完全不出网。
+        # 任务侧 run.py 的「缓存即下载」按 md5(原始URL) 查同一个媒体缓存目录（_cache_hit_path）：
+        # 两边必须用同一个键，否则任务永远查不中、每次都要回源重下（撞上代理就整单失败）。
+        # 这里把尺寸参数摘掉，键与取图 URL 都归一到原始 URL——代价是取图不再走缩略档尺寸
+        # （上游返回原图，流量略增），换来预览过的媒体可直接本地拷贝入库、完全不出网。
         try:
             _sp = urllib.parse.urlsplit(url)
             if _sp.query:
@@ -3378,25 +3342,17 @@ def create_blueprint(host):
         #    静默重试 → 表现为「黑屏转圈非常久都不播放」；
         #  · 更关键的是边下边播响应会把 Content-Range 的总长谎报成「当时已下的字节数」，
         #    浏览器据此认为文件已完整下载，实际拿到的是截断文件 → 必然无法起播。
-        #    实测（缓存清空后首次请求）：只拿到完整文件的 82.5%
-        #    —— 458752 字节 / Content-Range: bytes 0-458751/458752，
-        #       而完整文件是 555925 字节。
-        # 刷新时文件早已完整进缓存、走上面的 send_file 分支返回完整内容，
-        # 于是「刷新后就能播」——这正是该问题【必现】而非偶发竞态的原因。
-        # 历史坑：先只处理了 m3u8、后补了 mp4，却漏了 HLS 的 ts/m4s 分片（落进图片那条
-        # 「.part 一有字节就返回 + 谎报总长」的路径），首播必被截断，与「有时刷新才好」同源。
+        # 刷新时文件早已完整进缓存、走上面的 send_file 分支返回完整内容，于是「刷新后就能播」
+        # ——这正是该问题必现而非偶发竞态的原因：HLS 的 ts/m4s 分片同样受这条路径影响，
+        # 首播必被截断。
         # Flask 以 threaded=True 运行，等待只占用本请求线程，不会阻塞整个服务。
         if ext in _COMPLETE_ONLY_EXT:
             final_path = os.path.join(_CACHE_LRU_DIR, _cache_key(url) + ext)
             _mt0 = time.time()
             # 只给一小段「宽限期」等它下完：小文件基本瞬间完成，可一次性返回完整
             # 内容并登记缓存。超过宽限期立刻转流式边下边播——用户马上看到画面，
-            # 而不是干等满 60 秒。
-            #
-            # （此前是硬等 60 秒，因为当时降级路径会【谎报总长】、浏览器拿到截断
-            #  文件根本播不了，只能指望等满后拿到完整文件。现在降级路径会带上
-            #  上游声明的真实总长（_media_declared_size），边下边播是有效的，
-            #  因此没必要再让用户干等。下载线程仍在后台跑，完成后照常登记缓存。）
+            # 而不是干等满 60 秒：降级路径会带上游声明的真实总长（_media_declared_size），
+            # 边下边播有效，没必要让用户干等。下载线程仍在后台跑，完成后照常登记缓存。
             _ev = _media_event(url)
             while (time.time() - _mt0) < _COMPLETE_GRACE_SEC:
                 with _media_dl_lock:

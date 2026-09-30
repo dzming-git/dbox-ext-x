@@ -435,7 +435,7 @@ def notify_input(input_ctx, files):
 
 
 # ---------------- X 限流保护 ----------------
-# 背景（实测）：TweetDetail 被 X 判为机器人后大量返回 429，日志累计上万次；
+# 背景：TweetDetail 被 X 判为机器人后大量返回 429，日志累计上万次；
 # 而旧逻辑遇到 429 会退避 1s / 2s 再试两次——限流窗口通常远长于此，重试既
 # 拿不到数据，又继续消耗配额，还让用户干等约 3 秒。
 # 因此改为：**429 一律不重试**，只登记冷却期；冷却期内直接快速失败。
@@ -445,12 +445,9 @@ _RATE_LIMIT_DEFAULT = 60.0    # X 未返回 reset 时的缺省冷却
 _RATE_LIMIT_MAX = 900.0       # 冷却上限，避免异常值把功能卡死
 
 # —— 全局节流闸门（所有 X 请求共用）——
-# 背景：实测日志里 TweetDetail 单项占 96%+（2817 次 vs SearchTimeline 105 次），
-# 来源是详情预取按可视区域成片拉；超过 X 的读取配额即被 429，而冷却期又被后续请求
-# 续期，导致搜索/存入等前台操作永远排在自家流量之后。
-# 这里加一个"不区分调用方"的最小间隔闸门，把 X 请求吞吐压到可持续范围
-# （默认 1.2s/次 ≈ 50 次/分钟）：前台一次点击最多多等一秒余，预取自然降速——
-# 对用户可接受，对 X 也不再是滥用。可用环境变量 X_MIN_INTERVAL 调整（0 关闭）。
+# 详情预取会按可视区域成片拉，超过 X 的读取配额即被 429，且冷却期被后续请求不断续期，
+# 搜索/存入等前台操作会永远排在自家流量之后。这里加一个不区分调用方的最小间隔闸门，
+# 把吞吐压到可持续范围（默认 1.2s/次 ≈ 50 次/分钟，环境变量 X_MIN_INTERVAL 可调，0 关闭）。
 _X_MIN_INTERVAL = 1.2
 try:
     _X_MIN_INTERVAL = float(os.environ.get('X_MIN_INTERVAL') or 1.2)
@@ -518,15 +515,9 @@ _API_MIN_INTERVAL = 0.25
 _api_lock = threading.RLock()      # 可重入：节流与 Session 使用会嵌套加锁
 _last_api_at = 0.0
 
-# 连接复用 —— 这是**打开帖子慢的头号原因**。
-# 受控 A/B（同一进程、同一目标、交替开关）实测：
-#   每次新建连接（urllib，无连接池）：5.43 5.47 5.29 5.29 5.30 → 中位 5.30s
-#   复用连接（requests.Session）   ：5.42 0.20 0.37 0.21 0.25 → 中位 0.25s
-# 也就是说那 5 秒**不是链路带宽/往返延迟，而是每次重新建连的成本**。
-#
-# 注意：必须是**全局共享**的 Session。早先按线程各存一个，而 Flask 每个请求
-# 落在不同线程上，等于每次都新建，实测毫无收益（冷请求仍 5~6s）。
-# Session 不并发使用，统一用 _api_lock 串行（X 请求本就要限流，串行不亏）。
+# 连接复用：打开帖子慢的主因不是链路带宽，而是每次重新建连的成本（复用它能把数秒降到
+# 数百毫秒）。必须是**全局共享**的 Session——按线程各存一个等于每次新建（Flask 每个
+# 请求落在不同线程上）。Session 不并发使用，统一用 _api_lock 串行（X 请求本就要限流）。
 _shared_session = None
 
 
@@ -640,7 +631,7 @@ _media_sess_lock = threading.Lock()
 
 
 def _media_session():
-    """媒体（twimg）下载共用的 Session：复用连接，实测 0.40s → 0.11s。
+    """媒体（twimg）下载共用的 Session：复用连接。
 
     与 X 主站的 Session 分开：媒体是**并发**下载的（信号量 10），不能像
     X 请求那样串行加锁，否则多图帖子会退化成一张张排队。
@@ -1052,7 +1043,7 @@ _GQL_BOOKMARKS_OPN = 'Bookmarks'
 # GraphQL Likes（读取账号「喜欢」的推文列表；按 userId 取，query id 自动发现）
 _GQL_LIKES_QID = 'xA8fDIbrJfy4ojjjXmSR-A'  # 已知兜底（会轮换，优先自动发现）
 _GQL_LIKES_OPN = 'Likes'
-# 与 X 收藏页一致的 features（2026-08 实测捕获）
+# 与 X 收藏页一致的 features
 _GQL_BOOKMARKS_FEATURES = {
     "rweb_video_screen_enabled": False,
     "rweb_cashtags_enabled": True,
@@ -1094,8 +1085,7 @@ _GQL_BOOKMARKS_FEATURES = {
     "responsive_web_enhance_cards_enabled": False,
 }
 
-# HomeTimeline（关注流）。features 与 Bookmarks 完全一致（X 的 feature 开关是全局共享的，
-# 2026-08 playwright 实测：HomeTimeline 与 Bookmarks 用的是同一套 38 项 features）。
+# HomeTimeline（关注流）。features 与 Bookmarks 完全一致（X 的 feature 开关是全局共享的）。
 _GQL_HOME_TIMELINE_QID = 'wp06oo3fRGU4P1sK8rECqQ'  # For You 流（recommendation），已知兜底
 _GQL_HOME_TIMELINE_OPN = 'HomeTimeline'
 # Following（关注中）流：与 For You 是不同接口。X 首页「正在关注」tab 走的是
@@ -1169,9 +1159,9 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
     search_by_raw_query.search_timeline 包装成其兼容的 bookmark_timeline_v2 结构）。
 
     txid_func(method, path)：可选的回调，用来生成 X 反爬头 x-client-transaction-id。
-    GraphQL 搜索接口缺该头会直接返回 404（实测：带上即 200 且有数据）。但生成它
-    依赖第三方库，而 run.py 被设计为仅依赖标准库（它还会以子进程方式被直接执行），
-    所以由调用方注入；放在此处按「最终 URL」取 path，才能保证令牌与真实请求路径一致。
+    GraphQL 搜索接口缺该头会直接返回 404，但生成它依赖第三方库，而 run.py 被设计为
+    仅依赖标准库（还会以子进程方式被直接执行），所以由调用方注入；按「最终 URL」取
+    path，才能保证令牌与真实请求路径一致。
     """
     global _GQL_SEARCH_QID
     opener = make_opener(None)
@@ -1185,7 +1175,7 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
         "count": count,
         "querySource": "typed_query",
         "product": product if product in ('Top', 'Latest') else 'Top',
-        # 与浏览器真实请求保持一致（此前是 True，X 网页端实际发 False）
+        # 与浏览器真实请求保持一致
         "withGrokTranslatedBio": False,
         "withQuickPromoteEligibilityTweetFields": False,
     }
@@ -1885,8 +1875,8 @@ def list_following_timeline(cookie_header, count=20, cursor=None):
         raw = e.read().decode('utf-8', 'replace')
         status = e.code
     data = json.loads(raw)
-    # HTTP 非 2xx：必须抛错。此前吞掉后当正常响应解析，得到 0 条并被后台任务
-    # 记成 ok=True 条=0，鉴权失效/限流因此长期无人知晓。
+    # HTTP 非 2xx 必须抛错：吞掉后会被当正常响应解析成 0 条，后台任务记成 ok=True，
+    # 鉴权失效/限流因此无人知晓。
     if status >= 400:
         raise RuntimeError('HomeLatestTimeline HTTP %s：%s'
                            % (status, (raw or '')[:200].replace('\n', ' ')))
@@ -2821,8 +2811,7 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None, txid_func=None):
 
     txid_func：计算 x-client-transaction-id 的回调（method, path）-> str。
     **详情路径此前一直没注入这个头**，而 /search、/user_tweets 等都注入了——
-    X 据此识别真实客户端，缺失会被判为机器人并限流（实测日志中 TweetDetail
-    的 429 累计上万次）。传入它可显著降低 429。
+    X 据此识别真实客户端，缺失会被判为机器人并限流。传入它可显著降低 429。
     """
     opener = make_opener(None)
     qid = _get_tweet_detail_qid()
@@ -3425,7 +3414,7 @@ def download_video(m3u8_url, cookie_header, working_dir, tweet_id, proxy_cfg, gu
     """
     # 缓存即下载（与 download_image 同款）：面板预览播放时，/media 已把该视频字节写入
     # 同一个托管缓存分区（键 = md5(URL)，两边约定已统一），命中就直接复制——不再走
-    # SOCKS 代理把整段重下一遍（实测一条 1080p 视频 66MB，重下又慢又易撞风控）。
+    # SOCKS 代理把整段重下一遍。
     # 未命中则完全走原逻辑，行为不变。
     try:
         _cached_v = _cache_hit_any([m3u8_url] + list(alt_urls or []), {'.mp4'})
@@ -3656,7 +3645,7 @@ def main():
     _MEDIA_CACHE_DIR = context.get('media_cache_dir') or None
     # 面板已缓存的媒体/文案（server 传入，取自 user_state）：有就不必再抓 X 页面解析。
     # 背景：接口结构化返回里的 amplify_video 直链，页面/GraphQL 解析常取不到，
-    # 会出现「缓存成功、下载却报未找到媒体」（实测推文 <推文ID>）。
+    # 会出现「缓存成功、下载却报未找到媒体」。
     global _CACHED_TWEET_MEDIA, _CACHED_TWEET_TEXT
     _CACHED_TWEET_MEDIA = context.get('tweet_media') or []
     _CACHED_TWEET_TEXT = context.get('tweet_text') or ''
@@ -3706,7 +3695,7 @@ def main():
             if media:
                 # 字段归一化：缓存条目来自接口结构化返回（{url,type,cover,w,h}），而下载器
                 # 自己的解析结果还带 label（日志与文件名要用）。缺 label 会在「解析到 N 个
-                # 媒体」处 KeyError —— 实测踩到，故这里补齐并保底 type。
+                # 媒体」处 KeyError
                 _norm = []
                 for _i, _it in enumerate(media):
                     if not isinstance(_it, dict):
@@ -3722,7 +3711,7 @@ def main():
                 media = _norm
                 # 缓存文本可能含**孤立代理项**（X 文本里的表情被截断时会产生，JSON 能原样存），
                 # 而 json.dumps(ensure_ascii=False) 写 stdout 时会 UnicodeEncodeError
-                # —— 实测踩到。这里剔除 U+D800–U+DFFF，只留合法码位。
+                # 这里剔除 U+D800–U+DFFF，只留合法码位。
                 tweet_text = ''.join(
                     _c for _c in (_CACHED_TWEET_TEXT or '')
                     if not (0xD800 <= ord(_c) <= 0xDFFF))
