@@ -1,0 +1,30 @@
+fix(browse): 加载看门狗——不让一次不返回的请求把视图永久冻住；冒烟计数改为只看浏览列表
+
+一、浏览视图会永久卡在「加载中」（复现 + 根因）
+现象：打开浏览视图后可能几十秒停在骨架（实测 25s 时仍 brLoading/brResetLoading=true、#br-list 只有 1 行）。
+复现：加载期就滚动最容易触发；带网络观测复现到 76 个挂起请求（绝大多数 /api/ext/x/tweet/<id>，
+连 /api/ext/x/check 也一起挂起）——上游（X 限流／插件忙）饱和时请求会长时间不返回。
+根因：loadBrowse 开头是 if (brLoading) return，而它的 await 没有上限。一旦某次不返回，brLoading
+永远为真 → 后续所有加载（含用户点重试）都在开头直接 return，视图永久停在骨架、只能刷新页面。
+这是「卡住就再也起不来」的机制，与具体哪个请求挂住无关。
+
+改法：每次加载发令牌 + 20s 看门狗。
+- _brLoadArmWatch(tok)：超时即作废本轮（令牌自增）、清 brLoading/brResetLoading、解除锚点冻结、
+  底部切到「加载失败，点击重试」，并把已有内容挂出来（不留整屏空白）；
+- _brLoadFinish(tok)：正常收尾走同一入口，被看门狗作废的那一轮返回时不再有权改状态。
+
+验证（把 /api/ext/x/timeline 挂住、永不返回）：3~18s brLoading=true → 21s brLoading 与
+brResetLoading 均归 false、底部出现「加载失败，点击重试」；对照：改动前同样条件一直停在加载态
+（本轮实测 25s+ 未恢复）。
+
+二、冒烟计数口径（case1 曾形同虚设）
+.bm-card 被浏览列表与搜索结果共用，cards()/waitCards()/waitSettled() 原先全局计数，于是
+「浏览列表没加载出来」也能被别的视图的卡片满足而判通过（实测全局 655 张 vs #br-list 3 张）。
+改为支持 sel 限定范围；case1 用 #br-list .bm-card 并同时确认浏览视图已激活。
+
+验证：x_smoke 9/9 通过（case1 记录从「655 张卡」变为「#br-list 3 张」，正是口径修正的效果）；
+panel.html 内联脚本 node --check 通过；x_guard --offline 0 失败 / 8 通过。
+
+已知留白：上游饱和时 /tweet/<id> 的「刷屏源」未完全钉死——已排除详情预取（2 条串行上限）与
+fetchTweetAndUpdateCard（只有两个用户点击入口）；仍可疑的是搜索侧 fetchSearchReplyMatch
+（按 tid 去重但无并发上限）与后端 /tweet/<id> 自身无超时。两者都不影响本次「不再永久卡死」的目标。

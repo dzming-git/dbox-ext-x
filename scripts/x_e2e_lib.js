@@ -143,17 +143,21 @@ async function waitStable(page, { quietMs = 400, max = 8000 } = {}) {
   }
 }
 
-const cards = (frame) => frame.evaluate(() => document.querySelectorAll('.bm-card').length).catch(() => 0);
+// sel 可限定计数范围：浏览列表（#br-list）与搜索结果都用 .bm-card，
+// 全局计数会被「另一个视图的卡片」满足，从而掩盖「本视图其实还没加载出来」——
+// case1「关注流内容出现」就吃过这个亏（面板停在搜索视图时也能数到几百张卡）。
+const cards = (frame, sel = '.bm-card') =>
+  frame.evaluate((s) => document.querySelectorAll(s).length, sel).catch(() => 0);
 
 // 等列表「长稳」：卡片数连续 quietMs 不再变化。
 // 为什么需要：关注流首屏是**逐天分块加载**的，第一张卡片出现 ≠ 列表加载完。
 // 若一拿到首卡就断言「能否滚动」「本地缓存是否就绪」，会把「刚渲染首日几张」
 // 误判成「内容不足以滚动」（本轮就踩了一次，白查了半小时）。
-async function waitSettled(frame, { quietMs = 600, max = 12000 } = {}) {
+async function waitSettled(frame, { quietMs = 600, max = 12000, sel = '.bm-card' } = {}) {
   const t0 = Date.now();
   let last = -1, lastChange = Date.now(), n = 0;
   for (;;) {
-    n = await cards(frame);
+    n = await cards(frame, sel);
     if (n !== last) { last = n; lastChange = Date.now(); }
     if (n > 0 && Date.now() - lastChange >= quietMs) return { n, ms: Date.now() - t0, timedOut: false };
     if (Date.now() - t0 > max) return { n, ms: Date.now() - t0, timedOut: true };
@@ -161,10 +165,10 @@ async function waitSettled(frame, { quietMs = 600, max = 12000 } = {}) {
   }
 }
 
-async function waitCards(frame, { min = 1, timeout = 8000, onTick } = {}) {
+async function waitCards(frame, { min = 1, timeout = 8000, onTick, sel } = {}) {
   const t0 = Date.now();
   for (;;) {
-    const n = await cards(frame);
+    const n = await cards(frame, sel);
     if (onTick && Date.now() - t0 > 600) onTick(n);
     if (n >= min) return Date.now() - t0;
     if (Date.now() - t0 > timeout) return null;

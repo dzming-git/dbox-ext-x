@@ -35,11 +35,24 @@ async function case1(page) {
   const t0 = Date.now();
   const f = await L.openPanel(page, '#/home');
   await L.waitStable(page);
-  const t = await L.waitCards(f, { min: 1, timeout: 9000 });
-  if (t === null) { record('1 打开关注流：内容出现', false, '9s 内无卡片'); console.log(tr.dump()); return f; }
+  // 只数浏览列表里的卡（#br-list）：搜索流也用 .bm-card，全局计数会被它满足，
+  // 于是「关注流没加载出来」也能算通过——本用例失去了意义。同时确认浏览视图是活动视图。
+  const SEL = '#br-list .bm-card';
+  const active = await f.evaluate(() => {
+    const v = document.getElementById('view-browse');
+    return !!(v && v.clientHeight > 0);
+  }).catch(() => false);
+  const t = await L.waitCards(f, { min: 1, timeout: 9000, sel: SEL });
+  if (t === null) {
+    record('1 打开关注流：内容出现', false,
+      `9s 内浏览列表无卡片（浏览视图${active ? '已' : '未'}激活）`);
+    console.log(tr.dump());
+    return f;
+  }
   // 首卡出现 ≠ 列表加载完（逐天分块）。必须等它长稳，后面两条用例的判据才成立。
-  const st = await L.waitSettled(f);
-  record('1 打开关注流：内容出现', true, `首卡 ${Date.now() - t0}ms（含 boot）｜长稳后 ${st.n} 张卡片（+${st.ms}ms${st.timedOut ? '，未长稳' : ''}）`);
+  const st = await L.waitSettled(f, { sel: SEL });
+  record('1 打开关注流：内容出现', true,
+    `首卡 ${Date.now() - t0}ms（含 boot）｜长稳后 ${st.n} 张卡（#br-list，+${st.ms}ms${st.timedOut ? '，未长稳' : ''}）`);
   return f;
 }
 

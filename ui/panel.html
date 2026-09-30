@@ -6782,9 +6782,47 @@
     return ts ? dayKeyOf(ts) : null;
   }
 
+  // ---- 加载看门狗：不让「一次不返回的请求」把浏览视图永久冻住 ----
+  // 现象（2026-09-30 实测）：上游饱和时（X 限流／插件忙，连 /api/ext/x/check 都一起挂起）
+  // 请求可以几十秒不回来，而 loadBrowse 的开头是 `if (brLoading) return` —— brLoading 一旦
+  // 卡住，**后续所有加载（含用户点重试）都会在开头直接 return**，视图永久停在骨架，只能刷页面。
+  // 这里给每次加载发一个令牌并起一个超时：超时即作废本轮、强制收尾并给出「点击重试」入口，
+  // 让用户能自己决定下一步，而不是假装还在加载。
+  // 令牌的意义：被看门狗作废的那一轮即使稍后返回，也不再有权改动状态（不会与新一轮抢）。
+  const _BR_LOAD_TIMEOUT_MS = 20000;
+  let _brLoadToken = 0;
+  let _brLoadWatch = null;
+  function _brLoadArmWatch(tok) {
+    _brLoadDisarmWatch();
+    _brLoadWatch = setTimeout(() => {
+      _brLoadWatch = null;
+      if (!brLoading || tok !== _brLoadToken) return;
+      _brLoadToken++;                 // 作废本轮：它稍后返回也不再收尾
+      brLoading = false;
+      if (brResetLoading) {
+        brResetLoading = false;
+        try { if (XFEED && XFEED.suspendAutoAnchor) XFEED.suspendAutoAnchor(false); } catch (e) {}
+      }
+      try { setBrBottom('error'); } catch (e) {}    // 底部出现「点击重试」
+      try { renderWindow(); } catch (e) {}          // 已有内容先挂出来，别留整屏空白
+    }, _BR_LOAD_TIMEOUT_MS);
+  }
+  function _brLoadDisarmWatch() { if (_brLoadWatch) { clearTimeout(_brLoadWatch); _brLoadWatch = null; } }
+  function _brLoadFinish(tok) {
+    if (tok !== _brLoadToken) return;   // 已被看门狗作废或已被新一轮接管：不重复收尾
+    _brLoadDisarmWatch();
+    brLoading = false;
+    if (brResetLoading) {
+      brResetLoading = false;
+      try { if (XFEED && XFEED.suspendAutoAnchor) XFEED.suspendAutoAnchor(false); } catch (_) {}
+    }
+  }
+
   async function loadBrowse(reset = true) {
     if (brLoading) return;
     brLoading = true;
+    const _tok = ++_brLoadToken;
+    _brLoadArmWatch(_tok);
     const isOlder = !reset;
     let olderErr = false;
     const openMode = !!(reset && brOpenMode);
@@ -6936,16 +6974,12 @@
       else if (isOlder) olderErr = true;   // 加载失败：底部显示「点击重试」
     } finally {
       if (openMode) showBgLoading(false);
-      brLoading = false;
+      // 收尾（解看门狗 + 清 brLoading / brResetLoading + 解除锚点冻结）统一走令牌化的 _brLoadFinish：
+      // 被看门狗作废的那一轮不再有权改状态。
+      _brLoadFinish(_tok);
       // 缓存时效徽标：等「整表重建 + 锚点定位」落地后再显示，与内容一起出现
       // （不再比内容早一步单独闪出，避免「占位 → 徽标 → 内容」三段）。
       if (reset && brCacheMeta) showCacheBadge('#view-browse', brCacheMeta);
-      // 整表重置加载期结束（真实内容已重建并按锚点定位落地）：解除锚点写入冻结与框架自动采集。
-      // 此后用户的滚动才是真实阅读进度，应正常回写。
-      if (brResetLoading) {
-        brResetLoading = false;
-        try { if (XFEED && XFEED.suspendAutoAnchor) XFEED.suspendAutoAnchor(false); } catch (_) {}
-      }
 
       // 底部状态：失败重试 / 到底 / 仍有更多则隐藏（由滚动或下方自动续拉接管）
       if (olderErr) setBrBottom('error');
