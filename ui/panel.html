@@ -3830,15 +3830,11 @@
   function mediaUrl(url, type, opts) {
     if (!url || !/twimg\.com|pbs\.twimg/.test(url)) return url || '';
     let u = url;
-    // 尺寸变体：X 的 CDN 支持 ?name=<preset>。列表/卡片/评论区用中等尺寸即可，
-    // 实测同一张图：原图 127KB、900x900 74KB、small 47KB —— 多图帖子省下的是
-    // 几倍流量，而列表中根本看不出差别。
-    // 放大查看（灯箱）仍走原图（不传 size），保证放大后的清晰度。
+    // 尺寸变体：X 的 CDN 支持 ?name=<preset>。列表/卡片/评论区用中等尺寸即可（省流量，
+    // 列表中看不出差别）；放大查看（灯箱）仍走原图（不传 size），保证清晰度。
     const size = opts && opts.size;
-    // 尺寸变体只对**图片**成立。视频地址（.mp4/.m3u8）拼上 format=jpg&name=... 会被
-    // X CDN 直接拒绝——实测「存入 DBox」失败就是这条：
-    //   .../vid/avc1/1920x1080/xxx.mp4?tag=29&format=jpg&name=900x900 → 下载失败(3次后)
-    // 该坏 URL 还会被写进推文缓存，后端拿到后下载/代理同样失败。
+    // 尺寸变体只对**图片**成立：视频地址（.mp4/.m3u8）拼上 format=jpg&name=... 会被
+    // X CDN 直接拒绝（存入 DBox 会下载失败），且坏 URL 会被写进推文缓存、后端同样失败。
     const _isVid = (type === 'video') || /\.(mp4|m3u8)(\?|$)/i.test(u);
     if (size && !_isVid && !/name=/.test(u)) {
       u += (u.includes('?') ? '&' : '?') + 'format=jpg&name=' + size;
@@ -4361,9 +4357,9 @@
   const _hReal = new Map();         // rowKey -> 实测高度(px)
   // 媒体预加载（与 DOM 挂载解耦）：按「当前可见卡片前后各 N 条」(N=设置 client_prefetch_ahead) 提前 new Image() 预取，
   // 浏览器缓存后，等卡片真正挂载时图片已在缓存里、瞬时显示，避免滚动到才现白框。
-  // 按条数而非像素：与屏幕/卡片高度解耦，量直观可控（早期是像素窗口 _preloadAhead=2200，已弃用）。
+  // 按条数而非像素：与屏幕/卡片高度解耦，量直观可控。
   const _preloadedKeys = new Set(); // rowKey -> 已触发预取（去重，避免重复请求）
-  const _prefetchImgs = new Set();  // 在途预取 Image 引用：必须保留，否则请求飞一半被 GC 回收→中断（此前「完全没效果」根因）
+  const _prefetchImgs = new Set();  // 在途预取 Image 引用：必须保留，否则请求飞一半被 GC 回收→中断
   function _mediaUrlsOf(item) {
     const out = [];
     const meds = (item && item.media) || [];
@@ -4531,10 +4527,8 @@
     const a = (it.author) || {}; return !!a.screen_name;
   }
   // 行模型准入：比「内容完整」更宽松——成员记录（只有 id + timeline_at，内容尚未拉取）
-  // 也必须参与行模型，否则预览阶段行集合不完整。
-  //   实测：members=544 / withContent=427 → 117 条因缺内容被 .filter(Boolean) 剔除，
-  //   锚点排名因此变成 1（正确应为 12）→ 首次定位偏上，网络补齐内容后锚点被推后，
-  //   画面猛跳约 3900px（719→4669）；且那批「补回来」的条目会突然出现在正在阅读的位置旁。
+  // 也必须参与行模型，否则预览阶段行集合不完整；缺内容的成员被过滤掉会让锚点排名偏小
+  // （首次定位偏上），网络补齐内容后画面猛跳，且「补回来」的条目会突然出现在阅读位置旁。
   // 成员记录只用于占位排序定位，内容到达后由 rebuildBrowseList 整表重建替换成真实卡。
   // 绝不可用它做 tweetCachePut 的过滤条件——那会把无 author 的轻量成员回灌全局内容缓存。
   function _rowEligible(it) {
@@ -4938,8 +4932,8 @@
         // 缺失时兜底 320x180（≈16:9）：X 部分推文视频不返回 aspect_ratio，无尺寸 + lazy
         // 会导致容器高度塌成 ≈0（只剩 ▶ 一行高）。
         const dim = (m.w && m.h) ? ` width="${m.w}" height="${m.h}"` : ' width="320" height="180"';
-        // decoding="async"：滚动挂载卡片时让图片解码**离开主线程**（此前只 lazy 不 async，
-        // 挂载瞬间在主线程解码整张图 → 掉帧尖峰，是「上下滑动卡顿」的主要来源之一）
+        // decoding="async"：滚动挂载卡片时让图片解码离开主线程——只 lazy 不 async 会在
+        // 挂载瞬间于主线程解码整张图，掉帧尖峰是「上下滑动卡顿」的主要来源之一
         return poster ? `<div class="bm-media" data-idx="${idx}" data-type="video" data-mp4="${esc2(mp4)}" data-m3u8="${esc2(m3u8)}"${dimAttr(m)}><img src="${esc2(poster)}" alt=""${dim} loading="lazy" decoding="async" onerror="_onVideoCoverErr(this)"/><span class="bm-play">▶</span></div>` : '';
       }
       // 图片也要带真实 width/height 属性：浏览器据此推导 aspect-ratio，
@@ -4954,13 +4948,11 @@
   }
 
   /* ---- 多图网格：固定行高（行高与图片比例完全无关）----
-     为什么放弃 justified（行高 = max(格子宽 / 图片宽高比)）？
-       因为 X API 不返回图片尺寸（实测 214 个格子里 213 个缺失 data-w/h），而初次渲染
-       时图片基本未加载（仅约 9%），比例只能走兜底值 → 图片加载后必须重排，行高从
-       272px 跳到 531px（几乎翻倍）→ 排布「紧→松→紧」地跳，还会把已定位的浏览位置顶开。
-     固定行高下，格子尺寸在初次渲染即确定，图片加载只改变它在格子内的 contain 显示，
-     不改动任何布局 —— **零跳动、顶部浏览位置恒定**。
-     代价：图片比例与格子不符时会有留白。但「稳定不跳 + 位置不动」远重要于「恰好填满」。 */
+     不用 justified（行高 = max(格子宽 / 图片宽高比)）的原因：X API 基本不返回图片尺寸，
+     初次渲染时图片也基本未加载，比例只能走兜底值，图片加载后必须重排（行高几乎翻倍），
+     排布会「紧→松→紧」地跳，还会把已定位的浏览位置顶开。
+     固定行高下格子尺寸在初次渲染即确定，图片加载只改变 contain 显示，布局零跳动。
+     代价：比例与格子不符时有留白，但「稳定不跳 + 位置不动」更重要。 */
   // 真正可见的内容区高度：沿祖先找第一个纵向可滚动容器（已扣除顶部导航/底部工具栏等
   // UI 边界），找不到才退回视口高度。行高据此约束，保证一行不会撑出可见区域。
   function contentViewportH(el) {
@@ -5363,9 +5355,8 @@
     idAttr: 'data-tid',
     idKeys: ['tweet_id', 'id'],
     orderKey: 'timeline_at',
-    // 成员列表上限与内容库 XTWEETS(1500) 对齐：union_by_id 按 timeline_at 倒序封顶，
-    // 只保留最新 N 条。此前 cap=400，滚到底「加载更旧」累计超 400 后，最旧的（刚加载的）
-    // 会被服务端淘汰，刷新即消失。提到 1500 覆盖正常深度滚动会话。
+    // 成员列表上限与内容库 XTWEETS(1500) 对齐：union_by_id 按 timeline_at 倒序封顶。
+    // 上限过小（如 400）时，深度滚动后最早加载的条目会被淘汰、刷新即消失。
     cap: 1500,
     throttle: 200,
     anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
@@ -5382,10 +5373,9 @@
   // 仅在该关键词「内容缓存更新（重搜 / 切模式）」时清空锚点；切换关键词时各自保留自己的位置。
 
   // ===== 全局单缓存：所有视图与详情页共享的唯一推文内容副本 =====
-  // 此前首页(XFEED)、搜索(search:last)、收藏(bm:list)各自存一份完整推文对象，详情又有一份
-  // DT_CACHE(localStorage)——同一条推文散在多处以致互相分叉。
-  // 现在全推文内容只登记在 XTWEETS 这一处（框架 feed()，union_by_id、服务端权威、跨设备），
+  // 全推文内容只登记在 XTWEETS 这一处（框架 feed()，union_by_id、服务端权威、跨设备），
   // 各视图只保留「成员 tweet_id + 位置锚点」，渲染时回查这份单缓存；详情页也只读写这一份。
+  // 各视图各存一份完整推文对象必然互相分叉，不得再引入第二份。
   //
   // ---- 权威源边界（阶段 3.2 的结论，别再引入第二份）----
   //  · 内容权威源 = 服务端 UserState 的 feed:tweets:items（union_by_id，跨设备）。
@@ -5583,9 +5573,8 @@
       let ids = [];
       try { ids = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || []; } catch (_) { ids = []; }
       if (!ids.length) return false;
-      // 缺内容的成员不能丢：实测 members=544 中仅 427 条有内容，丢掉另外 117 条会让
-      // 行模型不完整、锚点排名偏小（1 而非 12）→ 首次定位偏上，网络补齐后猛跳约 3900px。
-      // 改为回退到成员记录本身（带 timeline_at，可正确排序定位）。
+      // 缺内容的成员不能丢：丢掉它们会让行模型不完整、锚点排名偏小（首次定位偏上），
+      // 网络补齐后画面猛跳。故回退到成员记录本身（带 timeline_at，可正确排序定位）。
       const list = ids.map((it) => tweetCacheGet(it.tweet_id || it.id) || it);
       // 续读锚点可能本地内容残缺（@unknown 壳条目被清洗、预览阶段未就绪）导致被上面的
       // tweetCacheGet 过滤、不在 list 里，于是预览无法渲染该卡、定位失败、刷新先闪到顶部。
