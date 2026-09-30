@@ -1065,7 +1065,7 @@
         <label>上限(MB) <input type="number" id="st-cache-mb" min="64" max="4096" step="64" /></label>
         <span class="ac-readonly" id="st-cache-use">—</span>
       </div>
-      <div class="ac-hint">视频单个可达数十 MB（实测最大 89MB），图片仅百 KB 级。视频缓存过多会挤掉图片，反而更慢。</div>
+      <div class="ac-hint">视频单个可达数十 MB，图片仅百 KB 级。视频缓存过多会挤掉图片，反而更慢。</div>
       <div class="ac-foot">
         <span></span>
         <button id="st-cache-confirm" class="ac-confirm" disabled>确认</button>
@@ -1153,7 +1153,7 @@
         </label>
         <button id="st-bm-run" class="ac-btn">立即运行</button>
       </div>
-      <div class="ac-desc">定时把 X 书签抓到本地。此前要打开书签页才现拉（首次要转圈数秒），开启后点开即秒开。成员列表按 tweet_id 归并，不会因只翻到最近几页而抹掉更早的缓存。</div>
+      <div class="ac-desc">定时把 X 书签抓到本地，点开即秒开（不必等打开书签页现拉）。成员列表按 tweet_id 归并，不会因只翻到最近几页而抹掉更早的缓存。</div>
       <div class="ac-grid">
         <label>间隔
           <select id="st-bm-iv">
@@ -1368,8 +1368,8 @@
   <div class="lib-picker" id="lib-picker" style="display:none">
     <div class="lib-picker-box">
       <div class="lib-picker-title">存入到哪个资源库</div>
-      <!-- 说明「存入」到底会发生什么：此前按钮只写「下载」，用户以为只是保存文件，
-           不知道媒体已入库到自己的资源库、还会按推文聚合生成一条帖子。 -->
+      <!-- 说明「存入」到底会发生什么：按钮只写「下载」会被理解成保存文件，
+           用户不会知道媒体已入库到资源库、还按推文聚合生成了一条帖子。 -->
       <div class="lib-picker-hint">媒体会入库到所选资源库，并按这条推文生成一篇帖子。</div>
       <select id="lib-picker-sel"><option value="">加载中…</option></select>
       <label class="lib-picker-check"><input type="checkbox" id="lib-picker-hidden" /> 隐藏资源（仅帖子流可见）</label>
@@ -1473,7 +1473,7 @@
           "server",
           "client"
         ],
-        "desc": "推文内容的**权威源**（阶段 3.2 结论）：服务端后台任务（书签/喜欢/搜索）都写这一份，前端 XTWEETS 是它的派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。与另两者不要混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期、不重复存正文），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬、不是内容存储）。⚠️ **已知缺口（实测）**：关注流的内容走服务端**按天缓存**（feed:main:<day>，/timeline?date=）并在渲染时直接消费，不经过 XTWEETS——实测打开关注流后 660 张内容卡里只有约 19 张能在 XTWEETS 查到。即「唯一内容源」目前只对搜索/收藏/详情/用户页成立，关注流是第二条内容载体；收敛（或明确分工）属阶段 4.2/4.4。"
+        "desc": "推文内容的**权威源**：服务端后台任务（书签/喜欢/搜索）都写这一份，前端 XTWEETS 是它的派生视图（读 + merge 补全 + 有限的两处「派生层修复/补全」：scrubTweetsCache 剔除缺 author.screen_name 的残留脏条目、tweetCachePutDetail 用详情全文精确替换同一条）。与另两者不要混淆：search:kw:<hash> 是每关键词的分页结果快照（按词走生命周期、不重复存正文），服务端 ns='search' 的 sqlite 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬、不是内容存储）。**已知缺口**：关注流的内容走服务端按天缓存（feed:main:<day>，/timeline?date=）并在渲染时直接消费，不经过 XTWEETS，即「唯一内容源」目前只对搜索/收藏/详情/用户页成立；收敛（或明确分工）属阶段 4.2/4.4。"
       },
       {
         "name": "feed:user:",
@@ -1620,7 +1620,7 @@
         "writers": [
           "client"
         ],
-        "desc": "单个搜索方案的明细（键 = search:preset:<id>，panel.html:8319 pstKey）。此前只登记了 search:presets 清单，明细键是守卫 H 检查「服务端真产出 ⊆ 注册表」时抓出来的未登记键。"
+        "desc": "单个搜索方案的明细（键 = search:preset:<id>，panel.html:8319 pstKey）。"
       },
       {
         "name": "search:last",
@@ -5386,11 +5386,9 @@
   //    与游标），生命周期按关键词走；它引用的推文内容仍取这一份，不重复存正文。
   //  · 服务端 sqlite 的 ns='search' 是 HTTP 响应级缓存（同一 (q,product,cursor) 免重爬），
   //    与上面两者层次不同：它是「别重复打 X」，不是「内容存哪」。
-  //  已知缺口：**关注流**的内容走的是服务端**按天缓存**
-  //    （feed:main:<day>，/timeline?date=），渲染时直接消费，并不经过 XTWEETS——
-  //    实测打开关注流后 660 张内容卡里只有 ~19 张能在 XTWEETS 查到。也就是说「唯一权威源」
-  //    目前只对搜索/收藏/详情/用户页成立，关注流是第二条内容载体。把关注流也收进来
-  //    （或明确二者分工）属于阶段 4.2/4.4 的范围，别在这里顺手改渲染路径。
+  //  已知缺口：关注流的内容走服务端按天缓存（feed:main:<day>，/timeline?date=），渲染时
+  //    直接消费，并不经过 XTWEETS——所以「唯一权威源」目前只对搜索/收藏/详情/用户页成立。
+  //    把关注流也收进来（或明确二者分工）属于阶段 4.2/4.4 的范围，别在这里顺手改渲染路径。
   const XTWEETS = XSTATE ? XSTATE.feed('tweets', {
     idAttr: 'data-tid', idKeys: ['tweet_id', 'id'], orderKey: 'timeline_at',
     cap: 1500, throttle: 200, autoBind: false,
@@ -5694,9 +5692,8 @@
   // 刷新恢复时优先取「本机最新」的位置（at 较大者），从而绕过服务端陈旧锚点。
   // 仅本机续读用，不做跨设备；多设备时若某设备锚点 at 更新，pickAnchor 仍会让位给它。
   const BR_ANCHOR_KEY = 'x_br_anchor_v1';
-  // 判定规则统一交给框架 feed()（state.js 的 capture），本面板不再另抄一份：
-  // 本机锚点与服务端锚点必须同规则，否则「刷新看到的」和「跨设备续读看到的」会不一致
-  // （曾经就是两套：框架 4px 判定 + 这里另一份，改一处漏一处）。
+  // 判定规则统一交给框架 feed()（state.js 的 capture），本面板不再另抄一份：本机锚点与
+  // 服务端锚点必须同规则，否则「刷新看到的」和「跨设备续读看到的」会不一致。
   // 框架的 itemSelector/idAttr 与本面板卡片（.bm-card[data-tid]）完全一致，可直接复用。
   // 无 XFEED 时恢复本身不可用（restoreBrowseScroll 亦直接 return），故不做猜测式兜底。
   function localCapture() {
@@ -6529,10 +6526,8 @@
   // 后端每个列表/详情接口都带 fetched_at/cached/stale；「拿到过的都缓存、没过期不二拉」，
   // 这里把「这份数据是什么时候拿的」明示出来，用户一眼能判断看到的是新是旧。
   /* ---- 缓存时间统一口径 ----
-     全插件【只有这一处】做「多久之前」的格式化，入参统一为 **秒**：
-     后端 fetched_at 是秒，而本地 Date.now() 是毫秒，调用方必须 /1000 再传入。
-     此前 timeAgo(秒) / kwTimeAgo(毫秒) / meCacheAgeText(内部毫秒) 三套并存、
-     文案还分「X 分钟前」与「X 分钟前缓存」两种，是各处时间显示不一致的根源。 */
+     全插件只有这一处做「多久之前」的格式化，入参统一为秒：后端 fetched_at 是秒，
+     而本地 Date.now() 是毫秒，调用方必须 /1000 再传入。分散成多套是时间显示不一致的根源。 */
   function timeAgo(ts) {
     if (!ts) return '';
     const s = Math.floor(Date.now() / 1000 - ts);
@@ -7101,10 +7096,8 @@
          新鲜度 = (1 + 年龄小时 / 48) ^ -0.5
        位置分让「刚出过一条的词」自动让位 → 各词自然轮流露面；乘上新鲜度后，老内容
        会适度让位给新内容。
-       两条曲线都是**调出来的，不是拍的**——最初用线性（`1/(1+0.15n)` 与
-       `1/(1+age/48)`），实测退化成了「按词分块」：内容普遍较老的词整个沉到底部。
-       因为线性位置分衰减太慢（要出 10 条才追平新鲜度差异），而线性新鲜度又太陡
-       （1h→0.98、72h→0.40，相差 2.45 倍，一乘就等于按词的新旧排序）。
+       两条曲线都是调出来的：线性位置分衰减太慢（要出 10 条才追平新鲜度差异），
+       线性新鲜度又太陡，相乘会退化成「按词分块」——内容普遍较老的词整块沉底。
        改成幂律 + 平方根后（72h 的新鲜度是 0.63，只做调剂不做判决）：
          A=10条(1h前) B=10条(72h前) C=3条(1h前)
            线性：CAACACAAAAAAABBBBBBBBBB   ← B 整块沉底
@@ -8141,10 +8134,9 @@
             if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
           }, { once: true });
         }
-        // 重搜过程中保持页面稳定：每个 tick 只更新进度按钮，绝不重建列表。
-        // 此前每个 tick 都 pull + rebuildMerged + renderSrchProduct（innerHTML 清空重建），
-        // 导致整页每秒抖动一次、完全无法阅读。现改为：用户当前看到的结果原样保留供阅读，
-        // 后台继续累加成结果，仅当 d.done（全部关键词爬完）时才一次性 pull + 重建替换。
+        // 重搜过程中保持页面稳定：每个 tick 只更新进度按钮，绝不重建列表——否则整页每秒
+        // 抖动一次、完全无法阅读。用户当前看到的结果原样保留供阅读，后台继续累加，
+        // 仅当 d.done（全部关键词爬完）时才一次性 pull + 重建替换。
         if (d.done) {
           stopSearchPoll(); saveSrchTask(null); srchTaskKey = null; srchRefreshingAll = false;
           if (srchRefreshAllBtn) { srchRefreshAllBtn.disabled = false; srchRefreshAllBtn.innerHTML = icon('xi-refresh') + '全部重搜'; }
@@ -8633,10 +8625,9 @@
         return;
       }
       markUserScrolled();
-      // 落盘节流：原先**每个** scroll 事件都同步写一次 localStorage（实测约 0.9ms/次，
-      // 60Hz 下独占约 6% 帧预算，且同步刷盘本身会带来抖动尖峰——这正是「滑动不顺滑」的
-      // 一部分来源）。改为最多 250ms 一次，写入量降到原来的 1/15；停止滚动后
-      // scheduleSavePos（200ms 防抖）会补写，pagehide 的 flushNow 也兜底，
+      // 落盘节流：每个 scroll 事件都同步写 localStorage 会在 60Hz 下占掉可观的帧预算，
+      // 且同步刷盘本身带来抖动尖峰（「滑动不顺滑」的一部分来源）。改为最多 250ms 一次；
+      // 停止滚动后 scheduleSavePos（200ms 防抖）会补写，pagehide 的 flushNow 也兜底，
       // 所以「滑一下就刷新」仍不会丢位置。
       const _nowMs = Date.now();
       if (_nowMs - _lastAnchorSaveAt >= 250) { _lastAnchorSaveAt = _nowMs; saveLocalAnchor(); }
@@ -8821,8 +8812,7 @@
   function dtCacheAgeText(id, stale) {
     const ts = twTsGet(id);
     // 这条推文从未单独向 X 拉过详情时没有时间戳（内容来自列表/总库的本地缓存）。
-    // 此前这里返回空串、又被 :empty 隐藏，用户看到的就是「什么都没显示」，
-    // 必须给出明确说明并引导刷新，而不是留白。
+    // 这种情况必须给出明确说明并引导刷新，而不是返回空串让 :empty 把它隐藏成一片留白。
     if (!ts) return '来自本地缓存 · 点刷新从 X 获取最新';
     return cacheText(ts, stale);
   }
@@ -8888,10 +8878,9 @@
   // 渲染推文详情的完整卡片
   function renderTweetDetailCard(t) {
     const a = t.author || {};
-    // 媒体渲染与浏览/搜索/收藏卡片**共用同一份** cardMediaInner()，详情不再自成一套。
-    // 此前详情自己拼了一套：固定两列 grid + 视频用 .dt-video + 图片是裸 <img>，
-    // 与列表的 justified 比例行式布局不一致 → 同一条推文「预览和详情长得不一样」；
-    // 且裸 <img> 没有 .bm-media 包裹、没有 data-idx，图片在详情页点不开灯箱。
+    // 媒体渲染与浏览/搜索/收藏卡片共用同一份 cardMediaInner()，详情不自成一套：
+    // 自拼一套会让同一条推文「预览和详情长得不一样」，而且缺 .bm-media 包裹与 data-idx，
+    // 图片在详情页点不开灯箱。
     const mediaHtml = cardMediaInner(t.media);
     const profileUrl = a.screen_name ? `https://x.com/${a.screen_name}` : '';
     const isFav = starSet.has(String(t.tweet_id));
@@ -9024,7 +9013,7 @@
         ${thumb}
       </div>`;
     // 回复本身也是一条推文：点开可看它自己的详情（若它也是评论，就能继续
-    // 通过「查看完整帖子」追溯到被回复的原帖）。此前未绑事件＝点不动。
+    // 通过「查看完整帖子」追溯到被回复的原帖）。必须绑定点击，否则点不动。
     if (rp.tweet_id) {
       div.dataset.tid = rp.tweet_id;
       div.style.cursor = 'pointer';
@@ -9207,9 +9196,9 @@
     // 进来，同一条推文都是同一个 URL，且不带任何来源参数。
     const wasActive = dtEl.classList.contains('active');
     if (!wasActive) enterDrill('detail', false);   // 历史项由下面的 navigate 压入
-    // 详情是覆盖层，但用户页/列表层若同时 active 会画在它之上（实测：从用户列表点推文后
-    // 地址栏变了、列表还在、还能继续滑动点别的推文，详情层虽 active 且有内容却看不见，
-    // F5 后没有下层就正常）。所以打开详情前必须先收掉用户层。
+    // 详情是覆盖层，但用户页/列表层若同时 active 会画在它之上：从用户列表点推文时，
+    // 地址栏变了、列表还在、还能继续滑点别的推文，详情层虽 active 却看不见。
+    // 所以打开详情前必须先收掉用户层。
     try { const _ul = document.getElementById('user'); if (_ul) _ul.classList.remove('active'); } catch (_) {}
     dtEl.classList.add('active');
     // 尽量带上作者 screen_name，使 URL 与 x.com 真实结构对齐

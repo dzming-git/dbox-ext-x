@@ -2078,9 +2078,8 @@ def _unwrap_tweet(node):
     """剥掉 TweetWithVisibilityResults 包装层，返回内部真正的 Tweet 节点。
 
     时间线/搜索接口常把「被转发 / 被引用」的推文包成 TweetWithVisibilityResults
-    （外层只有 tweet 字段，没有 core / legacy）。此前只在最外层剥过一次，嵌套的
-    被引原推因 __typename 不等于 'Tweet' 而被整条丢弃——表现就是引用转发只看到
-    引用者自己的评论，看不到原贴。
+    （外层只有 tweet 字段，没有 core / legacy）。必须递归剥到底：只剥最外层时，嵌套的
+    被引原推因 __typename 不等于 'Tweet' 而被整条丢弃（引用转发只剩引用者自己的评论）。
     """
     seen = 0
     while (isinstance(node, dict) and seen < 4
@@ -2810,8 +2809,8 @@ def get_tweet_thread(tweet_id, cookie_header, cursor=None, txid_func=None):
     返回 {'tweet': focal, 'replies': [...], 'next_cursor': ...}。
 
     txid_func：计算 x-client-transaction-id 的回调（method, path）-> str。
-    **详情路径此前一直没注入这个头**，而 /search、/user_tweets 等都注入了——
-    X 据此识别真实客户端，缺失会被判为机器人并限流。传入它可显著降低 429。
+    详情路径与 /search、/user_tweets 一样必须注入它：X 据此识别真实客户端，
+    缺失会被判为机器人并限流。传入它可显著降低 429。
     """
     opener = make_opener(None)
     qid = _get_tweet_detail_qid()
@@ -3614,9 +3613,8 @@ def write_sim_placeholder(working_dir, index, mtype):
 # ---------------- 媒体类型归一 ----------------
 # 面板缓存里的媒体来自 X 的接口结构化返回，type 用的是 X 自己的说法（photo / video /
 # amplified / animated_gif），而下载器内部只认 image / video / document。
-# 不做归一的后果不是「少个分支」而是**整单静默失败**：图片条目落进视频分支，
-# 于是把一张 pbs.twimg.com 的图片地址当 m3u8 播放列表去解析（实测报
-# 「HTTP Error 400」或「Invalid IPv6 URL」），用户看到的是「任务完成、什么都没有」。
+# 不做归一的后果是整单静默失败：图片条目落进视频分支，会把 pbs.twimg.com 的图片地址
+# 当 m3u8 播放列表解析（报 HTTP 400 / Invalid IPv6 URL），用户看到「任务完成、什么都没有」。
 # 未识别的类型保持原有的「按视频处理」语义，避免影响既有解析路径。
 def canon_media_type(t):
     t = str(t or '').strip().lower()
@@ -3963,12 +3961,11 @@ def main():
 
 
 if __name__ == '__main__':
-    # 子进程三个流都必须显式钉成 UTF-8：父进程（插件宿主）以 encoding='utf-8' 读写管道，
-    # 而 Windows 下管道方向如果交给 Python 按 locale（GBK）处理，就会「一边 UTF-8 一边 GBK」。
+    # 子进程三个流都必须显式钉成 UTF-8：父进程以 encoding='utf-8' 读写管道，而 Windows 下
+    # 管道若交给 Python 按 locale（GBK）处理，就会一边 UTF-8 一边 GBK：
     #   · stdout/stderr 漏掉 → 中文日志在父进程侧乱码；
-    #   · **stdin 漏掉（本次的坑）→ 推文正文在入口就被按 GBK 读坏**，原样存进帖子：
-    #     实测「<日文示例>」变成「<乱码示例>」，与「UTF-8 字节按 gbk 解码」逐字一致，
-    #     且部分序列不可逆（emoji 直接丢字）。修 stdout 却漏 stdin，正是这类问题反复的原因。
+    #   · stdin 漏掉 → 推文正文在入口就被按 GBK 读坏并原样存进帖子（部分序列不可逆，
+    #     emoji 直接丢字）。三个流要一起处理，别只修 stdout。
     for _stream in ('stdin', 'stdout', 'stderr'):
         _s = getattr(sys, _stream, None)
         if isinstance(_s, io.TextIOWrapper):
