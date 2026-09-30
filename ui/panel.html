@@ -6088,7 +6088,9 @@
     renderRowsDOM();
     _rebuildDayRail(true);    // 滚轮跳转：保留当前选中天，勿被 currentDayKey() 抢回
     updateDayFloat();
-    if (!brRestoring && !brAwaitingRestore) { lsApply(_ls); lsSample(); }
+    // 只在「用户已接管位置」后补偿：恢复阶段（含刷新后的锚点定位）由 anchorTo/restore 负责，
+    // 这里插手会与锚点目标抢位置（实测会让锚点恢复偏差 ~150px）。
+    if (brUserScrolled && !brRestoring && !brAwaitingRestore) { lsApply(_ls); lsSample(); }
   }
   function toggleDayCollapse(k) {
     if (!k) return;

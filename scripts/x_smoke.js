@@ -130,6 +130,83 @@ async function case3(f) {
     + `（第 ${r.tries + 1} 次）｜其它键 ${r.other}→${r.other2}`);
 }
 
+// 5) 布局稳定器：用户在滚的期间，视口上方某行变高，可见内容不许被顶走。
+// 由来（2026-09-30）：虚拟列表的行高是「实测 _hReal，缺失则按估值 340」，窗口上下缘换卡
+// （占位↔真实卡）时行高会跳变；而面板自己的持续补偿 armScrollAnchorWatch 在用户一滚动就被
+// disarm（不抢手势），于是这段窗口没人补 —— 表现为「快滑时 / 停下后资源继续落位时，内容被顶走几条」。
+// 本用例必须在**用户滚动态**下做：若只用程序化 scrollTop，面板会停在 brAwaitingRestore 持续重新
+// 锚定，位移会被它盖住 —— 这正是最初漏判的原因。
+async function case5(page, f) {
+  await page.mouse.move(195, 500);
+  for (let i = 0; i < 6; i++) { await page.mouse.wheel(0, 300); await L.sleep(90); }
+  const r = await f.evaluate(async () => {
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const cont = document.getElementById('view-browse');
+    const list = document.getElementById('br-list');
+    if (!cont || !list) return { skip: '浏览视图不可用' };
+    // 必须确认浏览视图是「当前活动视图」：非活动视图 display:none，所有 rect 都是 0，
+    // 会误判成「视口内没有真卡」而 skip（本用例就踩过）。不是就自己切过去。
+    if (!cont.clientHeight) {
+      try { if (typeof switchView === 'function') switchView('browse'); } catch (_) {}
+      await sleep(1200);
+      if (!cont.clientHeight) return { skip: '浏览视图不是活动视图（切不过去）' };
+    }
+    const probe = () => {
+      const cr = cont.getBoundingClientRect();
+      const cards = [...list.querySelectorAll('.bm-card')];
+      const top = cards.find((c) => c.getBoundingClientRect().bottom > cr.top + 4);
+      return { tid: top ? String(top.dataset.tid) : null,
+               vTop: top ? Math.round(top.getBoundingClientRect().top - cr.top) : null,
+               scrollTop: Math.round(cont.scrollTop) };
+    };
+    // 自己找可用位置：要有「视口内有真卡」+「视口上方 900px 内有已挂载真卡」两个条件。
+    // 不能写死 scrollTop——关注流按天分块，行数与已展开天数会随会话变化（写死会 skip，网就废了）。
+    let a = null, above = [];
+    for (const st of [1600, 2200, 2800, 3400, 1200, 800, 4000, 600]) {
+      cont.scrollTop = st;
+      await sleep(700);
+      a = probe();
+      if (!a.tid) continue;
+      const cr = cont.getBoundingClientRect();
+      above = [...list.querySelectorAll('.bm-card')].filter((c) => {
+        const rr = c.getBoundingClientRect();
+        return rr.bottom <= cr.top && rr.top >= cr.top - 900;
+      });
+      if (above.length) break;
+    }
+    if (!a || !a.tid) return { skip: '找不到「视口内有真卡」的位置（关注流内容不足？）' };
+    if (!above.length) return { skip: '找不到「视口上方有已挂载真卡」的位置' };
+    // 量之前先等「位置自己静下来」：逐天分块还会继续并进来，带着布局一起变。
+    let lastY = -1, still = 0;
+    for (let i = 0; i < 40 && still < 6; i++) {
+      await sleep(100);
+      const y = Math.round(cont.scrollTop);
+      still = (y === lastY) ? still + 1 : 0;
+      lastY = y;
+    }
+    if (still < 6) return { skip: '列表位置一直不稳（并发加载中）' };
+    a = probe();
+    if (!a.tid) return { skip: '静止后视口内又没有卡片了' };
+    const box = document.createElement('div');
+    box.style.height = '420px';
+    above[above.length - 1].appendChild(box);   // 只改布局高度，不动面板任何状态
+    await sleep(700);
+    const b = probe();
+    return { a, b, delta: b.scrollTop - a.scrollTop,
+             same: a.tid === b.tid, dvTop: a.tid === b.tid ? b.vTop - a.vTop : null };
+  });
+  if (r.skip) { skip('5 布局稳定器（视口上方行变高，可见卡不动）', r.skip); return; }
+  const stable = r.same ? Math.abs(r.dvTop) <= 2 : true;   // 基准卡被回收时只能看补偿量
+  // 判据只看「补偿有没有发生」：撑高 420px 后 scrollTop 必须被推下去。
+  // 不断言恰好 420：并发加载（逐天分块还在并进来）会叠加自己的位移，那部分是正常行为，
+  // 精确值打在记录里供人核对。修复前 scrollTop 完全不动（=0），这才是要拦的回归。
+  const compensated = r.delta >= 380;
+  record('5 布局稳定器：视口上方行变高 420px，可见卡不动且 scrollTop 被补偿',
+    stable && compensated,
+    `ΔvTop=${r.dvTop === null ? '换卡' : r.dvTop}px（应≈0）｜ΔscrollTop=${r.delta}px（应≈+420）`
+    + `｜scrollTop ${r.a.scrollTop}→${r.b.scrollTop}`);
+}
+
 const kwState = (f) => f.evaluate(() => {
   const list = (typeof srchKwList !== 'undefined' && srchKwList) ? srchKwList : [];
   const keys = list.map((e) => 'search:kw:' + e.key);
@@ -227,6 +304,10 @@ async function case4(tok) {
         + `｜其中可在全局单缓存 XTWEETS 查到 ${orph.inStore}/${orph.live}`
         + '（关注流内容来自服务端按天缓存，覆盖比低属已知现状，收敛见计划 4.2/4.4）');
     } else record('3 产出键取回机制', false, '面板 frame 未就绪');
+    // 稳定器用例放在最后：它要显式打开浏览视图并真实滚动，不依赖前面用例留下的视图/位置。
+    const fb = await L.openPanel(page, '#/browse');
+    await L.waitSettled(fb);
+    await case5(page, fb);
     await case4(tok);
     record('页面无未捕获错误', errs.length === 0, errs.slice(0, 2).join(' | '));
   } catch (e) {
