@@ -1112,18 +1112,8 @@ def _discover_search_qid(opener, cookie_header):
     用负向断言确保匹配的是独立的 SearchTimeline。
     """
     global _GQL_SEARCH_QID
-    try:
-        html = fetch_text('https://x.com/', opener,
-                          build_headers(cookie_header, with_bearer=False), timeout=20)
-    except Exception:
-        html = ''
-    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
-    seen = set(); urls = []
-    for s in scripts:
-        if not s.startswith('http'):
-            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
-        if s not in seen:
-            seen.add(s); urls.append(s)
+    html = _home_html(cookie_header, 'https://x.com/')
+    urls = _extract_bundle_urls(html)
     # 精确匹配独立 SearchTimeline 的 queryId（排除 BookmarkSearchTimeline）。
     # bundle 里格式为 queryId:"<id>",operationName:"SearchTimeline"（queryId 在前）。
     # 兼容两种顺序（queryId 在前 / operationName 在前），避免宽泛窗口误取相邻 query 的 id。
@@ -1133,21 +1123,23 @@ def _discover_search_qid(opener, cookie_header):
         # operationName 在前：operationName:"SearchTimeline",queryId:"xxx"
         r'operationName["\']?\s*[:=]\s*["\']SearchTimeline["\']?\s*,?\s*queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']',
     ]
-    for s in urls:
-        try:
-            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
-        except Exception:
-            continue
+
+    def _match(js):
         for pat in pats:
             for m in re.finditer(pat, js):
                 # 排除 BookmarkSearchTimeline（负向检查前一个操作名）
                 before = js[max(0, m.start() - 40): m.start()]
                 if re.search(r'Bookmark$', before):
                     continue
-                _GQL_SEARCH_QID = m.group(1)
-                log(f'已自动发现 SearchTimeline query id: {_GQL_SEARCH_QID}')
-                return _GQL_SEARCH_QID
-    return None
+                return m.group(1)
+        return None
+
+    qid = _scan_bundles_for_qid(urls, {'User-Agent': UA}, _match)
+    if qid:
+        _GQL_SEARCH_QID = qid
+        _persist_qid('SearchTimeline', qid)
+        log(f'已自动发现 SearchTimeline query id: {qid}')
+    return qid
 
 
 def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
@@ -1304,6 +1296,197 @@ _GQL_FOLLOWERS_LIST_QID = None
 _GQL_FOLLOWERS_LIST_OPN = 'Followers'
 
 
+def _page_get(url, headers, timeout=20, max_bytes=None):
+    """抓 X 的页面 / 静态资源（HTML、JS bundle）：**不走 API 闸门**，也不占共享 Session。
+
+    理由：`_throttle_gate()` 的 1.2s/次是为 GraphQL 读取配额设的（见其注释里的 429 事故），
+    而首页与 bundle 是浏览器会并发抓的静态资源，不消耗那份配额。此前它们也走 fetch_text →
+    每个 bundle 各等 1.2s，十几个 bundle 就是十几秒。
+
+    max_bytes：只读前 N 字节。x.com 首页 HTML 有好几 MB，而我们要的
+    `<meta name=twitter-site-verification>` 与全部 `<script src>` 都在前面一小段里，
+    完整读完要好几秒（实测占冷启动的大头）。
+    """
+    _apply_socks()
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(max_bytes) if max_bytes else r.read()
+            return data.decode('utf-8', 'replace')
+    finally:
+        _restore_socks()
+
+
+# 页面 HTML 的进程内缓存：发现 query id 与首页时间线/搜索都复用同一份，避免每个
+# operation 各抓一遍首页（实测每次数秒，三处就是十几秒）。
+_PAGE_HTML_CACHE = {}          # (url, max_bytes) -> (html, ts)
+_PAGE_HTML_TTL = 600           # 10 分钟：与反爬令牌备料的 TTL 同量级
+_HOME_READ_CAP = 1 << 20       # 首页只读前 1MB
+
+
+def _page_get_cached(url, headers, timeout=20, max_bytes=None, ttl=_PAGE_HTML_TTL):
+    key = (url, max_bytes)
+    hit = _PAGE_HTML_CACHE.get(key)
+    if hit and (time.time() - hit[1]) < ttl:
+        return hit[0]
+    html = _page_get(url, headers, timeout, max_bytes=max_bytes)
+    if html:
+        _PAGE_HTML_CACHE[key] = (html, time.time())
+    return html
+
+
+def _home_html(cookie_header, page_url='https://x.com/'):
+    """取首页（或某功能页）HTML，供 query id 发现使用。
+
+    先只读前 1MB；若连 `<script src>` 都没拿到（说明截断位置不对或页面结构变了），
+    退回完整读取 —— 宁可慢，也不能因为读短了而「发现不到 query id」。
+    """
+    headers = build_headers(cookie_header, with_bearer=False)
+    html = ''
+    try:
+        html = _page_get_cached(page_url, headers, timeout=20, max_bytes=_HOME_READ_CAP)
+    except Exception:
+        html = ''
+    if not re.search(r'<script[^>]+src=', html or ''):
+        try:
+            html = _page_get_cached(page_url, headers, timeout=30)
+        except Exception:
+            pass
+    return html
+
+
+def _scan_bundles_for_qid(urls, headers, matcher, timeout=20, workers=8, deadline_sec=25, max_urls=60):
+    """并行抓 JS bundle 找 query id，命中即返回；matcher(js) 返回 id 或 None。
+
+    串行版每抓一个 bundle 都要过一次 1.2s 的闸门（且 timeout 30s），冷启动时这里是
+    十几秒的来源。静态资源并发抓既快又贴近浏览器行为。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    if not urls:
+        return None
+    urls = urls[:max_urls]
+    deadline = time.time() + deadline_sec
+    t0 = time.time()
+    _apply_socks()   # 只在这一层开一次：并行线程里各自 apply/restore 会互相踩
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_page_get, u, headers, timeout) for u in urls]
+            try:
+                for fut in as_completed(futs, timeout=max(1.0, deadline - time.time())):
+                    try:
+                        js = fut.result()
+                    except Exception:
+                        continue
+                    hit = matcher(js)
+                    if hit:
+                        log(f'扫 bundle 命中（{len(urls)} 个候选，耗时 {time.time() - t0:.1f}s）')
+                        return hit
+            except Exception:
+                return None
+    finally:
+        _restore_socks()
+    log(f'扫 bundle 未命中（{len(urls)} 个候选，耗时 {time.time() - t0:.1f}s）', level='warn')
+    return None
+
+
+# query id 的持久化。X 会偶发轮换这些 id，但「每次服务重启都重新抓首页 + 扫全部 bundle」
+# 是纯浪费：冷启动实测这一段要 3~6 秒，是「点开个人主页等十几秒」的主要组成。落盘到数据区
+# 后重启直接复用；id 真失效时各调用点本来就有 404 兜底会重新发现，所以缓存不会把功能卡死。
+_QID_BASE_DIR = None   # 由宿主（backend/server.py）注入插件数据目录，见 set_data_dir
+
+
+def set_data_dir(path):
+    """宿主注入插件数据目录（query id 落盘用）。子进程模式下不注入也不影响功能。
+
+    注入后必须**再装一次**落盘的 id：run.py 的导入期早于宿主注入，导入时还不知道路径，
+    否则会出现「明明落了盘却每次冷启动都重新发现」。
+    """
+    global _QID_BASE_DIR
+    _QID_BASE_DIR = path or None
+    try:
+        _load_persisted_qids()
+    except Exception:
+        pass
+
+
+_QID_PERSIST = {
+    'UserByScreenName': '_GQL_USER_BY_SCREEN_NAME_QID',
+    'UserByRestId': '_GQL_USER_BY_REST_ID_QID',
+    'UserTweets': '_GQL_USER_TWEETS_QID',
+    'Following': '_GQL_FOLLOWING_LIST_QID',
+    'Followers': '_GQL_FOLLOWERS_LIST_QID',
+    'SearchTimeline': '_GQL_SEARCH_QID',
+    'HomeTimeline': '_GQL_HOME_TIMELINE_QID',
+}
+
+
+def _qid_store_path():
+    """落盘位置：优先宿主注入的数据目录，其次 DBOX_DATA_DIR；两者都没有就不持久化。"""
+    base = _QID_BASE_DIR or os.environ.get('DBOX_DATA_DIR')
+    if not base:
+        return None
+    try:
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, 'gql_qids.json')
+    except Exception:
+        return None
+
+
+def _persist_qid(opn, qid):
+    """发现到 query id 就落盘（任何失败都静默：这只是省时间的缓存）。"""
+    if not qid:
+        return
+    p = _qid_store_path()
+    if not p:
+        return
+    try:
+        data = {}
+        if os.path.exists(p):
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    data = json.load(f) or {}
+            except Exception:
+                data = {}
+        data[opn] = qid
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _load_persisted_qids():
+    """导入期（所有 _GQL_*_QID 定义之后）把落盘的 id 装回内存，只填空缺、不覆盖代码里的兜底值。"""
+    p = _qid_store_path()
+    if not p or not os.path.exists(p):
+        return
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f) or {}
+    except Exception:
+        return
+    g = globals()
+    filled = []
+    for opn, gname in _QID_PERSIST.items():
+        v = data.get(opn)
+        if v and not g.get(gname):
+            g[gname] = v
+            filled.append(opn)
+    if filled:
+        log(f'复用上次发现的 query id: {", ".join(filled)}')
+
+
+def _extract_bundle_urls(html):
+    """从页面 HTML 里取出所有 JS bundle 的绝对 URL（去重、保序）。"""
+    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
+    seen = set(); urls = []
+    for s in scripts:
+        if not s.startswith('http'):
+            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
+        if s not in seen:
+            seen.add(s); urls.append(s)
+    return urls
+
+
 def _discover_op_qid(opener, cookie_header, op_name, page_url='https://x.com/'):
     """通用：从 X 页面 bundle 自动发现任意 operationName 对应的 query id。
 
@@ -1313,33 +1496,26 @@ def _discover_op_qid(opener, cookie_header, op_name, page_url='https://x.com/'):
     page_url 默认首页；某些 operation（如 Likes）只在该功能页 bundle 内出现，
     调用方可传对应页面（如 https://x.com/i/likes）以提高命中率。
     """
-    try:
-        html = fetch_text(page_url, opener,
-                          build_headers(cookie_header, with_bearer=False), timeout=20)
-    except Exception:
-        html = ''
-    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
-    seen = set(); urls = []
-    for s in scripts:
-        if not s.startswith('http'):
-            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
-        if s not in seen:
-            seen.add(s); urls.append(s)
+    html = _home_html(cookie_header, page_url)
+    urls = _extract_bundle_urls(html)
     pats = [
         r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']\s*,?\s*operationName["\']?\s*[:=]\s*["\']'
         + re.escape(op_name) + r'["\']?',
         r'operationName["\']?\s*[:=]\s*["\']' + re.escape(op_name)
         + r'["\']?\s*,?\s*queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']',
     ]
-    for s in urls:
-        try:
-            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
-        except Exception:
-            continue
+
+    def _match(js):
         for pat in pats:
-            for m in re.finditer(pat, js):
+            m = re.search(pat, js)
+            if m:
                 return m.group(1)
-    return None
+        return None
+
+    hit = _scan_bundles_for_qid(urls, {'User-Agent': UA}, _match)
+    if hit:
+        _persist_qid(op_name, hit)
+    return hit
 
 
 def _user_profile_from_result(ur):
@@ -1607,6 +1783,8 @@ def user_tweets(cookie_header, user, count=20, cursor=None, extra_headers=None, 
     opener = make_opener(None)
     profile = None
     rest_id = None
+    _t_all = time.time()
+    _t_id = time.time()
     if user and re.fullmatch(r'\d{6,}', str(user)):
         rest_id = str(user)
     if not rest_id:
@@ -1615,11 +1793,14 @@ def user_tweets(cookie_header, user, count=20, cursor=None, extra_headers=None, 
         rest_id = (profile or {}).get('rest_id')
     if not rest_id:
         raise RuntimeError('无法确定用户 id')
+    _ms_id = (time.time() - _t_id) * 1000
     global _GQL_USER_TWEETS_QID
     qid = _GQL_USER_TWEETS_QID
+    _t_q = time.time()
     if not qid:
         qid = _discover_op_qid(opener, cookie_header, _GQL_USER_TWEETS_OPN)
         _GQL_USER_TWEETS_QID = qid
+    _ms_q = (time.time() - _t_q) * 1000
     if not qid:
         raise RuntimeError('未能发现 UserTweets query id')
     variables = {
@@ -1681,6 +1862,9 @@ def user_tweets(cookie_header, user, count=20, cursor=None, extra_headers=None, 
                 next_cursor = c.get('value')
     if not profile and ur:
         profile = _user_profile_from_result(ur)
+    log(f'user_tweets 用时 {(time.time() - _t_all) * 1000:.0f}ms'
+        f'（取资料/解析 id {_ms_id:.0f}ms、发现 UserTweets qid {_ms_q:.0f}ms、其余为接口本身）'
+        f' user={user} 条数={len(items)}')
     return items, next_cursor, profile
 
 
@@ -1691,23 +1875,10 @@ def _discover_home_timeline_qid(opener, cookie_header):
     回退到已知兜底 qid（会轮换，需定期更新）。
     """
     global _GQL_HOME_TIMELINE_QID
-    try:
-        html = fetch_text('https://x.com/home', opener,
-                          build_headers(cookie_header, with_bearer=False), timeout=20)
-    except Exception:
-        html = ''
-    scripts = re.findall(r'<script[^>]+src=["\']([^"\']+\.js)["\']', html or '')
-    seen = set(); urls = []
-    for s in scripts:
-        if not s.startswith('http'):
-            s = 'https://x.com' + (s if s.startswith('/') else '/' + s)
-        if s not in seen:
-            seen.add(s); urls.append(s)
-    for s in urls:
-        try:
-            js = fetch_text(s, opener, {'User-Agent': UA}, timeout=30)
-        except Exception:
-            continue
+    html = _home_html(cookie_header, 'https://x.com/home')
+    urls = _extract_bundle_urls(html)
+
+    def _match(js):
         pat = r'operationName["\']?\s*[:=]\s*["\']HomeTimeline["\']?'
         for tm in re.finditer(pat, js):
             win_after = js[tm.end(): tm.end() + 2000]
@@ -1716,10 +1887,15 @@ def _discover_home_timeline_qid(opener, cookie_header):
             if not m:
                 m = re.search(r'queryId["\']?\s*[:=]\s*["\']([A-Za-z0-9_-]{20,})["\']', win_before)
             if m:
-                _GQL_HOME_TIMELINE_QID = m.group(1)
-                log(f'已自动发现 HomeTimeline query id: {_GQL_HOME_TIMELINE_QID}')
-                return _GQL_HOME_TIMELINE_QID
-    return None
+                return m.group(1)
+        return None
+
+    qid = _scan_bundles_for_qid(urls, {'User-Agent': UA}, _match)
+    if qid:
+        _GQL_HOME_TIMELINE_QID = qid
+        _persist_qid('HomeTimeline', qid)
+        log(f'已自动发现 HomeTimeline query id: {qid}')
+    return qid
 
 
 def _raise_for_gql_error(data, raw, what):
@@ -3958,6 +4134,11 @@ def main():
     notify_input(notify_ctx, downloaded)
     progress(100, f'完成，共下载 {len(downloaded)} 个文件')
     sys.exit(0)
+
+
+# 导入期就把上次发现的 query id 装回内存（必须放在所有 _GQL_*_QID 定义之后，
+# 否则后面那几行 `= None / = '兜底值'` 会把装回来的值覆盖掉）。
+_load_persisted_qids()
 
 
 if __name__ == '__main__':

@@ -31,10 +31,10 @@ _CT_TTL = 15 * 60
 _HOME_URLS = ('https://x.com/', 'https://x.com/home')
 
 
-def _http_get(url, headers, timeout=20):
+def _http_get(url, headers, timeout=20, max_bytes=None):
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        return r.read(max_bytes) if max_bytes else r.read()
 
 
 def _build(home_headers, ua, timeout=20):
@@ -48,10 +48,25 @@ def _build(home_headers, ua, timeout=20):
         headers['User-Agent'] = ua
 
     last_err = None
+
+    def _soup_for(url):
+        """先只读前 1MB（site-verification meta 与 ondemand.s 引用都在首页开头），
+        拿不到 meta 再完整读一次 —— 宁可慢，也不能因为读短了而备料失败。"""
+        for cap in (_HOME_READ_CAP, None):
+            try:
+                raw = _http_get(url, headers, timeout, max_bytes=cap)
+            except Exception as e:
+                last_err = e
+                continue
+            s = bs4.BeautifulSoup(raw, 'html.parser')
+            if s.select_one("meta[name='twitter-site-verification']"):
+                return s
+        return None
+
     for url in _HOME_URLS:
         try:
-            soup = bs4.BeautifulSoup(_http_get(url, headers, timeout), 'html.parser')
-            if not soup.select_one("meta[name='twitter-site-verification']"):
+            soup = _soup_for(url)
+            if soup is None:
                 last_err = '%s 未见 twitter-site-verification meta' % url
                 continue
             ondemand_url = get_ondemand_file_url(soup)

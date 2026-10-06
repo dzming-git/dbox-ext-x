@@ -9247,12 +9247,23 @@
       userBodyEl.innerHTML = '<div class="bm-empty">加载中…</div>';
       userListEl.innerHTML = '';
       userCursor = null;
+      // 已知 uid 时先用跨设备缓存的资料把头部铺上，列表随后补 —— 不让整页停在「加载中…」
+      try {
+        const _u0 = XSTATE ? XSTATE.get('user_id_of:' + userCurName) : null;
+        const _p0 = _u0 ? XSTATE.get('users:' + _u0) : null;
+        if (_p0 && _p0.screen_name) renderUserProfile(_p0);
+      } catch (_) {}
     } else if (reset) {
       userListEl.innerHTML = '';   // 已有缓存预渲染，清掉等最新覆盖，不闪「加载中」
       userCursor = null;
     }
     try {
-      const url = `${API}/user_tweets?user=${encodeURIComponent(userCurName)}&count=20` +
+      // 已经知道这个人的 uid 就直接带上：后端会跳过 user_by_screen_name —— 那是**一次额外的
+      // X 调用 + 一次 query id 发现**（冷启动实测占「取资料」这一段的十几秒）。别名在首次
+      // 打开后写入 user_id_of:<name>，此后每次打开都走这条快路。
+      let _knownUid = null;
+      try { _knownUid = XSTATE ? XSTATE.get('user_id_of:' + userCurName) : null; } catch (_) {}
+      const url = `${API}/user_tweets?user=${encodeURIComponent(_knownUid || userCurName)}&count=20` +
         (userCursor ? `&cursor=${encodeURIComponent(userCursor)}` : '') +
         (force && reset ? '&force=1' : '');
       const r = await req(url);

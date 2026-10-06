@@ -159,6 +159,12 @@ def create_blueprint(host):
     # ---- 缓存层（列表 / 资源本体两套，见 cache_store.py 顶部说明）----
     # 落在扩展私有 SQLite（host.db('cache')）：进程重启、面板重载都不丢。
     _cache = cache_store.CacheStore(host.db('cache'))
+    # query id 落盘位置：与缓存同一个私有目录。这样插件重启后不必再「抓首页 + 扫全部 bundle」
+    # 重新发现（冷启动实测那一段要 3~6 秒，是用户侧「点开个人主页等十几秒」的主要组成）。
+    try:
+        xrun.set_data_dir(os.path.dirname(host.db('cache')))
+    except Exception:
+        pass
 
     def _force_arg():
         """是否强制刷新（用户显式点了刷新/重搜）→ 跳过缓存读、直接重拉。"""
