@@ -9015,18 +9015,59 @@
     return out;
   }
 
+  // 上方已作为「线程上下文」显示的推文 id：正文卡 + 内联的祖先卡（直接以 DOM 为准，不另存状态）。
+  function shownAboveIds() {
+    const out = new Set();
+    if (!dtBody) return out;
+    dtBody.querySelectorAll('.dt-card[data-tid]').forEach((el) => {
+      if (el.dataset.tid) out.add(el.dataset.tid);
+    });
+    return out;
+  }
+
+  // 回复列表的空态：去掉重复项后可能一条都不剩，标题与「还没有回复。」要跟着变
+  function refreshRepliesEmpty() {
+    if (!dtReplies) return;
+    const any = dtReplies.querySelector('.dt-reply');
+    const title = dtReplies.querySelector('.dt-reply-title');
+    const empty = dtReplies.querySelector('.bm-empty');
+    if (any) {
+      if (!title) dtReplies.insertAdjacentHTML('afterbegin', '<div class="dt-reply-title">回复</div>');
+      if (empty) empty.remove();
+    } else {
+      if (title) title.remove();
+      // 评论区正在加载时不抢它的占位文案
+      if (!empty) dtReplies.innerHTML = '<div class="bm-empty">还没有回复。</div>';
+    }
+  }
+
+  // 一条推文既已在上方显示、又出现在下面的「回复」列表里 → 从「回复」里去掉。
+  //
+  // X 的线程接口会把**父帖**一起塞进回复列表（父帖时间早于本条，本就不是回复），
+  // 此前它只是被错放在「回复」里；祖先内联之后就成了肉眼可见的「同一条推文出现两遍」。
+  function dropDuplicateReplies() {
+    if (!dtReplies) return;
+    const shown = shownAboveIds();
+    if (!shown.size) return;
+    dtReplies.querySelectorAll('.dt-reply[data-tid]').forEach((el) => {
+      if (shown.has(el.dataset.tid)) el.remove();
+    });
+    refreshRepliesEmpty();
+  }
+
   // 把一条祖先卡片插到所有已画卡片**之前**。
   // 多次调用（先父、再祖父……）自然形成「根在最上、父紧贴正文」的顺序。
   function insertAncestorCard(anc) {
     if (!dtBody || !anc) return;
     const el = renderTweetDetailCard(anc);
     const first = dtBody.querySelector('.dt-card');
-    if (!first) { dtBody.appendChild(el); return; }
     // 往上方插入会把正文整体下移：用户已经滚下去看评论时，按插入高度补偿滚动位置，
     // 避免「正读着，内容被顶跑」。
-    const keep = dtScroll && dtScroll.scrollTop > 0 ? dtScroll.scrollTop : 0;
-    dtBody.insertBefore(el, first);
+    const keep = first && dtScroll && dtScroll.scrollTop > 0 ? dtScroll.scrollTop : 0;
+    if (first) dtBody.insertBefore(el, first);
+    else dtBody.appendChild(el);
     if (keep && dtScroll) dtScroll.scrollTop = keep + el.offsetHeight;
+    dropDuplicateReplies();   // 父帖刚被内联上来 → 回复列表里若还有同一条，去掉
   }
 
   // 打开一条「回复」时把线程补全到正文上方。
@@ -9082,9 +9123,16 @@
     dtBody.innerHTML = '';
     // 先画本条正文，再由 fillAncestorChain 把祖先帖插到它上方（先本地、缺的联网补）
     dtBody.appendChild(renderTweetDetailCard(tweet));
-    dtReplies.innerHTML = (replies && replies.length)
+    // 回复列表：先排除「已作为上方卡片显示的那条」——线程接口会把父帖（乃至本条自身）
+    // 一起塞进回复里，内联祖先之后那就会显示成重复。
+    const shown = shownAboveIds();
+    const shownReplies = (replies || []).filter((rp) => {
+      const id = String((rp && (rp.tweet_id || rp.id)) || '');
+      return !id || !shown.has(id);
+    });
+    dtReplies.innerHTML = shownReplies.length
       ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
-    (replies || []).forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+    shownReplies.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
     dtCursor = cursor || null;
     dtLoadmore.style.display = dtCursor ? '' : 'none';
     // 回复线程补全：本地有的立即画、缺的联网取（fire-and-forget，不阻塞正文呈现）
@@ -9102,6 +9150,9 @@
     const isFav = starSet.has(String(t.tweet_id));
     const card = document.createElement('div');
     card.className = 'dt-card';
+    // 标出这张卡是哪条推文：去重时用「上方已显示的卡片」判断，回复列表里若再出现同一条就去掉
+    const cardId = t.tweet_id || t.id;
+    if (cardId) card.dataset.tid = String(cardId);
     card.innerHTML = `
       ${t.retweeted_by ? rtNoteHtml(t.retweeted_by) : ''}
       ${t.in_reply_to ? replyContextHtml(t.in_reply_to) : ''}
@@ -9230,12 +9281,15 @@
       </div>`;
     // 回复本身也是一条推文：点开可看它自己的详情（若它也是评论，就能继续
     // 通过「查看完整帖子」追溯到被回复的原帖）。必须绑定点击，否则点不动。
-    if (rp.tweet_id) {
-      div.dataset.tid = rp.tweet_id;
+    // tweet_id 优先、回退 id（与引用卡片的处理同口径）：有些回来源只带 id，
+    // 少了这个标记，上面的「回复去重」就认不出是同一个条推文
+    const rpId = rp.tweet_id || rp.id;
+    if (rpId) {
+      div.dataset.tid = String(rpId);
       div.style.cursor = 'pointer';
       div.addEventListener('click', (e) => {
         e.stopPropagation();
-        openTweetDetail(rp.tweet_id, rp, false, (rp.author || {}).screen_name);
+        openTweetDetail(rpId, rp, false, (rp.author || {}).screen_name);
       });
     }
     return div;
@@ -9503,8 +9557,14 @@
         dtCachePut(dtCurTweet, replies, d.next_cursor);   // 下次再打开直接命中
         recordHistory(dtCurTweet);  // P1-7：记录浏览历史（fire-and-forget）
       } else {
-        dtReplies.innerHTML = replies.length ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
-        replies.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+        // 与 paintDetail 同一套去重口径：已在上方显示的推文不再出现在「回复」里
+        const shown = shownAboveIds();
+        const shownReplies = replies.filter((rp) => {
+          const id = String((rp && (rp.tweet_id || rp.id)) || '');
+          return !id || !shown.has(id);
+        });
+        dtReplies.innerHTML = shownReplies.length ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
+        shownReplies.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
         dtCursor = d.next_cursor || null;
         dtLoadmore.style.display = dtCursor ? '' : 'none';
       }
@@ -9522,7 +9582,13 @@
       const r = await req(`${API}/tweet/${encodeURIComponent(dtCurTweet.tweet_id)}?cursor=${encodeURIComponent(dtCursor)}`);
       const d = await r.json();
       const added = d.replies || [];
-      added.forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+      // 翻页拿回的回复同样按「上方已显示」去重；写入缓存时仍用原始 added（保持数据原样）
+      const shown = shownAboveIds();
+      added.filter((rp) => {
+        const id = String((rp && (rp.tweet_id || rp.id)) || '');
+        return !id || !shown.has(id);
+      }).forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
+      if (added.length) refreshRepliesEmpty();
       dtCursor = d.next_cursor || null;
       dtLoadmore.style.display = dtCursor ? '' : 'none';
       // 追加进详情缓存：下次打开这条推文，已取回的评论也一起直接呈现
