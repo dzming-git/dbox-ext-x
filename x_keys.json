@@ -255,6 +255,7 @@
     { "name": "xd_rk", "desc": "下载任务 resource_key（持久句柄）panel.html:1438" },
     { "name": "x_browse_mirror_v1", "desc": "关注流本地镜像 panel.html:5184" },
     { "name": "x_br_anchor_v1", "desc": "关注流本机锚点 panel.html:5360。三层锚点各自用途（阶段 3.3 结论：**不做合并**，跨设备语义不同，合并风险高于收益）：①框架 feed:*:anchor = 服务端权威、跨设备续读的「条目 id + 卡内偏移」；②本键 = 本机兜底，服务端锚点尚未拉回/不可用时先按它预定位，避免两段式跳变；③feed:search:<hash>:anchor = 每个搜索关键词各自的位置（作用域不同）。" },
+    { "name": "x_br_anchor_item_v1", "desc": "关注流锚点自身条目的快照（saveLocalAnchor / anchorSnapshotItem）。锚点只记 id 时，几天不打开后那条推文会被镜像(80)/内容(1500)/成员(1500) 上限与服务端按天 LRU 逐层淘汰，既定位不到卡也反查不出它属于哪一天 → 续读失效停在最新；本键与锚点自带的 day 一起构成最后一级兜底。" },
     { "name": "x:tw:ts:v1", "desc": "推文缓存时间戳 panel.html:8471" },
     { "name": "x:me:cache:v1", "desc": "「我的」页各子标签的本地缓存（资料/关注/收藏…，含时间戳）panel.html:3782" },
     { "name": "xsearch_rk", "desc": "重搜任务 resource_key panel.html:7777" }

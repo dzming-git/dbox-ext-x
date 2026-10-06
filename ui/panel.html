@@ -1763,6 +1763,10 @@
         "desc": "关注流本机锚点 panel.html:5360。三层锚点各自用途（阶段 3.3 结论：**不做合并**，跨设备语义不同，合并风险高于收益）：①框架 feed:*:anchor = 服务端权威、跨设备续读的「条目 id + 卡内偏移」；②本键 = 本机兜底，服务端锚点尚未拉回/不可用时先按它预定位，避免两段式跳变；③feed:search:<hash>:anchor = 每个搜索关键词各自的位置（作用域不同）。"
       },
       {
+        "name": "x_br_anchor_item_v1",
+        "desc": "关注流锚点自身条目的快照（saveLocalAnchor / anchorSnapshotItem）。锚点只记 id 时，几天不打开后那条推文会被镜像(80)/内容(1500)/成员(1500) 上限与服务端按天 LRU 逐层淘汰，既定位不到卡也反查不出它属于哪一天 → 续读失效停在最新；本键与锚点自带的 day 一起构成最后一级兜底。"
+      },
+      {
         "name": "x:tw:ts:v1",
         "desc": "推文缓存时间戳 panel.html:8471"
       },
@@ -5361,6 +5365,17 @@
     cap: 1500,
     throttle: 200,
     anchorScope: 'user',   // 跨设备续读：换设备打开直接接着看
+    // 锚点额外带上「这条属于哪一天」。必要性：锚点只记 id + 卡内偏移时，几天不打开后
+    // 这条推文会被成员(1500)/内容(1500)/镜像(80) 上限与服务端按天 LRU 逐层淘汰，于是
+    // 「锚点属于哪一天」反查不出来 → 那一天不会被加载 → 锚点卡进不了列表 → 视图停在
+    // 默认位置＝最新（用户报告的「隔几天再打开，续读位置失效」）。day 随锚点持久化后，
+    // 定向加载那一天在任何淘汰之后都依然成立。
+    anchorExtra: (a) => {
+      try {
+        const d = dayOfTweetId(a && a.id);
+        return d ? { day: d } : {};
+      } catch (_) { return {}; }
+    },
     lease: true,           // 锚点写入受主控租约门控，并由服务端硬栅栏校验
     autoBind: false,       // 滚动由本面板统一处理（还要兼顾自动加载）
     // 不传 timeOf/timeAttr：框架 feed() 便不会写入已读边界 read_at。
@@ -5468,7 +5483,7 @@
   // 从 feed 成员列表（XFEED.items()）按 id 取原始记录：带 timeline_at 但不过滤作者，
   // 用于预览阶段算「锚点所在天」——内容缓存（XTWEETS）可能因 @unknown 壳条目被清洗而取不到，
   // 但成员记录仍在，可据此展开到正确天数让卡片被渲染、restore 能定位（避免刷新先闪到顶部）。
-  function feedItemById(id) {
+  function feedItemByIdRaw(id) {
     if (id == null) return null;
     const sid = String(id);
     if (XFEED) {
@@ -5480,6 +5495,19 @@
       const mem = JSON.parse(localStorage.getItem(BR_MIRROR_KEY) || '[]') || [];
       return mem.find((x) => String(x.tweet_id || x.id) === sid) || null;
     } catch (_) { return null; }
+  }
+  // 最后一级兜底：锚点自身条目的快照。几天不打开后，成员/内容/镜像都可能已不含这条推文
+  // ——那正是「续读失效、直接跳到最新」的现场；快照是唯一还能把锚点卡渲染出来的来源。
+  function anchorSnapshotItem(id) {
+    if (id == null) return null;
+    try {
+      const s = JSON.parse(localStorage.getItem(BR_ANCHOR_ITEM_KEY) || 'null') || {};
+      const it = s.item || {};
+      return String(it.tweet_id || it.id) === String(id) ? it : null;
+    } catch (_) { return null; }
+  }
+  function feedItemById(id) {
+    return feedItemByIdRaw(id) || anchorSnapshotItem(id);
   }
   // 详情页补全后回写（**派生层补全**，写的是同一个权威键 feed:tweets:items，不是第二份副本）：
   // 只替换/追加目标这一条（正文/媒体 + 评论分页 + 游标），其余条目原样保留。
@@ -5693,6 +5721,10 @@
   // 刷新恢复时优先取「本机最新」的位置（at 较大者），从而绕过服务端陈旧锚点。
   // 仅本机续读用，不做跨设备；多设备时若某设备锚点 at 更新，pickAnchor 仍会让位给它。
   const BR_ANCHOR_KEY = 'x_br_anchor_v1';
+  // 锚点自身条目的快照（只存当前锚点那一条，随锚点更新）。作为「镜像 80 条 / 内容缓存
+  // 1500 条 / 成员 400 条 / 服务端按天 LRU」全部淘汰之后的最后一份兜底：没有它，
+  // 锚点卡就渲染不出来，续读只能停在最新。
+  const BR_ANCHOR_ITEM_KEY = 'x_br_anchor_item_v1';
   // 判定规则统一交给框架 feed()（state.js 的 capture），本面板不再另抄一份：本机锚点与
   // 服务端锚点必须同规则，否则「刷新看到的」和「跨设备续读看到的」会不一致。
   // 框架的 itemSelector/idAttr 与本面板卡片（.bm-card[data-tid]）完全一致，可直接复用。
@@ -5701,21 +5733,43 @@
     if (!XFEED || typeof XFEED.capture !== 'function') return null;
     const a = XFEED.capture();
     if (!a || !a.id) return null;
-    return { id: String(a.id), offset: typeof a.offset === 'number' ? a.offset : 0 };
+    // day 由 feed 的 anchorExtra 一并带上（见 XFEED 定义）；捕获时就近反查一次做兜底
+    const day = a.day || dayOfTweetId(a.id);
+    return { id: String(a.id), offset: typeof a.offset === 'number' ? a.offset : 0, day: day || null };
   }
   function saveLocalAnchor() {
     const a = localCapture();
     if (!a) return;
-    try { localStorage.setItem(BR_ANCHOR_KEY, JSON.stringify({ id: a.id, offset: a.offset, at: Date.now() })); } catch (_) {}
+    try {
+      localStorage.setItem(BR_ANCHOR_KEY, JSON.stringify({ id: a.id, offset: a.offset, at: Date.now(), day: a.day || null }));
+      // 同时留一份锚点条目的快照（此刻内容还在，取得到）
+      const it = tweetCacheGet(a.id) || feedItemById(a.id);
+      if (it) {
+        localStorage.setItem(BR_ANCHOR_ITEM_KEY,
+          JSON.stringify({ item: it, day: a.day || null, at: Date.now() }));
+      }
+    } catch (_) {}
   }
   function loadLocalAnchor() {
     try {
       const raw = localStorage.getItem(BR_ANCHOR_KEY);
       if (!raw) return null;
       const a = JSON.parse(raw);
-      if (a && a.id) return { id: String(a.id), offset: typeof a.offset === 'number' ? a.offset : 0, at: a.at || 0 };
+      if (a && a.id) {
+        return { id: String(a.id), offset: typeof a.offset === 'number' ? a.offset : 0, at: a.at || 0, day: a.day || null };
+      }
     } catch (_) {}
     return null;
+  }
+  // 锚点快照里是否就是这条推文（用于「该卡只能靠快照渲染」时如实提示）
+  function isFromAnchorSnapshot(id) {
+    try {
+      const s = JSON.parse(localStorage.getItem(BR_ANCHOR_ITEM_KEY) || 'null') || {};
+      const it = s.item || {};
+      if (String(it.tweet_id || it.id) !== String(id)) return false;
+      // 快照与其它来源同时命中时不算「只剩快照」：镜像/成员里还在就不该提示
+      return !feedItemByIdRaw(id);
+    } catch (_) { return false; }
   }
   // 取最新锚点：本机 localStorage 与服务端快照两份取写入时间(at)较新的一份。
   // 绝不可无条件以本机为准：本机只要存过锚点就永远读不到其它设备的新位置，
@@ -5726,8 +5780,8 @@
     const la = loadLocalAnchor();
     const sv = (XFEED && XFEED.anchor) ? XFEED.anchor() : null;
     const cand = [];
-    if (la && la.id) cand.push({ id: String(la.id), offset: la.offset, at: Number(la.at) || 0 });
-    if (sv && sv.id) cand.push({ id: String(sv.id), offset: typeof sv.offset === 'number' ? sv.offset : 0, at: Number(sv.at) || 0 });
+    if (la && la.id) cand.push({ id: String(la.id), offset: la.offset, at: Number(la.at) || 0, day: la.day || null });
+    if (sv && sv.id) cand.push({ id: String(sv.id), offset: typeof sv.offset === 'number' ? sv.offset : 0, at: Number(sv.at) || 0, day: sv.day || null });
     if (!cand.length) return null;
     cand.sort((a, b) => b.at - a.at);   // at 较大者胜（均由各自设备 Date.now() 写入）
     return cand[0];
@@ -6779,7 +6833,18 @@
     } catch (_) {}
     const t = tweetCacheGet(sid);
     const ts = t && (t.created_at || t.timeline_at);
-    return ts ? dayKeyOf(ts) : null;
+    if (ts) return dayKeyOf(ts);
+    // 最后才查锚点快照：镜像（80 条）与内容缓存（1500 条）都可能已不含这条推文
+    try {
+      const s = JSON.parse(localStorage.getItem(BR_ANCHOR_ITEM_KEY) || 'null') || {};
+      const it = s.item || {};
+      if (String(it.tweet_id || it.id) === sid) {
+        if (s.day) return s.day;
+        const ts2 = it.created_at || it.timeline_at;
+        return ts2 ? dayKeyOf(ts2) : null;
+      }
+    } catch (_) {}
+    return null;
   }
 
   // ---- 加载看门狗：不让「一次不返回的请求」把浏览视图永久冻住 ----
@@ -6914,11 +6979,14 @@
         // ① 锚点天若已从服务端天索引淘汰（LRU 字节预算会清掉不常访问的老天），
         //    原 loadDaysThrough 会一路向下加载全部天（逐个现爬 X，且永远到不了锚点）
         //    → 停在最新、丢失记录。改为：锚点天仍在索引就按原逻辑加载到那天；
-        //    否则只定向拉那一天的缓存（当天也淘汰时 fetchDay 才现爬，且仅爬那一天，
-        //    不波及其它天）。fetchDay 不带 force，命中缓存即返回、不打 X。
-        // ② 锚点卡兜底：无论服务端那天是否仍在缓存，都从本地镜像/成员记录注入锚点卡，
-        //    保证 anchorTo 永远有目标，绝不因「锚点天被淘汰」而停在最新。
-        const aday = dayOfTweetId(anchorTid);
+        //    否则只定向拉那一天的缓存。注意 fetchDay 是**纯缓存读**、不会打 X（见其定义），
+        //    该天已被清理时它只返回空 —— X 的接口取不回历史某一天，所以「天被清了」无法靠
+        //    重新拉取补救，只能靠下面的锚点快照兜底。
+        // ② 锚点自带 day（feed 的 anchorExtra 写入）：几天不打开后镜像/内容缓存都已不含这条
+        //    推文，单靠 id 反查不出天（dayOfTweetId 返回 null），这一步是「定向加载那一天」的前提。
+        // ③ 锚点卡兜底（两级）：成员/镜像 → 锚点快照。保证 anchorTo 永远有目标，
+        //    绝不因「锚点天被淘汰 + 各级缓存都换过一轮」而停在最新。
+        const aday = (_pa && _pa.day) || dayOfTweetId(anchorTid);
         const dayInIndex = aday && brDayIndex.some((e) => e && e.day === aday);
         if (dayInIndex) {
           await loadDaysThrough(aday, collected);
@@ -6931,7 +6999,14 @@
         }
         if (anchorTid && !collected.some((it) => String(it.tweet_id || it.id) === String(anchorTid))) {
           const mem = feedItemById(anchorTid);
-          if (mem) collected.push(mem);
+          if (mem) {
+            collected.push(mem);
+            // 只能靠锚点快照渲染 ⇒ 它所在的那些天已被缓存清理，列表中间是断的：
+            // 如实说明，避免用户以为中间的内容凭空消失
+            if (isFromAnchorSnapshot(anchorTid)) {
+              showBrowseStatus('已恢复到上次阅读位置；中间几天已被缓存清理，无法补全', 'ok');
+            }
+          }
         }
         // 过总库：与搜索/收藏/历史里的同一条推文合成一条记录
         const items = mergeTweets(collected);
