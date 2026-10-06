@@ -8930,6 +8930,10 @@
   const dtMoreBtn = $('dt-more');
   const dtLoadmore = $('dt-loadmore');
   let dtCurTweet = null;   // 当前详情推文
+  // 详情打开序号 / 重绘序号：回复线程的祖先链是异步补齐的（可能联网），
+  // 用它们判断「期间用户是否已切到别的推文、或本条详情已被重绘」，避免把旧线程插到新页面上。
+  let dtOpenSeq = 0;
+  let dtPaintSeq = 0;
   let dtCursor = null;     // 评论区分页 cursor
   let dtLoading = false;
   let dtFavBtn = null;
@@ -9011,17 +9015,80 @@
     return out;
   }
 
-  function paintDetail(tweet, replies, cursor) {
+  // 把一条祖先卡片插到所有已画卡片**之前**。
+  // 多次调用（先父、再祖父……）自然形成「根在最上、父紧贴正文」的顺序。
+  function insertAncestorCard(anc) {
+    if (!dtBody || !anc) return;
+    const el = renderTweetDetailCard(anc);
+    const first = dtBody.querySelector('.dt-card');
+    if (!first) { dtBody.appendChild(el); return; }
+    // 往上方插入会把正文整体下移：用户已经滚下去看评论时，按插入高度补偿滚动位置，
+    // 避免「正读着，内容被顶跑」。
+    const keep = dtScroll && dtScroll.scrollTop > 0 ? dtScroll.scrollTop : 0;
+    dtBody.insertBefore(el, first);
+    if (keep && dtScroll) dtScroll.scrollTop = keep + el.offsetHeight;
+  }
+
+  // 打开一条「回复」时把线程补全到正文上方。
+  //
+  // 旧实现只查本地缓存（见 ancestorChainOf 的注释）：可用户多半是**搜到这条回复本身**、
+  // 父帖从没被拉过，本地自然没有 → 内联不出来，只剩卡片上那条「查看完整帖子」横幅，
+  // 得再点一次才看得到被回复的完整推文（用户反馈的正是这一点）。这里补上缺的那一步：
+  //   ① 本地已有的祖先先同步画出来（保留「点开即见」，零等待）；
+  //   ② 本地链条断在哪一层，就联网取那一层——后端 /tweet/<id> 自身有缓存，
+  //      取过的不会重打 X；取回一层画一层，根在最上；限 4 层，失败即静默停止
+  //      （限流或没登录时，横幅「查看完整帖子」仍可在用户主动点击时兜底）。
+  async function fillAncestorChain(tweet, seq, paintToken) {
+    const myId = String((tweet && (tweet.tweet_id || tweet.id)) || '');
+    if (!myId) return;
+    // ① 本地已有的：ancestorChainOf 返回「根 → … → 父」，倒序插入才能落在正文上方
+    const local = ancestorChainOf(tweet);
+    local.slice().reverse().forEach((anc) => insertAncestorCard(anc));
+    if (seq !== dtOpenSeq || paintToken !== dtPaintSeq) return;
+    // ② 从「最靠上的一条已知祖先」继续向上；本地一条都没有时从本条自身开始
+    let cur = local.length ? local[local.length - 1] : tweet;
+    const seen = new Set([myId, ...local.map((a) => String(a.tweet_id || a.id))]);
+    for (let depth = 0; depth < 4; depth++) {
+      const pid = cur && cur.in_reply_to && (cur.in_reply_to.tweet_id || cur.in_reply_to.id);
+      if (!pid) return;
+      const key = String(pid);
+      if (seen.has(key)) return;                      // 环保护
+      seen.add(key);
+      let anc = null;
+      try {
+        const hit = dtCacheGet(key);
+        anc = (hit && hit.tweet) || (TWEET_STORE && TWEET_STORE.get ? TWEET_STORE.get(key) : null) || null;
+      } catch (_) { anc = null; }
+      if (!anc) {
+        try {
+          const r = await req(`${API}/tweet/${encodeURIComponent(key)}`);
+          const d = await r.json();
+          // 期间可能已切走推文或本条详情已被重绘：此时绝不能把旧线程插到新页面上
+          if (seq !== dtOpenSeq || paintToken !== dtPaintSeq) return;
+          if (!d || !d.success || !d.tweet) return;   // 限流/失败：静默停下，不打扰阅读
+          anc = mergeTweet(d.tweet);
+          try { persistTweetToFeed(d.tweet); } catch (_) {}
+          try { dtCachePut(anc, d.replies || [], d.next_cursor); } catch (_) {}
+        } catch (_) { return; }
+      }
+      if (seq !== dtOpenSeq || paintToken !== dtPaintSeq) return;
+      insertAncestorCard(anc);
+      cur = anc;
+    }
+  }
+
+  function paintDetail(tweet, replies, cursor, seq) {
+    const paintToken = ++dtPaintSeq;
     dtBody.innerHTML = '';
-    // 回复：先把祖先帖按「根 → … → 父」补在当前推文上方，打开即见完整线程。
-    // 卡片里那条「↩ 回复 @xxx / 查看完整帖子」仍保留，作为祖先未被缓存时的兜底跳转。
-    ancestorChainOf(tweet).forEach((anc) => dtBody.appendChild(renderTweetDetailCard(anc)));
+    // 先画本条正文，再由 fillAncestorChain 把祖先帖插到它上方（先本地、缺的联网补）
     dtBody.appendChild(renderTweetDetailCard(tweet));
     dtReplies.innerHTML = (replies && replies.length)
       ? '<div class="dt-reply-title">回复</div>' : '<div class="bm-empty">还没有回复。</div>';
     (replies || []).forEach((rp) => dtReplies.appendChild(renderReplyCard(rp)));
     dtCursor = cursor || null;
     dtLoadmore.style.display = dtCursor ? '' : 'none';
+    // 回复线程补全：本地有的立即画、缺的联网取（fire-and-forget，不阻塞正文呈现）
+    fillAncestorChain(tweet, seq || dtOpenSeq, paintToken);
   }
 
   // 渲染推文详情的完整卡片
@@ -9348,6 +9415,7 @@
   }
 
   async function openTweetDetail(tweetId, seed, force, screenName) {
+    const seq = ++dtOpenSeq;   // 本次打开的序号：祖先链异步补齐时用它识别「用户是否已切走」
     // 列表里若有正在原地点播的视频，进详情前必须先停掉并销毁 hls 实例：
     // 详情层会盖住整个面板，视频虽被遮住但解码与声音仍在继续（被遮挡不会自动
     // 暂停），表现为「推文都点开了，视频还在响」。
@@ -9386,7 +9454,7 @@
         // 缓存命中但 author 残缺（@unknown）→ 降级为 force 重拉
       } else {
         dtCurTweet = hit.tweet;
-        paintDetail(hit.tweet, hit.replies, hit.cursor);
+        paintDetail(hit.tweet, hit.replies, hit.cursor, seq);
         paintDtCacheAge(tweetId);   // 命中缓存也标注这条推文上次是什么时候取的
         if (dtScroll) dtScroll.scrollTop = 0;
         return;
@@ -9404,6 +9472,9 @@
       // 另一份 TWEET_STORE 缓存，可能与列表的 XTWEETS 对象分叉，造成「对应混乱」。
       dtBody.appendChild(renderTweetDetailCard(seed));
       dtReplies.innerHTML = '<div class="bm-empty">正在加载评论区…</div>';
+      // 种子渲染阶段也补一次祖先链：列表数据里已带 in_reply_to 时，线程上下文能立刻出现，
+      // 不用等详情接口回来（随后 paintDetail 会整体重绘，不会重复插入）
+      fillAncestorChain(seed, seq, ++dtPaintSeq);
     }
     try {
       const r = await req(`${API}/tweet/${encodeURIComponent(tweetId)}`);
@@ -9427,7 +9498,7 @@
         // 详情是最完整的那一份：并入总库，顺带把列表里的同一条推文补全
         dtCurTweet = mergeTweet(d.tweet);
         persistTweetToFeed(d.tweet);   // 回流到唯一持久化缓存：返回首页/刷新/换设备都见全文
-        paintDetail(dtCurTweet, replies, d.next_cursor);
+        paintDetail(dtCurTweet, replies, d.next_cursor, seq);
         paintDtCacheAge(dtCurTweet.tweet_id, d.stale);
         dtCachePut(dtCurTweet, replies, d.next_cursor);   // 下次再打开直接命中
         recordHistory(dtCurTweet);  // P1-7：记录浏览历史（fire-and-forget）
