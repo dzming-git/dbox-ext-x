@@ -2519,6 +2519,10 @@ def create_blueprint(host):
             # 不要再套一层「可能是 Cookie 失效」的猜测——那会把排查引向错误方向。
             if 'x-client-transaction-id' in msg:
                 return jsonify({'success': False, 'message': '搜索失败: ' + msg}), 502
+            # 限流：给出来龙去脉，别让用户以为搜索坏了（批量重搜会自动等冷却，单次要手动重试）
+            if '限流' in msg:
+                return jsonify({'success': False, 'rate_limited': True, 'message': (
+                    '搜索失败: ' + msg + '。批量重搜会自动等待冷却后继续；单次搜索请稍后再试。')}), 502
             # 其余 404 基本都指向 X 的反爬校验（拿到令牌但被拒，或 query id 已轮换）
             if '404' in msg:
                 return jsonify({'success': False, 'message': (
@@ -2677,17 +2681,42 @@ def create_blueprint(host):
                     latest_items, latest_cur = [], None
                     q_err = ''
                     def _search_product(product):
-                        """单条关键词搜索：与 /search 同口径 —— 404 且**不是**「没带上反爬令牌」时，
-                        才丢弃令牌材料重建一次再试（令牌压根没生成时重建是徒劳的）。"""
-                        try:
-                            return xrun.search_tweets(
-                                cookie, q, 50, None, product, txid_func=_txid)
-                        except Exception as e1:
-                            if '404' in str(e1) and 'x-client-transaction-id' not in str(e1):
-                                invalidate()
+                        """单条关键词搜索。三件事：
+                        1) 与 /search 同口径：404 且**不是**「没带上反爬令牌」时，才丢弃令牌材料
+                           重建一次再试（令牌压根没生成时重建是徒劳的）。
+                        2) **遇到限流就等冷却再接着爬**：run.py 的策略是「429 一律不重试、
+                           冷却期内快速失败」（那是为详情预取写的，避免重试刷爆配额）。
+                           但批量重搜是用户主动发起的任务：照那个策略，一旦撞上限流，
+                           后面每个词都会被"快速失败"，整轮几秒钟就"完成"——表现为
+                           「只搜了前几个词，其余还是旧缓存」。这里改为等冷却结束再试同一个词。
+                        3) 限流等待要报到进度上，让用户知道是"在等"而不是"卡住/跑完了"。
+                        """
+                        rl_cls = getattr(xrun, 'XRateLimited', None)
+                        waited = 0
+                        while True:
+                            try:
                                 return xrun.search_tweets(
                                     cookie, q, 50, None, product, txid_func=_txid)
-                            raise
+                            except Exception as e1:
+                                if rl_cls is not None and isinstance(e1, rl_cls):
+                                    if waited >= 8:      # 等待轮数上限，避免异常值把任务挂死
+                                        raise
+                                    left = float(getattr(e1, 'retry_after', 0) or 0)
+                                    wait = min(max(5.0, left + 3.0), 600.0)
+                                    waited += 1
+                                    msg = ('限流冷却中，等待 %d 秒后继续「%s」' % (int(wait), q))
+                                    _report_task(task_id, stage='限流等待', detail=msg)
+                                    try:
+                                        _progress_store.update(resource_key, message=msg)
+                                    except Exception:
+                                        pass
+                                    time.sleep(wait)
+                                    continue
+                                if '404' in str(e1) and 'x-client-transaction-id' not in str(e1):
+                                    invalidate()
+                                    return xrun.search_tweets(
+                                        cookie, q, 50, None, product, txid_func=_txid)
+                                raise
 
                     try:
                         top_items, top_cur = _search_product('Top')
