@@ -2502,7 +2502,8 @@ def create_blueprint(host):
             except Exception as e1:
                 # 令牌材料可能因 X 发版而失效（缓存的 ClientTransaction 用了旧 site key，
                 # X 拒收 → 404）。丢弃缓存重建一次再试，避免「发版后必须重启进程」。
-                if '404' in str(e1):
+                # 但「压根没生成出令牌」不是材料新旧的问题，重建也没用 —— 直接抛出真实原因。
+                if '404' in str(e1) and 'x-client-transaction-id' not in str(e1):
                     invalidate()
                     items, next_cursor = _do()
                 else:
@@ -2513,13 +2514,18 @@ def create_blueprint(host):
             data, ts, cached, stale = _cached('list', 'search',
                                               {'q': q, 'product': product, 'count': count, 'cursor': cursor or ''}, _fetch)
         except Exception as e:
-            # 404 基本都指向 X 的反爬校验（拿不到令牌或令牌不被接受）
-            if '404' in str(e):
+            msg = str(e)
+            # 已经把原因说清楚的（例如「没带上反爬令牌」）就原样透出，
+            # 不要再套一层「可能是 Cookie 失效」的猜测——那会把排查引向错误方向。
+            if 'x-client-transaction-id' in msg:
+                return jsonify({'success': False, 'message': '搜索失败: ' + msg}), 502
+            # 其余 404 基本都指向 X 的反爬校验（拿到令牌但被拒，或 query id 已轮换）
+            if '404' in msg:
                 return jsonify({'success': False, 'message': (
                     '搜索失败: X 拒绝了请求（404）。通常是反爬令牌失效或 X 前端改版，'
                     '可稍后重试；若持续出现，请检查凭证库里的 x.com Cookie 是否仍有效。')}), 502
             return jsonify({'success': False,
-                            'message': '搜索失败: ' + str(e)}), 502
+                            'message': '搜索失败: ' + msg}), 502
         return jsonify({'success': True, **data, 'cached': cached, 'fetched_at': ts, 'stale': stale,
                         'budget_bytes': _unified_budget_bytes()})
 
@@ -2670,15 +2676,26 @@ def create_blueprint(host):
                     top_items, top_cur = [], None
                     latest_items, latest_cur = [], None
                     q_err = ''
+                    def _search_product(product):
+                        """单条关键词搜索：与 /search 同口径 —— 404 且**不是**「没带上反爬令牌」时，
+                        才丢弃令牌材料重建一次再试（令牌压根没生成时重建是徒劳的）。"""
+                        try:
+                            return xrun.search_tweets(
+                                cookie, q, 50, None, product, txid_func=_txid)
+                        except Exception as e1:
+                            if '404' in str(e1) and 'x-client-transaction-id' not in str(e1):
+                                invalidate()
+                                return xrun.search_tweets(
+                                    cookie, q, 50, None, product, txid_func=_txid)
+                            raise
+
                     try:
-                        top_items, top_cur = xrun.search_tweets(
-                            cookie, q, 50, None, 'Top', txid_func=_txid)
+                        top_items, top_cur = _search_product('Top')
                     except Exception as _e:
                         top_cur = None
                         q_err = str(_e)
                     try:
-                        latest_items, latest_cur = xrun.search_tweets(
-                            cookie, q, 50, None, 'Latest', txid_func=_txid)
+                        latest_items, latest_cur = _search_product('Latest')
                     except Exception as _e:
                         latest_cur = None
                         q_err = q_err or str(_e)

@@ -1175,6 +1175,12 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
         variables["cursor"] = cursor
     headers = build_headers(cookie_header, with_bearer=True)
 
+    # 反爬令牌状态：搜索接口【必须】带 x-client-transaction-id（缺了 X 一律回 404），
+    # 所以拿到 404 时首先要分清是「压根没带上令牌」还是「query id 过期」。
+    # 这两者的处置完全不同——混在一起会去反复重发现 id（白费力气），
+    # 还会把用户引向「Cookie 是不是失效了」的错误结论。
+    _tx = {'ok': False, 'detail': ''}
+
     def _do_search(qid):
         # ensure_ascii=False：中文 rawQuery 以 UTF-8 原始输出，与 X 网页端真实请求的编码一致
         url = (f'https://x.com/i/api/graphql/{qid}/{_GQL_SEARCH_OPN}'
@@ -1186,25 +1192,51 @@ def search_tweets(cookie_header, query, count=20, cursor=None, product='Top',
             if extra_headers:
                 h.update(extra_headers)
             if txid_func:
+                _tx['ok'] = False
                 try:
                     tid = txid_func('GET', urllib.parse.urlparse(url).path)
-                    if tid:
-                        h['x-client-transaction-id'] = tid
-                except Exception:
-                    pass   # 取不到令牌就照常发，交由服务端返回的错误兜底
-        raw = fetch_text(url, opener, h, timeout=30)
+                except Exception as e:
+                    tid = None
+                    _tx['detail'] = '%s: %s' % (type(e).__name__, e)
+                if tid:
+                    h['x-client-transaction-id'] = tid
+                    _tx['ok'] = True
+                elif not _tx['detail']:
+                    _tx['detail'] = '令牌生成器返回空值（备料失败，或 XClientTransaction 依赖不可用）'
+        try:
+            raw = fetch_text(url, opener, h, timeout=30)
+        except urllib.error.HTTPError as e:
+            # X 拒绝时有时会在响应体里写原因，读出来，别只留一句干巴巴的 HTTP Error
+            try:
+                body = e.read().decode('utf-8', 'replace')[:300]
+            except Exception:
+                body = ''
+            if body:
+                e.args = ('HTTP %s: %s | %s' % (e.code, e.reason, body),)
+            raise
         return json.loads(raw)
+
+    def _tx_hint():
+        return ('X 拒绝了搜索请求（404），且**本次请求没能带上反爬令牌 '
+                'x-client-transaction-id**（%s）。搜索接口缺这个头必被 X 拒，与 Cookie 是否有效无关；'
+                '请确认插件依赖 XClientTransaction 已安装（pip install XClientTransaction）后重试。'
+                % (_tx['detail'] or '原因未知'))
 
     try:
         data = _do_search(qid)
     except urllib.error.HTTPError as e:
-        # query id 会轮换：404 说明当前 id 已失效，重新自动发现后重试一次
         if e.code == 404:
+            if not _tx['ok']:
+                # 没带令牌时重发现 query id 是徒劳 —— 直接把真实原因抛出去
+                log('搜索未能带上反爬令牌: ' + (_tx['detail'] or '原因未知'))
+                raise RuntimeError(_tx_hint())
+            # 带着令牌仍 404，才是 query id 轮换：重新自动发现后重试一次
             _GQL_SEARCH_QID = None
             new_qid = _discover_search_qid(opener, cookie_header)
             if new_qid and new_qid != qid:
-                qid = new_qid
-                data = _do_search(qid)
+                data = _do_search(new_qid)
+                if not _tx['ok']:
+                    raise RuntimeError(_tx_hint())
             else:
                 raise
         else:

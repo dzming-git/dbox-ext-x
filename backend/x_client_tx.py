@@ -21,6 +21,14 @@ _lock = threading.Lock()
 _ct = None          # 已备料的 ClientTransaction（内含站点 key 与 animation key）
 _ct_ts = 0          # _ct 备料完成时刻（unix 秒），用于 TTL 自愈
 
+# 首页只读前 1MB：site-verification meta 与 ondemand.s 的引用都在首页开头，完整读完要几秒
+# （冷启动的大头）；读短了还有「不见 meta 就整读一次」的兜底，所以取小值是安全的。
+#
+# 这个常量必须在本模块内定义：本模块会被独立导入（不经过 run.py），而它原先只存在于
+# run.py —— 于是 _build 抛 NameError，令牌永远准备失败，表现为**搜索一律 404**，
+# 而调用方又把异常静默吞掉，最后被误判成「query id 失效」或「Cookie 失效」。
+_HOME_READ_CAP = 1 << 20
+
 # X 前端发版会轮换 site-verification meta 与 ondemand.s 的哈希，旧 _ct 生成的令牌会被拒（404）。
 # 设一个较短 TTL：过期即重建，避免「某次发版后搜索一直 404 直到手动重启」的静默失效。
 _CT_TTL = 15 * 60
