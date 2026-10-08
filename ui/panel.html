@@ -103,7 +103,11 @@
   .lightbox { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.82); display: none; align-items: center; justify-content: center; cursor: pointer; touch-action: none; overscroll-behavior: contain; user-select: none; -webkit-user-select: none; }
   .lightbox.active { display: flex; }
   .lightbox img { max-width: 92%; max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); user-select: none; -webkit-user-select: none; }
-  .lightbox video { max-width: 720px; max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); user-select: none; -webkit-user-select: none; }
+  /* 视频上限必须**同时**受屏宽约束。原来只写 max-width:720px：手机屏宽才 ~390，
+     这个上限根本不起作用，竖屏视频会被 max-height:85% 反推出比屏幕更宽的尺寸
+     （实测：390 宽屏上视频 511×682，左右各溢出 61px）→ 「点开视频过大、超出屏幕」。
+     先用 92% 兜住屏宽（老引擎也安全），再用 min() 在桌面保留 720 的上限。 */
+  .lightbox video { max-width: 92%; max-width: min(92%, 720px); max-height: 85%; object-fit: contain; border-radius: 6px; box-shadow: 0 8px 40px rgba(0,0,0,.5); user-select: none; -webkit-user-select: none; }
   .lightbox .lb-stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
   .lightbox .lb-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; will-change: transform; user-select: none; -webkit-user-select: none; }
   .lightbox .lb-layer.lb-anim { transition: transform .3s ease, opacity .3s ease; }
