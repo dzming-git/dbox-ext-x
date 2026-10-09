@@ -1367,23 +1367,40 @@ def _page_get_cached(url, headers, timeout=20, max_bytes=None, ttl=_PAGE_HTML_TT
     return html
 
 
-def _home_html(cookie_header, page_url='https://x.com/'):
+def _home_html(cookie_header, page_url='https://x.com/', fresh=False):
     """取首页（或某功能页）HTML，供 query id 发现使用。
 
     先只读前 1MB；若连 `<script src>` 都没拿到（说明截断位置不对或页面结构变了），
     退回完整读取 —— 宁可慢，也不能因为读短了而「发现不到 query id」。
+
+    fresh=True 绕过进程内页面缓存（发现失败后的重试走这里：缓存里若是一张坏页面，
+    不绕开就会一直失败到 TTL 过期）。
+
+    取页面失败**不再静默**：原因要记下来并打日志。此前两处 `except: pass` 会把
+    「页面根本没抓到」变成「HTML 里没有 script 标签」，一路退化到上层那句
+    「未能发现 Following query id」—— 把网络/代理抖动误报成 X 改版或 QID 轮换，
+    排查时被带偏（2026-10-09 实例）。
     """
     headers = build_headers(cookie_header, with_bearer=False)
+    ttl = -1 if fresh else _PAGE_HTML_TTL      # ttl<0 → 缓存必不命中，强制重取
+    errs = []
     html = ''
     try:
-        html = _page_get_cached(page_url, headers, timeout=20, max_bytes=_HOME_READ_CAP)
-    except Exception:
-        html = ''
+        html = _page_get_cached(page_url, headers, timeout=20,
+                                max_bytes=_HOME_READ_CAP, ttl=ttl)
+    except Exception as e:
+        errs.append('%s: %s' % (type(e).__name__, e))
     if not re.search(r'<script[^>]+src=', html or ''):
         try:
-            html = _page_get_cached(page_url, headers, timeout=30)
-        except Exception:
-            pass
+            html = _page_get_cached(page_url, headers, timeout=30, ttl=ttl)
+        except Exception as e:
+            errs.append('%s: %s' % (type(e).__name__, e))
+    if not re.search(r'<script[^>]+src=', html or ''):
+        log('取页面未拿到 script 标签 page=%s 长度=%d 原因=%s%s'
+            % (page_url, len(html or ''),
+               ' / '.join(errs) or '响应里本来就没有 script 标签',
+               '（已绕过缓存重取）' if fresh else ''),
+            level='warn')
     return html
 
 
@@ -1395,6 +1412,9 @@ def _scan_bundles_for_qid(urls, headers, matcher, timeout=20, workers=8, deadlin
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     if not urls:
+        # 以前这里是静默 return None，上层只会说「未能发现 X query id」，
+        # 看不出是「页面没抓到」。打一条日志，别让失败原因再次消失。
+        log('扫 bundle 跳过：页面没有 <script src>（取页面失败，或页面结构变了）', level='warn')
         return None
     urls = urls[:max_urls]
     deadline = time.time() + deadline_sec
@@ -1413,7 +1433,8 @@ def _scan_bundles_for_qid(urls, headers, matcher, timeout=20, workers=8, deadlin
                     if hit:
                         log(f'扫 bundle 命中（{len(urls)} 个候选，耗时 {time.time() - t0:.1f}s）')
                         return hit
-            except Exception:
+            except Exception as e:
+                log('扫 bundle 中断：%s: %s' % (type(e).__name__, e), level='warn')
                 return None
     finally:
         _restore_socks()
@@ -1545,6 +1566,13 @@ def _discover_op_qid(opener, cookie_header, op_name, page_url='https://x.com/'):
         return None
 
     hit = _scan_bundles_for_qid(urls, {'User-Agent': UA}, _match)
+    if not hit:
+        # 一次失败可能只是网络/代理抖动，或页面缓存里存了一张坏页面 —— 绕过缓存重取再扫一次。
+        # 不做这步的话，一次抖动会原样变成用户可见的硬错误（「未能发现 X query id」），
+        # 而且后续每次重试都复现同样的必败尝试（2026-10-09 实例）。
+        log('%s query id 首次未命中，绕过页面缓存重试一次' % op_name, level='warn')
+        html2 = _home_html(cookie_header, page_url, fresh=True)
+        hit = _scan_bundles_for_qid(_extract_bundle_urls(html2), {'User-Agent': UA}, _match)
     if hit:
         _persist_qid(op_name, hit)
     return hit
@@ -1751,7 +1779,11 @@ def _list_user_relation(cookie_header, opn, qid_global, rest_id, count=20, curso
         qid = _discover_op_qid(opener, cookie_header, opn)
         g[qid_global] = qid
     if not qid:
-        raise RuntimeError('未能发现 %s query id' % opn)
+        # 把「下一步怎么办」写进消息：这条以前只有症状（找不到 query id），
+        # 真实原因多半是取 X 页面失败（网络/代理抖动），用户重试即可，不必改配置。
+        raise RuntimeError(
+            '未能发现 %s query id（已自动绕过缓存重试一次）。多为取 X 页面失败：'
+            '网络/代理抖动，或 X 前端改版；稍后重试通常即可。' % opn)
     variables = {"userId": str(rest_id), "count": count,
                  "includePromotedContent": False, "withHighlightedLabel": True}
     if cursor:
