@@ -4495,17 +4495,25 @@
   let _rowOff = null;               // 行起始偏移前缀和（高度累加），长度 _rows.length+1；高度/行变化置 null 重建
   let _rowByKey = new Map();        // rowKey -> row 对象；renderRowsDOM 时按当前 _rows 重建，热路径用元素自身 phKey 查它（与索引顺序解耦，防 _rows/子节点错位导致整窗不挂载）
   function rowKeyOfEl(el) {
-    if (el.classList.contains('bm-card')) return 'card:' + (el.dataset.tid || '');
-    if (el.classList.contains('day-sep')) return 'sep:' + (el.dataset.day || '');
-    if (el.classList.contains('day-collapsed')) return 'coll:' + (el.dataset.day || '');
+    // 键必须能被 _rowByKey 命中，否则调用方拿到的是 undefined 行。
+    // tid/day 缺失时要返回 null（视为「不在行模型里」），**不能**返回 'card:' / 'sep:'
+    // 这种空壳键 —— 那样既查不到行，又骗过了调用方的 `key ? _rowByKey.get(key) : null`。
+    if (el.classList.contains('bm-card')) return el.dataset.tid ? 'card:' + el.dataset.tid : null;
+    if (el.classList.contains('day-sep')) return el.dataset.day ? 'sep:' + el.dataset.day : null;
+    if (el.classList.contains('day-collapsed')) return el.dataset.day ? 'coll:' + el.dataset.day : null;
     return el.dataset.phKey || null;
   }
+  // 行对象可能不存在（元素不在当前行模型里：key 缺失或键已过期）。
+  // 这几个函数是热路径，调用方未必都判空，所以自身必须容忍 null/undefined——
+  // 旧写法第一句就是 row.kind，一旦传入 null 就抛
+  //「Cannot read properties of null (reading 'kind')」，前端显示成「请求异常」。
   function _rowKey(row) {
+    if (!row) return null;
     if (row.kind === 'card') return 'card:' + row.tid;
     if (row.kind === 'sep') return 'sep:' + row.day;
     return 'coll:' + row.day;
   }
-  function _rowEst(row) { return _hEst[row.kind] || 340; }
+  function _rowEst(row) { return (row && _hEst[row.kind]) || 340; }
   // 行模型里有内容吗？（轻量成员记录：只有 id+时间，内容尚未拉取）
   // 锚点行例外：即使内容残缺也视为「有内容」，否则锚点卡无法挂载定位（刷新闪回顶部）。
   let _anchorRowTid = null;   // 本轮行模型的锚点 tid（buildRows 时记录）
@@ -4516,6 +4524,7 @@
     return !!(it && _browseValid(it));
   }
   function _rowHeight(row) {
+    if (!row) return 340;    // 未知行：给默认估值（与 _rowEst 的兜底一致），不抛异常
     // 无内容的成员行高记 0 且不挂载：它们只是「占位排序定位」用的逻辑行，
     // 渲染成骨架会永久转圈。0 高度＝视觉上不存在，
     // 与旧行为（直接不渲染）一致；行模型仍保留它们，锚点排名才正确。
@@ -4706,6 +4715,12 @@
         if (!d.row && d.isPh) continue;
         if (d.isPh) { if (d.inWin && _rowHasContent(d.row)) { _mountRowEl(d.el, d.key, d.row); _dirty = true; } }
         else {
+          // 已挂载元素也可能解析不出行对象（元素不在当前行模型里：无 phKey / 键已过期）。
+          // 下面 _rowEst / _rowHeight / _unmountRowEl 都要用 row，
+          // 上面那行 `if (!d.row && d.isPh) continue;` 只保护了**占位行**，漏了这一支，
+          // 于是 d.row 为 null 时抛 Cannot read properties of null (reading 'kind')
+          // —— 前端把它显示成「请求异常」。缺行就跳过：没有行模型信息可测可卸。
+          if (!d.row) continue;
           // 实测高度变化必须让偏移表失效：表若停留在旧值（图片加载前的高度），
           // currentDayKey 拿真实 scrollTop 对比过时偏移，会把「当前天」判定到更旧的一天
           //（时间轮盘跳日）。仅在值真的变化时失效，避免每帧白重建。
